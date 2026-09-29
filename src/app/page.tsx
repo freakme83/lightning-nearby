@@ -5,7 +5,7 @@ import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
 import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
-import { calculateStrongestSignalWindow, fetchOutlook, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
+import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import LocationMap from "./location-map";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
@@ -46,6 +46,8 @@ export default function Home() {
   const searchRequestRef = useRef(0);
   const confirmRequestRef = useRef(0);
   const reverseControllerRef = useRef<AbortController | null>(null);
+  const forecastRequestRef = useRef(0);
+  const currentOutlookRef = useRef<Outlook | null>(null);
 
   useEffect(() => {
     try {
@@ -66,20 +68,39 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady || !location) return;
     const controller = new AbortController();
+    const requestId = ++forecastRequestRef.current;
+    const isCurrentRequest = () => isCurrentForecastRequest(requestId, forecastRequestRef.current, controller.signal);
     // Clear prior results as this effect synchronizes to a different saved location.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true); setForecastError(false); setForecast(null); setHours([]); setSelectedTime(null);
-    void fetchOutlook(location.latitude, location.longitude, controller.signal)
-      .then((result) => {
-        const nextHours = selectNext24Hours(result.hours);
-        if (!nextHours.some((hour) => hour.signal.kind === "qualitative")) throw new Error("forecast-insufficient");
-        setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null);
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setForecastError(true);
-      })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    currentOutlookRef.current = null;
+    const requests = fetchOutlook(location.latitude, location.longitude, controller.signal);
+    let pendingEnsemble: Awaited<typeof requests.ensemble> = null;
+    let primaryReady = false;
+    void requests.primary.then((primary) => {
+      if (!isCurrentRequest()) return;
+      primaryReady = true;
+      const result = pendingEnsemble ? mergeEnsembleEvidence(primary, pendingEnsemble) : primary;
+      const nextHours = selectNext24Hours(result.hours);
+      if (!nextHours.some((hour) => hour.signal.kind === "qualitative")) {
+        setForecastError(true); setLoading(false); return;
+      }
+      currentOutlookRef.current = result;
+      setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null); setLoading(false);
+    }).catch(() => {
+      if (isCurrentRequest()) { setForecastError(true); setLoading(false); }
+    });
+    void requests.ensemble.then((ensemble) => {
+      if (!isCurrentRequest() || !ensemble) return;
+      if (!primaryReady) { pendingEnsemble = ensemble; return; }
+      const current = currentOutlookRef.current;
+      if (!current) return;
+      const result = mergeEnsembleEvidence(current, ensemble);
+      const nextHours = selectNext24Hours(result.hours);
+      currentOutlookRef.current = result;
+      setForecast(result); setHours(nextHours);
+      setSelectedTime((selected) => retainSelectedHour(selected, nextHours));
+    });
     return () => controller.abort();
   }, [location, storageReady]);
 

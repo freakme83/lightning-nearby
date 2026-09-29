@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateStrongestSignalWindow, combineForecasts, deriveSignal, fetchOutlook, summarizeSignal } from "./outlook.ts";
+import { calculateStrongestSignalWindow, combineForecasts, deriveSignal, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal } from "./outlook.ts";
 import { selectNext24Hours, type Forecast, type ForecastHour } from "./weather.ts";
 import type { EnsembleForecast, LocalEnsembleThunderstormSupport } from "./ensemble.ts";
 
@@ -82,13 +82,60 @@ test("ensemble-only positive remains secondary with an unavailable qualitative l
 
 test("source failures are isolated", async () => {
   const deterministic = forecast([{ time: start, weatherCode: 95, risk: "high" }]);
-  const fallback = await fetchOutlook(41.38, 2.17, undefined, async () => deterministic, async () => { throw new Error("ensemble-down"); });
-  assert.equal(fallback.hours[0].signal.kind, "qualitative");
-  const ensembleOnly = await fetchOutlook(41.38, 2.17, undefined, async () => { throw new Error("forecast-down"); }, async () => ensemble([support(start, 1)]));
-  assert.deepEqual(ensembleOnly.hours[0].signal, { kind: "unavailable" });
-  assert.equal(ensembleOnly.hours[0].evidence.ensemble?.supportingMembers, 1);
-  await assert.rejects(fetchOutlook(41.38, 2.17, undefined,
-    async () => { throw new Error("forecast-down"); }, async () => { throw new Error("ensemble-down"); }), /forecast-insufficient/);
+  const failedEnsemble = fetchOutlook(41.38, 2.17, undefined, async () => deterministic, async () => { throw new Error("ensemble-down"); });
+  const primary = await failedEnsemble.primary;
+  assert.deepEqual(primary.hours[0].signal, { kind: "qualitative", risk: "high" });
+  assert.equal(await failedEnsemble.ensemble, null);
+
+  const failedDeterministic = fetchOutlook(41.38, 2.17, undefined,
+    async () => { throw new Error("forecast-down"); }, async () => ensemble([support(start, 1)]));
+  await assert.rejects(failedDeterministic.primary, /forecast-down/);
+  const ensembleOnly = combineForecasts(null, await failedDeterministic.ensemble);
+  assert.deepEqual(ensembleOnly?.hours[0].signal, { kind: "unavailable" });
+  assert.equal(ensembleOnly?.hours[0].evidence.ensemble?.supportingMembers, 1);
+
+  const bothFailed = fetchOutlook(41.38, 2.17, undefined,
+    async () => { throw new Error("forecast-down"); }, async () => { throw new Error("ensemble-down"); });
+  await assert.rejects(bothFailed.primary, /forecast-down/);
+  assert.equal(await bothFailed.ensemble, null);
+});
+
+test("fast deterministic outlook resolves before slow ensemble; late evidence merges without changing risk or selection", async () => {
+  let resolveEnsemble!: (value: EnsembleForecast) => void;
+  let ensembleStarted = false;
+  const requests = fetchOutlook(41.38, 2.17, undefined,
+    async () => forecast([{ time: start, weatherCode: 0, risk: "low" }, { time: start + 3_600, risk: "elevated" }]),
+    async () => { ensembleStarted = true; return new Promise<EnsembleForecast>((resolve) => { resolveEnsemble = resolve; }); });
+  const primary = await requests.primary;
+  assert.equal(ensembleStarted, true);
+  assert.equal(primary.hours[0].signal.kind, "qualitative");
+  assert.deepEqual(primary.hours[0].signal, { kind: "qualitative", risk: "low" });
+
+  const selected = start + 3_600;
+  resolveEnsemble(ensemble([support(start, 1), support(start + 3_600, 5)]));
+  const result = mergeEnsembleEvidence(primary, (await requests.ensemble)!);
+  assert.equal(result.hours[0].evidence.ensemble?.supportingMembers, 1);
+  assert.deepEqual(result.hours[0].signal, { kind: "qualitative", risk: "low" });
+  assert.equal(result.hours[1].evidence.ensemble?.supportingMembers, 5);
+  assert.deepEqual(result.hours[1].signal, { kind: "qualitative", risk: "elevated" });
+  assert.equal(result.fetchedAt, primary.fetchedAt);
+  assert.equal(retainSelectedHour(selected, result.hours), selected);
+});
+
+test("an aborted previous-location ensemble result is discarded and request generations reject stale callbacks", async () => {
+  const controller = new AbortController();
+  let resolveOldEnsemble!: (value: EnsembleForecast) => void;
+  const oldRequests = fetchOutlook(41.38, 2.17, controller.signal,
+    async () => forecast([{ time: start, risk: "low" }]),
+    async () => new Promise<EnsembleForecast>((resolve) => { resolveOldEnsemble = resolve; }));
+  const oldPrimary = await oldRequests.primary;
+
+  controller.abort(); // The page aborts both source requests when the confirmed location changes.
+  resolveOldEnsemble(ensemble([support(start, 10)])); // Simulate a transport that resolves despite abort.
+  assert.equal(await oldRequests.ensemble, null);
+  assert.equal(isCurrentForecastRequest(1, 2, controller.signal), false);
+  assert.equal(isCurrentForecastRequest(1, 1, controller.signal), false);
+  assert.deepEqual(oldPrimary.hours[0].signal, { kind: "qualitative", risk: "low" });
 });
 
 test("alignment and next-24-hour window cross midnight; longest contiguous peak wins", () => {

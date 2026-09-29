@@ -59,28 +59,54 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
   };
 }
 
+/** Add late ensemble evidence without changing primary forecast times or update time. */
+export function mergeEnsembleEvidence(outlook: Outlook, ensemble: EnsembleForecast): Outlook {
+  const supportByTime = new Map(ensemble.hours
+    .filter((support) => Number.isInteger(support.time) && support.time % 3_600 === 0 && support.availableMembers > 0)
+    .map((support) => [support.time, support] as const));
+  const hours = outlook.hours.map((hour) => {
+    const support = supportByTime.get(hour.time);
+    if (!support) return hour;
+    const evidence: ThunderstormEvidence = { ...hour.evidence, ensemble: support };
+    return { ...hour, evidence, signal: deriveSignal(evidence) };
+  });
+  return { ...outlook, hours, ensembleFetchedAt: ensemble.fetchedAt };
+}
+
+export function retainSelectedHour(selected: number | null, hours: ForecastHour[]): number | null {
+  return selected != null && hours.some((hour) => hour.time === selected) ? selected : hours[0]?.time ?? null;
+}
+
+export function isCurrentForecastRequest(requestId: number, currentRequestId: number, signal?: AbortSignal): boolean {
+  return !signal?.aborted && requestId === currentRequestId;
+}
+
 type ForecastLoader = (latitude: number, longitude: number, signal?: AbortSignal) => Promise<Forecast>;
 type EnsembleLoader = (latitude: number, longitude: number, signal?: AbortSignal) => Promise<EnsembleForecast>;
 
-/** Source failures are independent; retained evidence may still lack a qualitative level. */
-export async function fetchOutlook(
+export interface OutlookRequests {
+  primary: Promise<Outlook>;
+  ensemble: Promise<EnsembleForecast | null>;
+}
+
+/** Start both sources immediately; resolve the primary outlook without waiting for ensemble data. */
+export function fetchOutlook(
   latitude: number,
   longitude: number,
   signal?: AbortSignal,
   loadForecast: ForecastLoader = fetchForecast,
   loadEnsemble: EnsembleLoader = fetchEnsembleForecast,
-): Promise<Outlook> {
-  const [deterministic, ensemble] = await Promise.allSettled([
-    loadForecast(latitude, longitude, signal),
-    loadEnsemble(latitude, longitude, signal),
-  ]);
-  if (signal?.aborted) throw signal.reason ?? new DOMException("Forecast cancelled", "AbortError");
-  const result = combineForecasts(
-    deterministic.status === "fulfilled" ? deterministic.value : null,
-    ensemble.status === "fulfilled" ? ensemble.value : null,
-  );
-  if (!result) throw new Error("forecast-insufficient");
-  return result;
+): OutlookRequests {
+  const deterministic = Promise.resolve().then(() => loadForecast(latitude, longitude, signal));
+  const ensemble = Promise.resolve().then(() => loadEnsemble(latitude, longitude, signal))
+    .then((result) => signal?.aborted ? null : result, () => null);
+  const primary = deterministic.then((result) => {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Forecast cancelled", "AbortError");
+    const outlook = combineForecasts(result, null);
+    if (!outlook) throw new Error("forecast-insufficient");
+    return outlook;
+  });
+  return { primary, ensemble };
 }
 
 export interface SignalWindow { start: number; end: number; risk: Exclude<RiskLevel, "low"> }
