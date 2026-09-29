@@ -38,7 +38,7 @@ The first version should remain deliberately small.
 
 - Progressive Web App
 - Mobile-first interface
-- Browser geolocation permission
+- User-selected location by browser geolocation, place search, or map point
 - Ability to save one monitored location
 - Location stored locally on the device
 - 24-hour hourly weather forecast
@@ -138,10 +138,13 @@ Privacy should be a core design principle.
 For Milestone 1:
 
 - location permission is optional and requested only after a tap
-- the current location can be saved as the one monitored location
-- rounded coordinates (three decimal places) are stored in local browser storage
+- one monitored point can be selected from device location, Open-Meteo place search, or a map tap
+- place-search text is sent to Open-Meteo's public Geocoding API; map tiles are requested from OpenStreetMap
+- confirmed coordinates are rounded to four decimal places and stored in local browser storage; optional place label, country, administrative context, and selection source are display metadata
 - the same rounded coordinates are sent to Open-Meteo for the forecast
 - no location or forecast is sent to an app backend; forecast responses are not cached
+
+Search and map choices remain candidates until confirmed; cancelling preserves the previously monitored point. Coordinates remain the authority for forecasts, while place labels are optional display metadata. Device location is requested only after a user tap. Search queries go to Open-Meteo Geocoding, and map tile requests go to OpenStreetMap; neither is an app backend.
 
 A future server-side notification system may require storing a monitored coordinate or reduced-precision location.
 

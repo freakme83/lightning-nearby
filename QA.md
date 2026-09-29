@@ -5,6 +5,13 @@
 - [ ] Deny geolocation: a clear message appears; retry remains available.
 - [ ] Retry location after changing browser/device permission.
 - [ ] Update location: the newly chosen location replaces the single saved location.
+- [ ] Search place: submit Ankara, Berlin, and Miami Beach; verify results show available administrative context and do not save before confirmation.
+- [ ] Search selection: choose a result, verify the map opens centered with one marker, then confirm and verify the forecast uses the saved coordinates.
+- [ ] Map selection: pan/zoom and tap a point; verify only the candidate marker changes until **Use this location** is tapped.
+- [ ] Cancel the picker after search/map changes; verify the previous saved location and forecast remain unchanged.
+- [ ] Reload after confirming a searched or map-selected point; verify coordinates and optional display label persist.
+- [ ] Mobile Safari and Chrome mobile: verify map pan, pinch zoom, tap-to-place, and confirmation.
+- [ ] Chrome desktop: verify map drag/zoom/click, place search, and saved-location reload.
 - [ ] Forecast fetch failure: block `api.open-meteo.com`; verify an explicit unavailable state and no stale forecast.
 - [ ] Mobile viewport: check 320 px and 390 px widths, touch targets, timeline scrolling, and details.
 - [ ] Midnight/time zone: use coordinates in another time zone and verify local date changes.
