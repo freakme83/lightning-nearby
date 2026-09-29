@@ -26,6 +26,16 @@
 - [ ] Reload with saved location: forecast reloads without another permission prompt.
 - [ ] No network: cached shell may reopen, but the forecast must report unavailable rather than show old values.
 
+## Timezone fallback
+
+- [ ] Ankara and Barcelona: normal provider civil IANA timezones remain unchanged; displayed hours and date labels match them.
+- [ ] Mainland Florida: provider `America/New_York` remains unchanged, and no timezone lookup request is made.
+- [ ] Offshore Gulf point near 26.77 N, 83.86 W: if Open-Meteo returns `Etc/GMT…`, verify the lookup is attempted once and a valid civil IANA result updates only displayed local times/labels; Unix forecast timestamps remain unchanged.
+- [ ] Search and confirm a place with an Open-Meteo timezone; reload and verify the saved IANA metadata is used if the forecast later returns a generic fixed offset.
+- [ ] Block or fail the timezone lookup, or return malformed/fixed-offset data: forecast remains usable and keeps the provider timezone.
+- [ ] Switch confirmed locations while a timezone request is pending; verify a late response from the old location cannot update the new location's labels.
+- [ ] Check both sides of a DST transition in a civil zone; timeline timestamps remain chronological and displayed time follows the zone's DST rules.
+
 ## Milestone 1.5 forecast signal
 
 - [ ] Ankara, Türkiye; Barcelona, Spain; Berlin, Germany; Miami Beach, USA: confirm the timeline and selected-hour details load for ICON-EU EPS or ICON global EPS as appropriate, without exposing a member fraction as probability.

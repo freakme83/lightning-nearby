@@ -32,6 +32,7 @@ export function parsePlaceResults(payload: unknown): PlaceResult[] {
       latitude: row.latitude as number,
       longitude: row.longitude as number,
       label: row.name.trim(),
+      ...(typeof row.timezone === "string" && row.timezone.trim() ? { timezone: row.timezone.trim() } : {}),
       ...(typeof row.country === "string" && row.country.trim() ? { country: row.country.trim() } : {}),
       ...(typeof row.admin1 === "string" && row.admin1.trim() ? { admin1: row.admin1.trim() } : {}),
       source: "search",
