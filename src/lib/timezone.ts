@@ -27,10 +27,50 @@ interface GeoTimeZoneResponse {
   iana_timezone?: unknown;
 }
 
+// GeoTimeZone resolves the zone containing a coordinate; it does not promise
+// a nearest-land result. A 150 km cardinal ring reaches nearby coastal land
+// for the Gulf regression point while remaining a small, bounded search.
+const NEARBY_PROBE_RADIUS_KM = 150;
+const NEARBY_PROBE_DIRECTIONS = ["north", "east", "south", "west"] as const;
+
+function nearbyProbeCoordinates(latitude: number, longitude: number): Array<[number, number]> {
+  const latitudeDelta = NEARBY_PROBE_RADIUS_KM / 111.32;
+  const longitudeDelta = latitudeDelta / Math.max(Math.cos(latitude * Math.PI / 180), 0.01);
+  const wrapLongitude = (value: number) => ((value + 540) % 360) - 180;
+  return NEARBY_PROBE_DIRECTIONS.map((direction) => {
+    const probeLatitude = latitude + (direction === "north" ? latitudeDelta : direction === "south" ? -latitudeDelta : 0);
+    const probeLongitude = longitude + (direction === "east" ? longitudeDelta : direction === "west" ? -longitudeDelta : 0);
+    return [Math.max(-90, Math.min(90, probeLatitude)), wrapLongitude(probeLongitude)];
+  });
+}
+
+async function lookupCivilTimezone(
+  latitude: number,
+  longitude: number,
+  signal: AbortSignal | undefined,
+  fetcher: typeof fetch,
+): Promise<{ timezone: string | null; failed: boolean }> {
+  if (signal?.aborted) return { timezone: null, failed: true };
+  const url = new URL("https://api.geotimezone.com/public/timezone");
+  url.searchParams.set("latitude", String(latitude));
+  url.searchParams.set("longitude", String(longitude));
+  try {
+    const response = await fetcher(url, { signal, mode: "cors" });
+    if (!response.ok || signal?.aborted) return { timezone: null, failed: true };
+    const payload: unknown = await response.json();
+    if (signal?.aborted) return { timezone: null, failed: true };
+    if (typeof payload !== "object" || payload === null) return { timezone: null, failed: false };
+    const timezone = (payload as GeoTimeZoneResponse).iana_timezone;
+    return { timezone: isCivilIanaTimezone(timezone) ? timezone : null, failed: false };
+  } catch {
+    return { timezone: null, failed: true };
+  }
+}
+
 /**
  * Preserve a provider civil timezone. Resolve generic Etc/GMT offsets only,
- * preferring a timezone attached to the selected place before a coordinate lookup.
- * The lookup is best-effort; failure leaves the provider timezone untouched.
+ * preferring selected-place metadata, then exact coordinates, then four
+ * bounded nearby probes. Failure leaves the provider timezone untouched.
  */
 export async function resolveDisplayTimezone(
   latitude: number,
@@ -44,17 +84,16 @@ export async function resolveDisplayTimezone(
   if (isCivilIanaTimezone(placeTimezone)) return placeTimezone;
   if (signal?.aborted) return providerTimezone;
 
-  const url = new URL("https://api.geotimezone.com/public/timezone");
-  url.searchParams.set("latitude", String(latitude));
-  url.searchParams.set("longitude", String(longitude));
-  try {
-    const response = await fetcher(url, { signal, mode: "cors" });
-    if (!response.ok) return providerTimezone;
-    const payload: unknown = await response.json();
-    if (signal?.aborted || typeof payload !== "object" || payload === null) return providerTimezone;
-    const timezone = (payload as GeoTimeZoneResponse).iana_timezone;
-    return isCivilIanaTimezone(timezone) ? timezone : providerTimezone;
-  } catch {
-    return providerTimezone;
+  const exactLookup = await lookupCivilTimezone(latitude, longitude, signal, fetcher);
+  if (exactLookup.timezone) return exactLookup.timezone;
+  if (exactLookup.failed) return providerTimezone;
+  if (signal?.aborted) return providerTimezone;
+
+  for (const [probeLatitude, probeLongitude] of nearbyProbeCoordinates(latitude, longitude)) {
+    const nearbyLookup = await lookupCivilTimezone(probeLatitude, probeLongitude, signal, fetcher);
+    if (nearbyLookup.timezone) return nearbyLookup.timezone;
+    if (nearbyLookup.failed) return providerTimezone;
+    if (signal?.aborted) return providerTimezone;
   }
+  return providerTimezone;
 }
