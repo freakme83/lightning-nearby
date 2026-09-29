@@ -3,6 +3,8 @@ export type LocationSource = "geolocation" | "search" | "map";
 export interface LocationSelection {
   latitude: number;
   longitude: number;
+  /** IANA timezone from the selected geocoding result, when available. */
+  timezone?: string;
   label?: string;
   country?: string;
   admin1?: string;
@@ -46,6 +48,7 @@ export function makeMonitoredLocation(selection: LocationSelection, savedAt = Da
   return {
     ...reduceLocationPrecision(selection.latitude, selection.longitude),
     savedAt,
+    ...(optionalString(selection.timezone) ? { timezone: optionalString(selection.timezone) } : {}),
     ...(optionalString(selection.label) ? { label: optionalString(selection.label) } : {}),
     ...(optionalString(selection.country) ? { country: optionalString(selection.country) } : {}),
     ...(optionalString(selection.admin1) ? { admin1: optionalString(selection.admin1) } : {}),
@@ -70,6 +73,7 @@ export function parseMonitoredLocation(value: unknown): MonitoredLocation | null
     latitude: record.latitude as number,
     longitude: record.longitude as number,
     savedAt: record.savedAt as number,
+    ...(optionalString(record.timezone) ? { timezone: optionalString(record.timezone) } : {}),
     ...(optionalString(record.label) ? { label: optionalString(record.label) } : {}),
     ...(optionalString(record.country) ? { country: optionalString(record.country) } : {}),
     ...(optionalString(record.admin1) ? { admin1: optionalString(record.admin1) } : {}),
