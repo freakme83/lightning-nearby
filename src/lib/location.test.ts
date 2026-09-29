@@ -135,10 +135,15 @@ test("reverse geocoding failure is optional and requests retain the authoritativ
   assert.deepEqual(saved, { latitude: 41.27, longitude: 36.36, savedAt: 99, source: "map" });
 });
 
-test("resolved map metadata persists while selected coordinates remain authoritative", () => {
+test("successfully resolved map metadata persists while selected coordinates remain authoritative", async () => {
+  const metadata = await reverseGeocodeLocation(41.27004, 36.35996, undefined, async () => new Response(JSON.stringify({
+    address: { suburb: "Atakum", state: "Samsun", country: "Türkiye" },
+  }), { status: 200, headers: { "content-type": "application/json" } }));
+  assert.deepEqual(metadata, { label: "Atakum", admin1: "Samsun", country: "Türkiye" });
+
   const storage = memoryStorage();
   const saved = saveMonitoredLocation(storage, {
-    latitude: 41.27004, longitude: 36.35996, source: "map", label: "Atakum", admin1: "Samsun", country: "Türkiye",
+    latitude: 41.27004, longitude: 36.35996, source: "map", ...metadata,
   }, 100);
   assert.equal(saved?.latitude, 41.27);
   assert.equal(saved?.longitude, 36.36);
