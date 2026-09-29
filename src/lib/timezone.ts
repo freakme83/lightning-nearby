@@ -23,14 +23,9 @@ function isCivilIanaTimezone(timezone: unknown): timezone is string {
   }
 }
 
-interface GeoTimeZoneResponse {
-  iana_timezone?: unknown;
-}
-
-// GeoTimeZone resolves the zone containing a coordinate; it does not promise
-// a nearest-land result. A 150 km cardinal ring reaches nearby coastal land
-// for the Gulf regression point while remaining a small, bounded search.
-const NEARBY_PROBE_RADIUS_KM = 150;
+// Four sparse probes at the edge of a 200 km radius. The Gulf acceptance point
+// is roughly this far from Florida land; no country or bearing is presumed.
+const NEARBY_PROBE_RADIUS_KM = 200;
 const NEARBY_PROBE_DIRECTIONS = ["north", "east", "south", "west"] as const;
 
 function nearbyProbeCoordinates(latitude: number, longitude: number): Array<[number, number]> {
@@ -44,33 +39,16 @@ function nearbyProbeCoordinates(latitude: number, longitude: number): Array<[num
   });
 }
 
-async function lookupCivilTimezone(
-  latitude: number,
-  longitude: number,
-  signal: AbortSignal | undefined,
-  fetcher: typeof fetch,
-): Promise<{ timezone: string | null; failed: boolean }> {
-  if (signal?.aborted) return { timezone: null, failed: true };
-  const url = new URL("https://api.geotimezone.com/public/timezone");
-  url.searchParams.set("latitude", String(latitude));
-  url.searchParams.set("longitude", String(longitude));
-  try {
-    const response = await fetcher(url, { signal, mode: "cors" });
-    if (!response.ok || signal?.aborted) return { timezone: null, failed: true };
-    const payload: unknown = await response.json();
-    if (signal?.aborted) return { timezone: null, failed: true };
-    if (typeof payload !== "object" || payload === null) return { timezone: null, failed: false };
-    const timezone = (payload as GeoTimeZoneResponse).iana_timezone;
-    return { timezone: isCivilIanaTimezone(timezone) ? timezone : null, failed: false };
-  } catch {
-    return { timezone: null, failed: true };
-  }
+interface OpenMeteoTimezoneResult {
+  timezone?: unknown;
+  error?: unknown;
 }
 
 /**
- * Preserve a provider civil timezone. Resolve generic Etc/GMT offsets only,
- * preferring selected-place metadata, then exact coordinates, then four
- * bounded nearby probes. Failure leaves the provider timezone untouched.
+ * Keep the provider's civil zone and use selected-place metadata when available.
+ * For a generic offshore zone, ask Open-Meteo's existing forecast host to resolve
+ * four bounded nearby points with timezone=auto. This is best-effort and affects
+ * display formatting only; failure leaves the provider timezone unchanged.
  */
 export async function resolveDisplayTimezone(
   latitude: number,
@@ -84,16 +62,29 @@ export async function resolveDisplayTimezone(
   if (isCivilIanaTimezone(placeTimezone)) return placeTimezone;
   if (signal?.aborted) return providerTimezone;
 
-  const exactLookup = await lookupCivilTimezone(latitude, longitude, signal, fetcher);
-  if (exactLookup.timezone) return exactLookup.timezone;
-  if (exactLookup.failed) return providerTimezone;
-  if (signal?.aborted) return providerTimezone;
+  const points = nearbyProbeCoordinates(latitude, longitude);
+  const url = new URL("https://api.open-meteo.com/v1/forecast");
+  url.searchParams.set("latitude", points.map(([lat]) => String(lat)).join(","));
+  url.searchParams.set("longitude", points.map(([, lon]) => String(lon)).join(","));
+  url.searchParams.set("current", "temperature_2m");
+  url.searchParams.set("timezone", points.map(() => "auto").join(","));
 
-  for (const [probeLatitude, probeLongitude] of nearbyProbeCoordinates(latitude, longitude)) {
-    const nearbyLookup = await lookupCivilTimezone(probeLatitude, probeLongitude, signal, fetcher);
-    if (nearbyLookup.timezone) return nearbyLookup.timezone;
-    if (nearbyLookup.failed) return providerTimezone;
-    if (signal?.aborted) return providerTimezone;
+  try {
+    const response = await fetcher(url, { signal, cache: "no-store" });
+    if (!response.ok || signal?.aborted) return providerTimezone;
+    const payload: unknown = await response.json();
+    if (signal?.aborted || !Array.isArray(payload)) return providerTimezone;
+
+    // The API returns one response object per requested coordinate, in order.
+    // These cardinal samples are equidistant; direction order breaks ties
+    // deterministically and only a valid civil IANA result is accepted.
+    for (const result of payload) {
+      if (typeof result !== "object" || result === null || (result as OpenMeteoTimezoneResult).error) continue;
+      const timezone = (result as OpenMeteoTimezoneResult).timezone;
+      if (isCivilIanaTimezone(timezone)) return timezone;
+    }
+  } catch {
+    // Optional display lookup must never make an otherwise usable forecast fail.
   }
   return providerTimezone;
 }

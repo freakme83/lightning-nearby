@@ -30,14 +30,14 @@
 
 - [ ] Ankara and Barcelona: normal provider civil IANA timezones remain unchanged; displayed hours and date labels match them.
 - [ ] Mainland Florida: provider `America/New_York` remains unchanged, and no timezone lookup request is made.
-- [ ] Offshore Gulf point near 26.77 N, 83.86 W: if Open-Meteo returns `Etc/GMT…`, verify exact lookup plus bounded nearby probes resolve a civil IANA zone, and update only displayed local times/labels; Unix forecast timestamps remain unchanged.
+- [ ] Offshore Gulf point near 26.77 N, 83.86 W: if Open-Meteo returns `Etc/GMT…`, verify one batched Open-Meteo timezone lookup for four nearby points resolves a civil IANA zone, and update only displayed local times/labels; Unix forecast timestamps remain unchanged.
 - [ ] Vandenberg-area offshore point: confirm a nearby civil zone is used when one of the bounded probes resolves it.
 - [ ] Far-open-ocean point near 36.95 N, 130.87 W: confirm it may retain the provider's fixed offset when all bounded probes remain non-civil.
 - [ ] Search and confirm a place with an Open-Meteo timezone; reload and verify the saved IANA metadata is used if the forecast later returns a generic fixed offset.
-- [ ] Block or fail the timezone lookup, or return malformed/fixed-offset data: forecast remains usable and keeps the provider timezone.
+- [ ] Block or fail the auxiliary Open-Meteo timezone lookup, or return malformed/fixed-offset data: forecast remains usable and keeps the provider timezone.
 - [ ] Switch confirmed locations while a timezone request is pending; verify a late response from the old location cannot update the new location's labels.
 - [ ] Check both sides of a DST transition in a civil zone; timeline timestamps remain chronological and displayed time follows the zone's DST rules.
-- [ ] Florida follow-up acceptance: test 26.77 N, 83.86 W in the live preview and verify the displayed zone is civil (expected nearby Florida zone), local time is sensible, and forecast epoch hours are unchanged. This live check remains pending until verified in a browser with GeoTimeZone access.
+- [ ] Florida follow-up acceptance: test 26.77 N, 83.86 W in the live preview and verify the displayed zone is civil (expected nearby Florida zone), local time is sensible, and forecast epoch hours are unchanged. This live check remains pending until verified in a browser.
 
 ## Milestone 1.5 forecast signal
 
