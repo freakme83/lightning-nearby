@@ -2,12 +2,7 @@
 
 A privacy-conscious progressive web app for local lightning awareness and short-term thunderstorm risk.
 
-The app combines:
-
-- user-selected location data
-- 24-hour thunderstorm / lightning risk forecasts
-- future live lightning detection data
-- browser notifications
+Milestone 1 combines a user-approved location, a local 24-hour thunderstorm outlook, and a qualitative hourly risk display. Live lightning detection and notifications are future milestones.
 
 The project is intended for informational and hobby use only. It is not an official severe-weather warning system.
 
@@ -68,23 +63,34 @@ The first version should remain deliberately small.
 
 ## Forecast Data
 
-The initial forecast provider will be **Open-Meteo**.
+The initial forecast provider is **Open-Meteo’s generic Weather Forecast API**, requested directly by the browser at `https://api.open-meteo.com/v1/forecast` (see [Open-Meteo](https://open-meteo.com/) for provider information). It uses Open-Meteo’s Best Match model selection for global coverage, `timezone=auto`, `timeformat=unixtime`, and a 48-hour hourly response so the app can select the next 24 chronological hourly buckets in the returned location timezone. No API key or backend is used.
 
-The app should evaluate hourly thunderstorm risk using the most suitable available forecast fields, potentially including:
+Milestone 1 requests these hourly fields:
 
-- thunderstorm probability
-- lightning potential
-- lightning density
-- precipitation probability
-- CAPE
-- lifted index
-- convective inhibition
+- `weather_code` (WMO code)
+- `precipitation_probability` (upstream precipitation probability)
+- `cape` (J/kg)
+- `convective_inhibition` (J/kg)
+- `thunderstorm_probability` (used only if a selected model provides a value)
 
-Direct thunderstorm / lightning forecast parameters should be preferred over deriving risk from CAPE alone.
+Open-Meteo defines precipitation probability for the preceding hour; the classifier compares it with instability and other values at the matching hourly timestamp. The current Open-Meteo API schema also lists direct lightning fields, but model and geographic availability varies. A live request for coordinates near Ankara returned null values for `thunderstorm_probability`, `lightning_potential`, and `lightning_density`; those fields are not treated as globally available. Direct thunderstorm weather codes (95, 96, 99) are the strongest signal when supplied. Open-Meteo documents thunderstorm probability as model-limited (for example, its GFS documentation lists it for NBM only). The UI displays provider values separately from the app’s derived qualitative risk.
 
-The weather-provider implementation should be isolated from the UI so that other providers can be added later.
+The risk classifier is intentionally simple and conservative:
+
+- WMO thunderstorm codes 95, 96, or 99 → **High**.
+- Provider-supplied `thunderstorm_probability` of 20–49 → **Elevated**, 50 or more → **High**. These are app classification cutoffs; the underlying percentage remains an upstream value.
+- Otherwise, CAPE of at least 700 J/kg together with precipitation probability of at least 40% → **Elevated**.
+- Otherwise → **Low**. Precipitation or CAPE alone never raises the level.
+
+The thresholds are qualitative product heuristics, not a calibrated risk probability or official warning. They are grouped in `src/lib/weather.ts` for easy replacement. Missing optional values are ignored. Weather-provider parsing, normalized forecast data, time selection, and the classifier are separate from presentation logic.
 
 ---
+
+## Milestone 1 Implementation
+
+The app is a small Next.js / TypeScript PWA with a native web manifest and service worker. The service worker may cache the app shell for reopening offline, but does not cache weather responses. With no network, the app reports that current forecast data is unavailable. A compact node test suite covers classification, missing fields, midnight selection, and highest-risk windows; manual device checks are listed in [QA.md](./QA.md).
+
+Known limits: Open-Meteo provides gridded model forecasts rather than street-level observations. Thunderstorm-related fields vary by model and region. The qualitative level is a simple aid for reading forecast ingredients, not a probability, detection feed, or safety alert. The selected location is a rounded coordinate only; no place name is reverse-geocoded.
 
 ## Live Lightning Data
 
@@ -129,13 +135,13 @@ Notifications should instead use storm/activity states and cooldown periods.
 
 Privacy should be a core design principle.
 
-For the initial version:
+For Milestone 1:
 
-- location permission is optional
-- users may select their current location
-- one monitored location is stored locally
-- continuous background tracking is not required
-- precise location should not be sent or stored unnecessarily
+- location permission is optional and requested only after a tap
+- the current location can be saved as the one monitored location
+- rounded coordinates (three decimal places) are stored in local browser storage
+- the same rounded coordinates are sent to Open-Meteo for the forecast
+- no location or forecast is sent to an app backend; forecast responses are not cached
 
 A future server-side notification system may require storing a monitored coordinate or reduced-precision location.
 
