@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
 import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
-import { describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
-import { calculateStrongestSignalWindow, fetchOutlook, type Outlook, type OutlookHour, type SignalWindow } from "@/lib/outlook";
+import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
+import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import LocationMap from "./location-map";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
@@ -13,23 +13,6 @@ function localTime(epoch: number, timezone: string) { return new Intl.DateTimeFo
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
 function dayLabel(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, weekday: "short", day: "numeric", month: "short" }).format(epoch * 1000); }
 function period(start: number, end: number, timezone: string) { return `${localTime(start, timezone)}–${localTime(end, timezone)}`; }
-function summaryFor(window: SignalWindow | null, hours: OutlookHour[], timezone: string) {
-  if (!window) {
-    if (hours.some((hour) => isThunderstormCode(hour.weatherCode))) return "A deterministic thunderstorm code appears in the forecast; available provider values disagree. Review the hourly details.";
-    if (hours.some((hour) => hour.signal.kind === "ensemble-support")) return "No available ensemble members forecast a thunderstorm code in the hours with data.";
-    if (hours.some((hour) => hour.signal.kind === "provider-probability")) return "Provider thunderstorm probability is 0% in the hours with data.";
-    return "No meaningful thunderstorm signal in the available forecast hours.";
-  }
-  const range = period(window.start, window.end, timezone);
-  if (window.signal.kind === "provider-probability") return `Provider thunderstorm probability reaches ${Math.round(window.signal.percent)}% around ${range}.`;
-  if (window.signal.kind === "ensemble-support") {
-    const { supportingMembers, availableMembers, model } = window.signal.support;
-    return `${supportingMembers} of ${availableMembers} ${model} members forecast a thunderstorm code around ${range}.`;
-  }
-  return window.signal.risk === "high"
-    ? `A thunderstorm signal appears in the forecast. The strongest period is ${range}.`
-    : `Instability and precipitation overlap in the forecast. Thunderstorm risk is elevated around ${range}.`;
-}
 function locationErrorMessage(code?: number) {
   if (!navigator.geolocation) return "Location isn’t available in this browser. Try again in a browser that supports location.";
   if (code === 1) return "Location access was declined. Allow it in your browser or device settings, then try again.";
@@ -63,6 +46,8 @@ export default function Home() {
   const searchRequestRef = useRef(0);
   const confirmRequestRef = useRef(0);
   const reverseControllerRef = useRef<AbortController | null>(null);
+  const forecastRequestRef = useRef(0);
+  const currentOutlookRef = useRef<Outlook | null>(null);
 
   useEffect(() => {
     try {
@@ -83,20 +68,39 @@ export default function Home() {
   useEffect(() => {
     if (!storageReady || !location) return;
     const controller = new AbortController();
+    const requestId = ++forecastRequestRef.current;
+    const isCurrentRequest = () => isCurrentForecastRequest(requestId, forecastRequestRef.current, controller.signal);
     // Clear prior results as this effect synchronizes to a different saved location.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true); setForecastError(false); setForecast(null); setHours([]); setSelectedTime(null);
-    void fetchOutlook(location.latitude, location.longitude, controller.signal)
-      .then((result) => {
-        const nextHours = selectNext24Hours(result.hours);
-        if (!nextHours.some((hour) => hour.signal.kind !== "unavailable")) throw new Error("forecast-insufficient");
-        setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null);
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setForecastError(true);
-      })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    currentOutlookRef.current = null;
+    const requests = fetchOutlook(location.latitude, location.longitude, controller.signal);
+    let pendingEnsemble: Awaited<typeof requests.ensemble> = null;
+    let primaryReady = false;
+    void requests.primary.then((primary) => {
+      if (!isCurrentRequest()) return;
+      primaryReady = true;
+      const result = pendingEnsemble ? mergeEnsembleEvidence(primary, pendingEnsemble) : primary;
+      const nextHours = selectNext24Hours(result.hours);
+      if (!nextHours.some((hour) => hour.signal.kind === "qualitative")) {
+        setForecastError(true); setLoading(false); return;
+      }
+      currentOutlookRef.current = result;
+      setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null); setLoading(false);
+    }).catch(() => {
+      if (isCurrentRequest()) { setForecastError(true); setLoading(false); }
+    });
+    void requests.ensemble.then((ensemble) => {
+      if (!isCurrentRequest() || !ensemble) return;
+      if (!primaryReady) { pendingEnsemble = ensemble; return; }
+      const current = currentOutlookRef.current;
+      if (!current) return;
+      const result = mergeEnsembleEvidence(current, ensemble);
+      const nextHours = selectNext24Hours(result.hours);
+      currentOutlookRef.current = result;
+      setForecast(result); setHours(nextHours);
+      setSelectedTime((selected) => retainSelectedHour(selected, nextHours));
+    });
     return () => controller.abort();
   }, [location, storageReady]);
 
@@ -259,9 +263,9 @@ export default function Home() {
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
       {forecast && !loading && <>
-        <div className={`risk-overview ${highestWindow?.signal.kind === "derived" ? `risk-${highestWindow.signal.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow?.signal.kind === "ensemble-support" ? "Model support" : highestWindow?.signal.kind === "provider-probability" ? "Provider probability" : highestWindow?.signal.kind === "derived" ? <>{RISK_LABEL[highestWindow.signal.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
-          <p className="summary">{summaryFor(highestWindow, hours, forecast.timezone)}</p>
+        <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
+          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
+          <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
           {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
         </div>
         <section className="timeline-section" aria-labelledby="timeline-title">
@@ -274,8 +278,8 @@ export default function Home() {
               const isSelected = selectedTime === hour.time;
               return <li key={hour.time} className={`hour-slot ${isSelected ? "is-selected" : ""}`}>
                 {showDate && <span className="day-label">{dayLabel(hour.time, forecast.timezone)}</span>}
-                <button type="button" className={`hour-button ${hour.risk ? `risk-${hour.risk}` : ""}`} aria-pressed={isSelected} aria-label={`${localTime(hour.time, forecast.timezone)}, ${hour.risk ? `${RISK_LABEL[hour.risk]} derived signal` : "derived level unavailable"}${hour.signal.kind === "ensemble-support" ? `, ${hour.signal.support.supportingMembers} of ${hour.signal.support.availableMembers} ensemble members` : ""}`} onClick={() => setSelectedTime(hour.time)}>
-                  <span className="hour-time">{localTime(hour.time, forecast.timezone).slice(0, 2)}</span><span className="risk-bar" aria-hidden="true"><span /></span><span className="hour-risk">{hour.risk ? RISK_LABEL[hour.risk] : "—"}</span>
+                <button type="button" className={`hour-button ${hour.signal.kind === "qualitative" ? `risk-${hour.signal.risk}` : ""}`} aria-pressed={isSelected} aria-label={`${localTime(hour.time, forecast.timezone)}, ${hour.signal.kind === "qualitative" ? `${RISK_LABEL[hour.signal.risk]} thunderstorm signal` : "signal unavailable"}`} onClick={() => setSelectedTime(hour.time)}>
+                  <span className="hour-time">{localTime(hour.time, forecast.timezone).slice(0, 2)}</span><span className="risk-bar" aria-hidden="true"><span /></span><span className="hour-risk">{hour.signal.kind === "qualitative" ? RISK_LABEL[hour.signal.risk] : "—"}</span>
                 </button>
               </li>;
             })}
@@ -283,15 +287,15 @@ export default function Home() {
           <div className="legend" aria-label="Risk level legend"><span><i className="legend-dot low" />Low</span><span><i className="legend-dot elevated" />Elevated</span><span><i className="legend-dot high" />High</span><span className="derived-label">Derived outlook</span></div>
         </section>
         {selected && <section className="details-section" aria-live="polite" aria-labelledby="details-title">
-          <div className="details-top"><div><p className="eyebrow">SELECTED HOUR</p><h2 id="details-title">{dayLabel(selected.time, forecast.timezone)} · {localTime(selected.time, forecast.timezone)}</h2></div>{selected.risk && selected.signal.kind !== "ensemble-support" && <span className={`small-risk risk-${selected.risk}`}>{RISK_LABEL[selected.risk]}</span>}</div>
+          <div className="details-top"><div><p className="eyebrow">SELECTED HOUR</p><h2 id="details-title">{dayLabel(selected.time, forecast.timezone)} · {localTime(selected.time, forecast.timezone)}</h2></div>{selected.signal.kind === "qualitative" && <span className={`small-risk risk-${selected.signal.risk}`}>{RISK_LABEL[selected.signal.risk]}</span>}</div>
           <p className="details-note">Open‑Meteo forecast values</p>
           <dl className="forecast-values">
             {selected.weatherCode != null && <div><dt>Weather</dt><dd>{describeWeatherCode(selected.weatherCode)}</dd></div>}
-            {selected.signal.kind === "provider-probability" && <div><dt>Thunderstorm probability</dt><dd>{Math.round(selected.signal.percent)}% · provider value</dd></div>}
-            {selected.signal.kind === "ensemble-support" && <div><dt>Ensemble support</dt><dd>{selected.signal.support.supportingMembers} of {selected.signal.support.availableMembers} members · {selected.signal.support.model}</dd></div>}
+            {selected.evidence.providerProbability != null && <div><dt>Thunderstorm probability</dt><dd>{Math.round(selected.evidence.providerProbability)}% · provider value</dd></div>}
+            {selected.evidence.ensemble && selected.evidence.ensemble.supportingMembers > 0 && <div><dt>Nearby model support</dt><dd>Present</dd></div>}
             {selected.precipitationProbability != null && <div><dt>Precipitation chance</dt><dd>{Math.round(selected.precipitationProbability)}%</dd></div>}
           </dl>
-          <p className="classification-note">{selected.signal.kind === "ensemble-support" ? "Member support counts model forecasts of thunderstorm codes. It is not a calibrated probability." : selected.signal.kind === "provider-probability" ? "The percentage comes from the forecast provider. Low / Elevated / High is our qualitative interpretation." : selected.signal.kind === "derived" ? "Low / Elevated / High is derived from forecast fields, not a probability or official warning." : "There is not enough forecast data to assess this hour."}</p>
+          <p className="classification-note">{selected.signal.kind === "unavailable" ? "There is not enough forecast data to assess this hour." : isThunderstormCode(selected.weatherCode) && selected.evidence.providerProbability != null && selected.evidence.providerProbability < RISK_THRESHOLDS.directThunderstormProbabilityElevated ? "The weather forecast indicates a thunderstorm here, while the provider's separate probability is low. Forecast indicators can differ." : "Low / Elevated / High is a qualitative forecast signal, not a probability or official warning. Only the provider value above, when shown, is a thunderstorm probability."}</p>
         </section>}
         <div className="update-line">Forecast updated {new Intl.DateTimeFormat("en-GB", { timeZone: forecast.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(forecast.fetchedAt)} local time</div>
       </>}
