@@ -19,20 +19,27 @@ test("generic Etc/GMT fixed offsets are detected", () => {
   assert.equal(isGenericFixedOffsetTimezone("America/New_York"), false);
 });
 
-test("generic offshore timezone resolves to a civil timezone when coordinate lookup succeeds", async () => {
+test("generic timezone lookup batches four nearby points through Open-Meteo", async () => {
   let requestedUrl = "";
-  let requestMode = "";
-  const timezone = await resolveDisplayTimezone(26.77, -83.86, "Etc/GMT+6", undefined, undefined, async (input, init) => {
+  let requestCount = 0;
+  const timezone = await resolveDisplayTimezone(26.77, -83.86, "Etc/GMT+6", undefined, undefined, async (input) => {
+    requestCount += 1;
     requestedUrl = String(input);
-    requestMode = init?.mode ?? "";
-    return new Response(JSON.stringify({ iana_timezone: "America/New_York" }), { status: 200 });
+    return new Response(JSON.stringify([
+      { timezone: "Etc/GMT+6" },
+      { timezone: "America/New_York" },
+      { timezone: "Etc/GMT+6" },
+      { timezone: "Etc/GMT+6" },
+    ]), { status: 200 });
   });
   const url = new URL(requestedUrl);
-  assert.equal(url.origin, "https://api.geotimezone.com");
-  assert.equal(url.pathname, "/public/timezone");
-  assert.equal(url.searchParams.get("latitude"), "26.77");
-  assert.equal(url.searchParams.get("longitude"), "-83.86");
-  assert.equal(requestMode, "cors");
+  assert.equal(url.origin, "https://api.open-meteo.com");
+  assert.equal(url.pathname, "/v1/forecast");
+  assert.equal(url.searchParams.get("latitude")?.split(",").length, 4);
+  assert.equal(url.searchParams.get("longitude")?.split(",").length, 4);
+  assert.equal(url.searchParams.get("current"), "temperature_2m");
+  assert.equal(url.searchParams.get("timezone"), "auto,auto,auto,auto");
+  assert.equal(requestCount, 1);
   assert.equal(timezone, "America/New_York");
 });
 
@@ -40,7 +47,7 @@ test("selected place timezone is preferred and invalid or nautical lookup values
   let calls = 0;
   const fetcher: typeof fetch = async () => {
     calls += 1;
-    return new Response(JSON.stringify({ iana_timezone: "Etc/GMT+6" }), { status: 200 });
+    return new Response(JSON.stringify(Array.from({ length: 4 }, () => ({ timezone: "Etc/GMT+6" }))), { status: 200 });
   };
   assert.equal(await resolveDisplayTimezone(39.93, 32.86, "Etc/GMT+3", "Europe/Istanbul", undefined, fetcher), "Europe/Istanbul");
   assert.equal(calls, 0);
@@ -48,13 +55,43 @@ test("selected place timezone is preferred and invalid or nautical lookup values
   assert.equal(calls, 1);
 });
 
+test("Florida offshore regression resolves a nearby point to America/New_York", async () => {
+  let requestedCoordinates: Array<[number, number]> = [];
+  const timezone = await resolveDisplayTimezone(26.77, -83.86, "Etc/GMT+6", undefined, undefined, async (input) => {
+    const url = new URL(String(input));
+    requestedCoordinates = (url.searchParams.get("latitude") ?? "").split(",").map(Number)
+      .map((latitude, index) => [latitude, Number((url.searchParams.get("longitude") ?? "").split(",")[index])] as [number, number]);
+    const responses = Array.from({ length: 4 }, () => ({ timezone: "Etc/GMT+6" }));
+    const [eastLatitude, eastLongitude] = requestedCoordinates[1];
+    assert.ok(Math.abs(eastLatitude - 26.77) < 0.01);
+    assert.ok(eastLongitude > -82.0 && eastLongitude < -81.7);
+    responses[1] = { timezone: "America/New_York" };
+    return new Response(JSON.stringify(responses), { status: 200 });
+  });
+  assert.equal(timezone, "America/New_York");
+  assert.equal(requestedCoordinates.length, 4);
+});
+
+test("far-ocean probes can remain on the provider fixed offset", async () => {
+  let calls = 0;
+  const timezone = await resolveDisplayTimezone(36.95, -130.87, "Etc/GMT", undefined, undefined, async () => {
+    calls += 1;
+    return new Response(JSON.stringify(Array.from({ length: 4 }, () => ({ timezone: "Etc/GMT" }))), { status: 200 });
+  });
+  assert.equal(timezone, "Etc/GMT");
+  assert.equal(calls, 1);
+});
+
 test("lookup failure preserves the forecast provider timezone", async () => {
+  let calls = 0;
   const timezone = await resolveDisplayTimezone(26.77, -83.86, "Etc/GMT+6", undefined, undefined, async () => {
+    calls += 1;
     throw new Error("network-down");
   });
   assert.equal(timezone, "Etc/GMT+6");
+  assert.equal(calls, 1);
   const malformed = await resolveDisplayTimezone(26.77, -83.86, "Etc/GMT+6", undefined, undefined, async () =>
-    new Response(JSON.stringify({ iana_timezone: "not/a-zone" }), { status: 200 }));
+    new Response(JSON.stringify([{ timezone: "not/a-zone" }]), { status: 200 }));
   assert.equal(malformed, "Etc/GMT+6");
 });
 
