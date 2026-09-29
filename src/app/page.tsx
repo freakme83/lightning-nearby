@@ -223,6 +223,7 @@ export default function Home() {
       <p className="picker-note">Map tiles and place labels © OpenStreetMap contributors.</p>
     </>}
     {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{formatCoordinates(candidate.latitude, candidate.longitude)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? "Finding place…" : "Use this location"}</button></div>}
+    {candidate?.source === "map" && <p className="picker-note">Confirming this point may send its coordinates to OpenStreetMap Nominatim to find a place label.</p>}
   </section>;
 
   if (!storageReady) return <main className="page-shell"><div className="loading-state" role="status">Opening your local forecast…</div></main>;
