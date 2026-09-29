@@ -21,14 +21,12 @@ export interface Outlook {
   ensembleFetchedAt?: number;
 }
 
-/** Explicit thunderstorm code remains High; positive local member support can only raise Low to Elevated. */
+/** Only provider and deterministic inputs determine the qualitative level. Ensemble evidence stays secondary. */
 export function deriveSignal(evidence: ThunderstormEvidence): HourSignal {
   if (isThunderstormCode(evidence.deterministic?.weatherCode)) return { kind: "qualitative", risk: "high" };
   const probability = evidence.providerProbability;
   const validProbability = probability != null && Number.isFinite(probability) && probability >= 0 && probability <= 100;
-  let risk = evidence.deterministic?.risk;
-  if (!risk && validProbability) risk = classifyRisk({ thunderstormProbability: probability });
-  if (evidence.ensemble && evidence.ensemble.supportingMembers > 0 && (!risk || risk === "low")) risk = "elevated";
+  const risk = evidence.deterministic?.risk ?? (validProbability ? classifyRisk({ thunderstormProbability: probability }) : undefined);
   return risk ? { kind: "qualitative", risk } : { kind: "unavailable" };
 }
 
@@ -52,7 +50,7 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
     byTime.set(support.time, hour);
   }
   const hours = [...byTime.values()].sort((a, b) => a.time - b.time);
-  if (!hours.some((hour) => hour.signal.kind !== "unavailable")) return null;
+  if (!hours.length) return null;
   return {
     timezone: deterministic?.timezone ?? ensemble!.timezone,
     hours,
@@ -64,7 +62,7 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
 type ForecastLoader = (latitude: number, longitude: number, signal?: AbortSignal) => Promise<Forecast>;
 type EnsembleLoader = (latitude: number, longitude: number, signal?: AbortSignal) => Promise<EnsembleForecast>;
 
-/** Both sources can fail independently; a usable one still produces an outlook. */
+/** Source failures are independent; retained evidence may still lack a qualitative level. */
 export async function fetchOutlook(
   latitude: number,
   longitude: number,

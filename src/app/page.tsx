@@ -271,7 +271,7 @@ export default function Home() {
           <dl className="forecast-values">
             {selected.weatherCode != null && <div><dt>Weather</dt><dd>{describeWeatherCode(selected.weatherCode)}</dd></div>}
             {selected.evidence.providerProbability != null && <div><dt>Thunderstorm probability</dt><dd>{Math.round(selected.evidence.providerProbability)}% · provider value</dd></div>}
-            {selected.evidence.ensemble && selected.evidence.ensemble.supportingMembers > 0 && <div><dt>Nearby model guidance</dt><dd>Thunderstorm support present</dd></div>}
+            {selected.evidence.ensemble && selected.evidence.ensemble.supportingMembers > 0 && <div><dt>Nearby model support</dt><dd>Present</dd></div>}
             {selected.precipitationProbability != null && <div><dt>Precipitation chance</dt><dd>{Math.round(selected.precipitationProbability)}%</dd></div>}
           </dl>
           <p className="classification-note">{selected.signal.kind === "unavailable" ? "There is not enough forecast data to assess this hour." : isThunderstormCode(selected.weatherCode) && selected.evidence.providerProbability != null && selected.evidence.providerProbability < RISK_THRESHOLDS.directThunderstormProbabilityElevated ? "The weather forecast indicates a thunderstorm here, while the provider's separate probability is low. Forecast indicators can differ." : "Low / Elevated / High is a qualitative forecast signal, not a probability or official warning. Only the provider value above, when shown, is a thunderstorm probability."}</p>

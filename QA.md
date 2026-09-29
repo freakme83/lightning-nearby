@@ -31,8 +31,8 @@
 - [ ] Ankara, Türkiye; Barcelona, Spain; Berlin, Germany; Miami Beach, USA: confirm the timeline and selected-hour details load for ICON-EU EPS or ICON global EPS as appropriate, without exposing a member fraction as probability.
 - [ ] Where direct `thunderstorm_probability` is populated, verify the actual provider percentage is displayed separately; an explicit deterministic thunderstorm code remains High even if the provider value is low.
 - [ ] With all-zero local support, verify a deterministic thunderstorm code remains High and the summary still acknowledges a thunderstorm signal. Missing members remain unavailable rather than negative votes.
-- [ ] With nonzero local support, verify Low may rise to Elevated and the strongest period follows the qualitative level; use fixture tests if current live conditions have no such period.
-- [ ] Block the ensemble request: the deterministic outlook continues. Block the deterministic request: a usable ensemble outlook continues. Block both: an unavailable state appears.
+- [ ] With nonzero local support, verify it appears only as neutral secondary detail; Low stays Low and an unavailable qualitative hour stays unavailable. Check 5% provider probability plus 1/40 model support; use fixture tests if current live conditions have no such period.
+- [ ] Block the ensemble request: the deterministic outlook continues. Block the deterministic request: ensemble evidence is retained internally but the qualitative outlook is unavailable. Block both: an unavailable state appears.
 - [ ] Switch a saved location and reload: each confirmed point receives its own fresh outlook; tapping hours or moving a candidate map marker causes no ensemble refetch.
 - [ ] Check midnight, mobile Safari, Chrome mobile and desktop: selected-hour support remains readable without changing the timeline layout.
 - [ ] In Barcelona, compare current forecast and local model guidance as a live smoke test only; do not expect the historical 29 September 2026 conditions to recur. Confirm location selection and mobile layout still work.
