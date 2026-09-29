@@ -39,6 +39,19 @@
 - [ ] Check both sides of a DST transition in a civil zone; timeline timestamps remain chronological and displayed time follows the zone's DST rules.
 - [ ] Florida follow-up acceptance: test 26.77 N, 83.86 W in the live preview and verify the displayed zone is civil (expected nearby Florida zone), local time is sensible, and forecast epoch hours are unchanged. This live check remains pending until verified in a browser.
 
+## Forecast diagnostics route
+
+- [ ] Open `/debug/forecast` directly; verify the normal `/` page layout and behavior are unchanged and there is no new prominent navigation link.
+- [ ] Enter Florida offshore coordinates `26.77` and `-83.86`; load without device geolocation and inspect deterministic plus ensemble results.
+- [ ] Invalid latitude/longitude values show validation and do not start a request.
+- [ ] Use the saved-location shortcut when a monitored point exists.
+- [ ] Verify deterministic data appears while ensemble remains loading; late ensemble evidence updates the selected hour without resetting it.
+- [ ] Change coordinates while requests are pending; verify abort/stale guards keep old responses out of the new inspection.
+- [ ] Select another hour; verify timestamps, timezone-formatted time, raw inputs, decision trace, and ensemble fields all update without a fetch.
+- [ ] Compare the decision explanation with the production classifier for WMO code, provider probability bands, CAPE + precipitation fallback, and missing inputs.
+- [ ] Verify ensemble-only positive support remains qualitative unavailable and positive/zero support is described as secondary evidence rather than probability.
+- [ ] Copy the diagnostic snapshot and verify coordinates, epoch/UTC/local time, both timezones, deterministic values, ensemble metadata, final signal, and explanations are present; missing inputs say `unavailable`.
+
 ## Milestone 1.5 forecast signal
 
 - [ ] Ankara, Türkiye; Barcelona, Spain; Berlin, Germany; Miami Beach, USA: confirm the timeline and selected-hour details load for ICON-EU EPS or ICON global EPS as appropriate, without exposing a member fraction as probability.

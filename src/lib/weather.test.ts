@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateHighestRiskWindow, classifyRisk, describeWeatherCode, hasRiskEvidence, selectNext24Hours, type ForecastHour } from "./weather.ts";
+import { calculateHighestRiskWindow, classifyRisk, describeWeatherCode, explainRiskDecision, hasRiskEvidence, selectNext24Hours, type ForecastHour } from "./weather.ts";
 
 const hour = (time: number, risk: ForecastHour["risk"]): ForecastHour => ({ time, risk });
 
@@ -49,6 +49,41 @@ test("a qualitative level requires a usable deterministic signal", () => {
 test("convective inhibition is informational and does not change the qualitative heuristic", () => {
   assert.equal(classifyRisk({ cape: 800, precipitationProbability: 60, convectiveInhibition: -500 }), "elevated");
   assert.equal(classifyRisk({ cape: 800, precipitationProbability: 60, convectiveInhibition: 0 }), "elevated");
+});
+
+test("shared risk decision explains thunderstorm WMO code precedence", () => {
+  assert.deepEqual(explainRiskDecision({ weatherCode: 95, thunderstormProbability: 0 }), {
+    risk: "high",
+    explanation: "High because deterministic WMO thunderstorm code 95 is present.",
+  });
+});
+
+test("shared risk decision explains provider probability high and Elevated bands", () => {
+  assert.equal(explainRiskDecision({ thunderstormProbability: 63 }).risk, "high");
+  assert.match(explainRiskDecision({ thunderstormProbability: 63 }).explanation, /63%.*50% High threshold/);
+  assert.equal(explainRiskDecision({ thunderstormProbability: 34 }).risk, "elevated");
+  assert.match(explainRiskDecision({ thunderstormProbability: 34 }).explanation, /34%.*20–49% Elevated range/);
+});
+
+test("low provider probability explanation says it takes precedence over CAPE and precipitation", () => {
+  const decision = explainRiskDecision({ thunderstormProbability: 8, cape: 1320, precipitationProbability: 58 });
+  assert.equal(decision.risk, "low");
+  assert.match(decision.explanation, /8%/);
+  assert.match(decision.explanation, /takes precedence over the CAPE \+ precipitation fallback/);
+});
+
+test("shared risk decision explains the deterministic CAPE plus precipitation fallback", () => {
+  const decision = explainRiskDecision({ cape: 1320, precipitationProbability: 58 });
+  assert.equal(decision.risk, "elevated");
+  assert.match(decision.explanation, /CAPE is 1320 J\/kg/);
+  assert.match(decision.explanation, /precipitation probability is 58%/);
+  assert.match(decision.explanation, /qualitative fallback/);
+});
+
+test("shared risk decision explains when fallback thresholds are not both met", () => {
+  const decision = explainRiskDecision({ weatherCode: 61, cape: 600, precipitationProbability: 70 });
+  assert.equal(decision.risk, "low");
+  assert.match(decision.explanation, /thresholds .* were not both met/);
 });
 
 test("next 24 hourly buckets cross midnight using chronological timestamps", () => {
