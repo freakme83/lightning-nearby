@@ -73,16 +73,16 @@ Milestone 1 requests these hourly fields:
 - `convective_inhibition` (J/kg)
 - `thunderstorm_probability` (used only if a selected model provides a value)
 
-Open-Meteo defines precipitation probability for the preceding hour; the classifier compares it with instability and other values at the matching hourly timestamp. The current Open-Meteo API schema also lists direct lightning fields, but model and geographic availability varies. A live request for coordinates near Ankara returned null values for `thunderstorm_probability`, `lightning_potential`, and `lightning_density`; those fields are not treated as globally available. Direct thunderstorm weather codes (95, 96, 99) are the strongest signal when supplied. Open-Meteo documents thunderstorm probability as model-limited (for example, its GFS documentation lists it for NBM only). The UI displays provider values separately from the app’s derived qualitative risk.
+Open-Meteo defines precipitation probability for the preceding hour; the classifier compares it with instability and other values at the matching hourly timestamp. The current Open-Meteo API schema also lists direct lightning fields, but model and geographic availability varies. A live request for coordinates near Ankara returned null values for `thunderstorm_probability`, `lightning_potential`, and `lightning_density`; those fields are not treated as globally available. Direct thunderstorm weather codes (95, 96, 99) are the strongest signal when supplied. Open-Meteo documents thunderstorm probability as model-limited; its GFS documentation lists the field for NBM, a regional model, rather than GFS. The UI displays provider values separately from the app’s derived qualitative risk.
 
 The risk classifier is intentionally simple and conservative:
 
 - WMO thunderstorm codes 95, 96, or 99 → **High**.
-- Provider-supplied `thunderstorm_probability` of 20–49 → **Elevated**, 50 or more → **High**. These are app classification cutoffs; the underlying percentage remains an upstream value.
-- Otherwise, CAPE of at least 700 J/kg together with precipitation probability of at least 40% → **Elevated**.
+- When a provider-supplied `thunderstorm_probability` is available, 20–49 → **Elevated**, 50 or more → **High**, and below 20 → **Low**. The direct value blocks the weaker CAPE + precipitation fallback; its percentage remains an upstream value, while these are app classification cutoffs.
+- Only when direct thunderstorm probability is unavailable, CAPE of at least 700 J/kg together with precipitation probability of at least 40% → **Elevated**.
 - Otherwise → **Low**. Precipitation or CAPE alone never raises the level.
 
-The thresholds are qualitative product heuristics, not a calibrated risk probability or official warning. They are grouped in `src/lib/weather.ts` for easy replacement. Missing optional values are ignored. Weather-provider parsing, normalized forecast data, time selection, and the classifier are separate from presentation logic.
+The thresholds are qualitative product heuristics, not a calibrated risk probability or official warning. They are grouped in `src/lib/weather.ts` for easy replacement. Missing optional values are ignored. `convective_inhibition` (CIN) is displayed as a provider value but does not affect classification: its availability varies with the selected model, and this small heuristic does not apply a model-independent CIN cutoff. Weather-provider parsing, normalized forecast data, time selection, and the classifier are separate from presentation logic.
 
 ---
 

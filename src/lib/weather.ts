@@ -47,15 +47,19 @@ export function classifyRisk(input: RiskInputs): RiskLevel {
     return "high";
   }
 
-  // Use an upstream probability only when the chosen model provides a value.
-  // Open-Meteo currently has limited geographic/model coverage for this field.
+  // When supplied, the upstream thunderstorm probability is authoritative
+  // over the weaker CAPE + precipitation fallback, including values below
+  // our Elevated cutoff. Open-Meteo's coverage for this field is model-limited.
   if (input.thunderstormProbability != null) {
     if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityHigh) return "high";
     if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityElevated) return "elevated";
+    return "low";
   }
 
   // Rain by itself and instability by itself are not thunderstorm evidence.
-  // Elevated requires both meaningful CAPE and a precipitation signal.
+  // Elevated requires both meaningful CAPE and a precipitation signal. CIN
+  // remains informational: model availability varies and we do not apply an
+  // unvalidated CIN threshold to this deliberately small qualitative rule.
   if (
     input.cape != null && input.cape >= RISK_THRESHOLDS.elevatedCapeJPerKg &&
     input.precipitationProbability != null &&

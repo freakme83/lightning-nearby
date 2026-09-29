@@ -6,6 +6,7 @@ const hour = (time: number, risk: ForecastHour["risk"]): ForecastHour => ({ time
 
 test("direct thunderstorm weather codes classify as high", () => {
   for (const weatherCode of [95, 96, 99]) assert.equal(classifyRisk({ weatherCode }), "high");
+  assert.equal(classifyRisk({ weatherCode: 95, thunderstormProbability: 0 }), "high");
 });
 
 test("precipitation alone and CAPE alone do not imply thunderstorm risk", () => {
@@ -14,15 +15,28 @@ test("precipitation alone and CAPE alone do not imply thunderstorm risk", () => 
   assert.equal(classifyRisk({ cape: 1200, precipitationProbability: 20 }), "low");
 });
 
-test("direct thunderstorm probability takes precedence when present", () => {
+test("direct thunderstorm probability classifies below, within, and above its thresholds", () => {
+  assert.equal(classifyRisk({ thunderstormProbability: 19 }), "low");
+  assert.equal(classifyRisk({ thunderstormProbability: 19, cape: 800, precipitationProbability: 60 }), "low");
+  assert.equal(classifyRisk({ thunderstormProbability: 20 }), "elevated");
+  assert.equal(classifyRisk({ thunderstormProbability: 49 }), "elevated");
+  assert.equal(classifyRisk({ thunderstormProbability: 50 }), "high");
   assert.equal(classifyRisk({ thunderstormProbability: 55 }), "high");
-  assert.equal(classifyRisk({ thunderstormProbability: 25 }), "elevated");
-  assert.equal(classifyRisk({ thunderstormProbability: 5, cape: 800, precipitationProbability: 60 }), "elevated");
+});
+
+test("CAPE and precipitation raise risk only when direct thunderstorm probability is missing", () => {
+  assert.equal(classifyRisk({ cape: 800, precipitationProbability: 60 }), "elevated");
+  assert.equal(classifyRisk({ thunderstormProbability: null, cape: 800, precipitationProbability: 60 }), "elevated");
 });
 
 test("missing optional forecast values safely fall back to low", () => {
   assert.equal(classifyRisk({ weatherCode: null, cape: null, precipitationProbability: null, thunderstormProbability: null }), "low");
   assert.equal(classifyRisk({ convectiveInhibition: 0 }), "low");
+});
+
+test("convective inhibition is informational and does not change the qualitative heuristic", () => {
+  assert.equal(classifyRisk({ cape: 800, precipitationProbability: 60, convectiveInhibition: -500 }), "elevated");
+  assert.equal(classifyRisk({ cape: 800, precipitationProbability: 60, convectiveInhibition: 0 }), "elevated");
 });
 
 test("next 24 hourly buckets cross midnight using chronological timestamps", () => {
