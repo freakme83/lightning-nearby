@@ -5,12 +5,18 @@
 - [ ] Deny geolocation: a clear message appears; retry remains available.
 - [ ] Retry location after changing browser/device permission.
 - [ ] Update location: the newly chosen location replaces the single saved location.
-- [ ] Search place: submit Ankara, Berlin, and Miami Beach; verify results show available administrative context and do not save before confirmation.
+- [ ] Search suggestions: type Ankara, Berlin, and Miami Beach; verify suggestions appear after a short pause, show available region/country context, and do not save before confirmation.
+- [ ] Search fallback: type `Ayrancı, Ankara`; verify any broader-context fallback is explained and an unrelated Ayrancı result is not labeled as being in Ankara. Also try `Ayrancı` alone.
+- [ ] Keyboard search: press Enter while typing a query and verify the current query is searched.
+- [ ] Search loading, no-results, and network-error states are understandable; older results do not replace results for a newer query.
 - [ ] Search selection: choose a result, verify the map opens centered with one marker, then confirm and verify the forecast uses the saved coordinates.
 - [ ] Map selection: pan/zoom and tap a point; verify only the candidate marker changes until **Use this location** is tapped.
+- [ ] Confirm map points in Samsun/Ankara and another country; verify a useful place label appears when reverse lookup succeeds.
+- [ ] Move a searched result's marker and confirm: verify its old search label is replaced by a label for the new point when available.
+- [ ] Simulate reverse-geocoding failure; verify the point still saves and coordinates are shown as fallback.
 - [ ] Cancel the picker after search/map changes; verify the previous saved location and forecast remain unchanged.
 - [ ] Reload after confirming a searched or map-selected point; verify coordinates and optional display label persist.
-- [ ] Mobile Safari and Chrome mobile: verify map pan, pinch zoom, tap-to-place, and confirmation.
+- [ ] Mobile Safari and Chrome mobile: verify map pan, pinch zoom, tap-to-place, confirmation, keyboard behavior, and that suggestions do not obscure key controls.
 - [ ] Chrome desktop: verify map drag/zoom/click, place search, and saved-location reload.
 - [ ] Forecast fetch failure: block `api.open-meteo.com`; verify an explicit unavailable state and no stale forecast.
 - [ ] Mobile viewport: check 320 px and 390 px widths, touch targets, timeline scrolling, and details.

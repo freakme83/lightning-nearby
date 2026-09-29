@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { LOCATION_STORAGE_KEY, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation } from "./location.ts";
-import { parsePlaceResults } from "./geocoding.ts";
+import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parsePlaceResults, parseReversePlace, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "./geocoding.ts";
 
 function memoryStorage(initial?: string) {
   let value = initial ?? null;
@@ -63,4 +63,85 @@ test("malformed and partial geocoding rows are ignored safely", () => {
   ]);
   assert.equal(LOCATION_STORAGE_KEY, "lightning-nearby.location.v1");
   assert.deepEqual(parsePlaceResults({ results: "not-an-array" }), []);
+});
+
+const place = (label: string, admin1?: string, country?: string): PlaceResult => ({
+  latitude: 39.9, longitude: 32.8, label, admin1, country, source: "search",
+});
+
+test("search waits for a useful query length and uses a bounded type-ahead delay", () => {
+  assert.equal(MIN_PLACE_QUERY_LENGTH, 3);
+  assert.equal(PLACE_SEARCH_DEBOUNCE_MS, 400);
+});
+
+test("multipart search falls back to the broader context instead of unrelated same-name places", async () => {
+  const calls: string[] = [];
+  const lookup = async (query: string) => {
+    calls.push(query);
+    if (query === "Ayrancı") return [place("Ayrancı", "İzmir", "Türkiye"), place("Ayrancı", "Konya", "Türkiye")];
+    if (query === "Ankara") return [place("Ankara", "Ankara", "Türkiye")];
+    return [];
+  };
+  const result = await searchPlaces("Ayrancı, Ankara", undefined, lookup);
+  assert.deepEqual(calls, ["Ayrancı, Ankara", "Ayrancı", "Ankara"]);
+  assert.deepEqual(result.results.map(({ label }) => label), ["Ankara"]);
+  assert.match(result.fallbackMessage ?? "", /broader place “Ankara”/);
+});
+
+test("multipart search keeps a first-component result when its context matches", async () => {
+  const lookup = async (query: string) => query === "Ayrancı"
+    ? [place("Ayrancı", "Ankara", "Türkiye"), place("Ayrancı", "İzmir", "Türkiye")]
+    : [];
+  const result = await searchPlaces("Ayrancı, Ankara", undefined, lookup);
+  assert.deepEqual(result.results.map(({ admin1 }) => admin1), ["Ankara"]);
+});
+
+test("superseded search results are rejected even if a lookup ignores abort", async () => {
+  const controller = new AbortController();
+  const pending = searchPlaces("Berlin", controller.signal, async () => {
+    await Promise.resolve();
+    return [place("Berlin", "Berlin", "Germany")];
+  });
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+});
+
+test("reverse-geocoding metadata is compact and handles varying address fields", () => {
+  assert.deepEqual(parseReversePlace({ address: {
+    suburb: "Atakum", city: "Samsun", state: "Samsun Province", country: "Türkiye",
+  } }), { label: "Atakum", admin1: "Samsun Province", country: "Türkiye" });
+  assert.deepEqual(parseReversePlace({ address: { town: "Kefalos", country: "Greece" } }), { label: "Kefalos", country: "Greece" });
+});
+
+test("malformed reverse-geocoding responses safely produce no label", () => {
+  assert.equal(parseReversePlace(null), null);
+  assert.equal(parseReversePlace({ address: "not-an-object" }), null);
+  assert.equal(parseReversePlace({ address: { road: "Unnamed Road" } }), null);
+});
+
+test("reverse geocoding failure is optional and requests retain the authoritative coordinates", async () => {
+  let requestedUrl = "";
+  const unavailable = await reverseGeocodeLocation(41.27, 36.36, undefined, async (input) => {
+    requestedUrl = String(input);
+    return new Response("unavailable", { status: 503 });
+  });
+  assert.equal(unavailable, null);
+  const parsedUrl = new URL(requestedUrl);
+  assert.equal(parsedUrl.searchParams.get("lat"), "41.27");
+  assert.equal(parsedUrl.searchParams.get("lon"), "36.36");
+
+  const storage = memoryStorage();
+  const saved = saveMonitoredLocation(storage, { latitude: 41.27004, longitude: 36.35996, source: "map" }, 99);
+  assert.deepEqual(saved, { latitude: 41.27, longitude: 36.36, savedAt: 99, source: "map" });
+});
+
+test("resolved map metadata persists while selected coordinates remain authoritative", () => {
+  const storage = memoryStorage();
+  const saved = saveMonitoredLocation(storage, {
+    latitude: 41.27004, longitude: 36.35996, source: "map", label: "Atakum", admin1: "Samsun", country: "Türkiye",
+  }, 100);
+  assert.equal(saved?.latitude, 41.27);
+  assert.equal(saved?.longitude, 36.36);
+  assert.equal(formatLocationLabel(saved!), "Atakum, Samsun, Türkiye");
+  assert.deepEqual(parseMonitoredLocation(JSON.parse(storage.value ?? "null")), saved);
 });
