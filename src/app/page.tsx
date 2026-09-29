@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { LOCATION_STORAGE_KEY, formatCoordinates, reduceLocationPrecision, type MonitoredLocation } from "@/lib/location";
+import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
+import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
 import { calculateHighestRiskWindow, describeWeatherCode, fetchForecast, selectNext24Hours, type Forecast, type ForecastHour, type RiskLevel } from "@/lib/weather";
+import LocationMap from "./location-map";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 function localTime(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(epoch * 1000); }
@@ -35,13 +37,28 @@ export default function Home() {
   const [forecastError, setForecastError] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<"search" | "map">("search");
+  const [candidate, setCandidate] = useState<LocationSelection | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchNotice, setSearchNotice] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const [resolvingLocation, setResolvingLocation] = useState(false);
+  const immediateSearchRef = useRef(false);
+  const searchRequestRef = useRef(0);
+  const confirmRequestRef = useRef(0);
+  const reverseControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(LOCATION_STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as MonitoredLocation;
-        if (Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
+        const parsed = parseMonitoredLocation(JSON.parse(saved));
+        if (parsed) {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
@@ -78,13 +95,102 @@ export default function Home() {
     setLocating(true);
     navigator.geolocation.getCurrentPosition(({ coords }) => {
       const reduced = reduceLocationPrecision(coords.latitude, coords.longitude);
-      const saved = { ...reduced, savedAt: Date.now() };
-      try { localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(saved)); setLocation(saved); }
+      try { const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" }); if (saved) setLocation(saved); }
       catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
       setLocating(false);
     }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
     { enableHighAccuracy: false, maximumAge: 300_000, timeout: 15_000 });
   }, []);
+
+  const openPicker = useCallback(() => {
+    setCandidate(location ? { ...location } : null);
+    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setLocationMessage(""); setPickerOpen(true);
+  }, [location]);
+
+  const submitPlaceSearch = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setSearchNotice(""); setHasSearched(false); return; }
+    immediateSearchRef.current = true;
+    setSearchError(""); setSearchNotice(""); setSearchRevision((revision) => revision + 1);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!pickerOpen || pickerMode !== "search") return;
+    const query = searchQuery.trim();
+    if (Array.from(query).length < MIN_PLACE_QUERY_LENGTH) return;
+    const requestId = ++searchRequestRef.current;
+    const controller = new AbortController();
+    const delay = immediateSearchRef.current ? 0 : PLACE_SEARCH_DEBOUNCE_MS;
+    immediateSearchRef.current = false;
+    const timer = window.setTimeout(() => {
+      setSearching(true); setSearchError("");
+      void searchPlaces(query, controller.signal).then(({ results, fallbackMessage }) => {
+        if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
+        setSearchResults(results); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
+      }).catch(() => {
+        if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
+        setSearchError("Place search is unavailable right now. Check your connection and try again.");
+        setSearchResults([]); setSearchNotice(""); setHasSearched(true);
+      }).finally(() => {
+        if (!controller.signal.aborted && requestId === searchRequestRef.current) setSearching(false);
+      });
+    }, delay);
+    return () => {
+      window.clearTimeout(timer); controller.abort();
+      if (requestId === searchRequestRef.current) searchRequestRef.current += 1;
+    };
+  }, [pickerOpen, pickerMode, searchQuery, searchRevision]);
+
+  const changeSearchQuery = useCallback((query: string) => {
+    setSearchQuery(query); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+  }, []);
+
+  const switchPickerMode = useCallback((mode: "search" | "map") => {
+    setSearching(false); setPickerMode(mode);
+  }, []);
+
+  const selectPlace = useCallback((place: PlaceResult) => {
+    reverseControllerRef.current?.abort(); confirmRequestRef.current += 1; setResolvingLocation(false);
+    setCandidate(place); setPickerMode("map"); setSearchError("");
+  }, []);
+
+  const pickMapPoint = useCallback((latitude: number, longitude: number) => {
+    reverseControllerRef.current?.abort(); confirmRequestRef.current += 1; setResolvingLocation(false);
+    setCandidate({ ...reduceLocationPrecision(latitude, longitude), source: "map" });
+  }, []);
+
+  const cancelPicker = useCallback(() => {
+    searchRequestRef.current += 1; confirmRequestRef.current += 1; reverseControllerRef.current?.abort();
+    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setSearching(false); setResolvingLocation(false);
+  }, []);
+
+  const confirmCandidate = useCallback(async () => {
+    if (!candidate || resolvingLocation) return;
+    const requestId = ++confirmRequestRef.current;
+    const controller = new AbortController();
+    reverseControllerRef.current = controller;
+    setResolvingLocation(true); setLocationMessage("");
+    let selection = candidate;
+    if (candidate.source === "map") {
+      try {
+        const metadata = await reverseGeocodeLocation(candidate.latitude, candidate.longitude, controller.signal);
+        if (metadata) selection = { ...candidate, ...metadata };
+      } catch {
+        if (controller.signal.aborted || requestId !== confirmRequestRef.current) return;
+      }
+    }
+    if (controller.signal.aborted || requestId !== confirmRequestRef.current) return;
+    try {
+      const saved = saveMonitoredLocation(localStorage, selection);
+      if (!saved) return;
+      setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
+    } catch {
+      setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
+    } finally {
+      if (requestId === confirmRequestRef.current) setResolvingLocation(false);
+    }
+  }, [candidate, resolvingLocation]);
 
   const highestWindow = useMemo(() => calculateHighestRiskWindow(hours), [hours]);
   const overallRisk = hours.reduce<RiskLevel>((risk, hour) => {
@@ -92,6 +198,33 @@ export default function Home() {
     return rank[hour.risk] > rank[risk] ? hour.risk : risk;
   }, "low");
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
+  const locationPicker = pickerOpen && <section className="location-picker" aria-label="Choose a monitored location">
+    <div className="picker-heading"><div><p className="eyebrow">LOCATION</p><h2>Choose a point</h2></div><button className="text-button" type="button" onClick={cancelPicker}>Cancel</button></div>
+    <div className="picker-tabs" role="group" aria-label="Location selection method">
+      <button className={`secondary-button ${pickerMode === "search" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "search"} disabled={resolvingLocation} onClick={() => switchPickerMode("search")}>Search place</button>
+      <button className={`secondary-button ${pickerMode === "map" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "map"} disabled={resolvingLocation} onClick={() => switchPickerMode("map")}>Pick on map</button>
+    </div>
+    {pickerMode === "search" ? <>
+      <form className="place-search" onSubmit={submitPlaceSearch}>
+        <label className="visually-hidden" htmlFor="place-search">Search for a place</label>
+        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, or place" autoComplete="off" />
+        <button className="secondary-button" type="submit">{searching ? "Searching…" : "Search"}</button>
+      </form>
+      {searchError && <p className="inline-error" role="alert">{searchError}</p>}
+      {searching && <p className="picker-note" role="status">Searching places…</p>}
+      {searchNotice && <p className="picker-note" role="status">{searchNotice}</p>}
+      {!searching && hasSearched && !searchError && searchResults.length === 0 && <p className="picker-note" role="status">No matching places found. Try a nearby town or a broader search.</p>}
+      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{searchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
+        <button type="button" onClick={() => selectPlace(place)}><strong>{place.label}</strong><span>{[place.admin1, place.country].filter(Boolean).join(", ") || formatCoordinates(place.latitude, place.longitude)}</span></button>
+      </li>)}</ul>}
+    </> : <>
+      <p className="picker-note">Tap the map to place one marker. Pan and zoom to refine the point.</p>
+      <LocationMap candidate={candidate} onPick={pickMapPoint} />
+      <p className="picker-note">Map tiles and place labels © OpenStreetMap contributors.</p>
+    </>}
+    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{formatCoordinates(candidate.latitude, candidate.longitude)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? "Finding place…" : "Use this location"}</button></div>}
+    {candidate?.source === "map" && <p className="picker-note">Confirming this point may send its coordinates to OpenStreetMap Nominatim to find a place label.</p>}
+  </section>;
 
   if (!storageReady) return <main className="page-shell"><div className="loading-state" role="status">Opening your local forecast…</div></main>;
 
@@ -104,14 +237,17 @@ export default function Home() {
     {!location ? <section className="welcome-panel" aria-labelledby="welcome-title">
       <p className="eyebrow">A clearer view of the hours ahead</p>
       <h1 id="welcome-title">Thunderstorm outlook,<br /><em>where you are.</em></h1>
-      <p className="welcome-copy">Share your location to see the next 24 hours of forecast conditions. Your location stays on this device and is sent only to Open‑Meteo to request the forecast.</p>
+      <p className="welcome-copy">Choose a point to see the next 24 hours of forecast conditions. Device location is requested only after a tap; place searches are sent to Open‑Meteo. Your selected location stays on this device.</p>
       <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? "Finding location…" : "Use my location"}</button>
+      <button className="text-button picker-open-button" type="button" onClick={openPicker}>Search for a place or choose on map</button>
+      {locationPicker}
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
-      <p className="permission-note">Your browser will ask before sharing. Nothing is requested until you tap above.</p>
+      <p className="permission-note">Your browser asks before sharing device location. It is not requested until you tap “Use my location”.</p>
       <div className="welcome-rule" /><p className="micro-copy">Forecast guidance only. This is not an official weather warning.</p>
     </section> : <section className="overview" aria-labelledby="overview-title">
-      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{formatCoordinates(location.latitude, location.longitude)}</p></div>
-        <button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Update location"}</button></div>
+      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{formatCoordinates(location.latitude, location.longitude)}</p>}</div>
+        <div className="location-actions"><button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Update location"}</button><button className="text-button" type="button" onClick={openPicker}>Search / map</button></div></div>
+      {locationPicker}
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>We couldn’t reach Open‑Meteo. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}

@@ -38,7 +38,7 @@ The first version should remain deliberately small.
 
 - Progressive Web App
 - Mobile-first interface
-- Browser geolocation permission
+- User-selected location by browser geolocation, place search, or map point
 - Ability to save one monitored location
 - Location stored locally on the device
 - 24-hour hourly weather forecast
@@ -90,7 +90,7 @@ The thresholds are qualitative product heuristics, not a calibrated risk probabi
 
 The app is a small Next.js / TypeScript PWA with a native web manifest and service worker. The service worker may cache the app shell for reopening offline, but does not cache weather responses. With no network, the app reports that current forecast data is unavailable. A compact node test suite covers classification, missing fields, midnight selection, and highest-risk windows; manual device checks are listed in [QA.md](./QA.md).
 
-Known limits: Open-Meteo provides gridded model forecasts rather than street-level observations. Thunderstorm-related fields vary by model and region. The qualitative level is a simple aid for reading forecast ingredients, not a probability, detection feed, or safety alert. The selected location is a rounded coordinate only; no place name is reverse-geocoded.
+Known limits: Open-Meteo provides gridded model forecasts rather than street-level observations. Thunderstorm-related fields vary by model and region. The qualitative level is a simple aid for reading forecast ingredients, not a probability, detection feed, or safety alert. Place labels are optional display metadata and do not affect forecasts.
 
 ## Live Lightning Data
 
@@ -138,10 +138,14 @@ Privacy should be a core design principle.
 For Milestone 1:
 
 - location permission is optional and requested only after a tap
-- the current location can be saved as the one monitored location
-- rounded coordinates (three decimal places) are stored in local browser storage
+- one monitored point can be selected from device location, Open-Meteo place search, or a map tap
+- typed place queries are sent to Open-Meteo's public Geocoding API after a short debounce; map tiles are requested from OpenStreetMap
+- when the user confirms a map-selected point, its coordinates may be sent to the public OpenStreetMap Nominatim reverse-geocoding service to find a display label; this is one bounded lookup per confirmation, not per map movement
+- confirmed coordinates are rounded to four decimal places and stored in local browser storage; optional place label, country, administrative context, and selection source are display metadata
 - the same rounded coordinates are sent to Open-Meteo for the forecast
-- no location or forecast is sent to an app backend; forecast responses are not cached
+- no location or forecast is sent to an app backend; confirmed location metadata stays in local browser storage, no location history is created, and forecast responses are not cached
+
+Search and map choices remain candidates until confirmed; cancelling preserves the previously monitored point. Coordinates remain the authority for forecasts, while place labels are optional display metadata. Device location is requested only after a user tap. Search queries go to Open-Meteo Geocoding. Confirming a map point can send those coordinates to Nominatim; reverse lookup failure does not prevent saving. Search fallback may try comma-separated place components and show the broader context when the exact combined query has no result. Map tiles and reverse-geocoded place labels use OpenStreetMap data, attributed to [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). These providers receive requests directly from the browser; neither is an app backend.
 
 A future server-side notification system may require storing a monitored coordinate or reduced-precision location.
 
