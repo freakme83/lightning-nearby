@@ -25,3 +25,14 @@
 - [ ] PWA installability: serve over HTTPS, inspect manifest/service worker, and try installation on Android and iOS.
 - [ ] Reload with saved location: forecast reloads without another permission prompt.
 - [ ] No network: cached shell may reopen, but the forecast must report unavailable rather than show old values.
+
+## Milestone 1.5 forecast signal
+
+- [ ] Ankara, Türkiye: confirm ICON-EU EPS support appears when member data is available; the summary gives a member count and model name, never a made-up percentage.
+- [ ] European point (for example Berlin) and North American point (for example Miami Beach): verify ICON-EU EPS and ICON global EPS selection respectively.
+- [ ] Where direct `thunderstorm_probability` is populated, verify the provider percentage takes precedence for that exact hour.
+- [ ] With all-zero member support, verify the summary describes zero support without implying a zero probability or silently treating missing members as zero.
+- [ ] With nonzero member support, verify the strongest period and selected-hour member count/model; use fixture tests if current live conditions have no such period.
+- [ ] Block the ensemble request: the deterministic outlook continues. Block the deterministic request: a usable ensemble outlook continues. Block both: an unavailable state appears.
+- [ ] Switch a saved location and reload: each confirmed point receives its own fresh outlook; tapping hours or moving a candidate map marker causes no ensemble refetch.
+- [ ] Check midnight, mobile Safari, Chrome mobile and desktop: selected-hour support remains readable without changing the timeline layout.
