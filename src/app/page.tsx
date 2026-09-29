@@ -6,10 +6,11 @@ import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMoni
 import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
+import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
-function localTime(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(epoch * 1000); }
+const localTime = formatForecastLocalTime;
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
 function dayLabel(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, weekday: "short", day: "numeric", month: "short" }).format(epoch * 1000); }
 function period(start: number, end: number, timezone: string) { return `${localTime(start, timezone)}–${localTime(end, timezone)}`; }
@@ -87,6 +88,17 @@ export default function Home() {
       }
       currentOutlookRef.current = result;
       setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null); setLoading(false);
+      if (isGenericFixedOffsetTimezone(result.timezone)) {
+        void resolveDisplayTimezone(location.latitude, location.longitude, result.timezone, location.timezone, controller.signal)
+          .then((timezone) => {
+            if (!isCurrentRequest() || timezone === result.timezone) return;
+            const current = currentOutlookRef.current;
+            if (!current) return;
+            const localized = { ...current, timezone };
+            currentOutlookRef.current = localized;
+            setForecast(localized);
+          });
+      }
     }).catch(() => {
       if (isCurrentRequest()) { setForecastError(true); setLoading(false); }
     });
