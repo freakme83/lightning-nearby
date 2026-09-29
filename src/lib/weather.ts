@@ -8,7 +8,8 @@ export interface ForecastHour {
   cape?: number;
   convectiveInhibition?: number;
   thunderstormProbability?: number;
-  risk: RiskLevel;
+  /** Absent when the deterministic fields cannot support a qualitative level. */
+  risk?: RiskLevel;
 }
 
 export interface Forecast {
@@ -38,19 +39,31 @@ export const RISK_THRESHOLDS = {
   elevatedPrecipitationProbabilityPercent: 40,
 } as const;
 
-const THUNDERSTORM_CODES = new Set([95, 96, 99]);
+const THUNDERSTORM_CODES = new Set([95, 96, 97, 99]);
+
+export function isThunderstormCode(code: unknown): boolean {
+  return typeof code === "number" && THUNDERSTORM_CODES.has(code);
+}
+
+export function hasRiskEvidence(input: RiskInputs): boolean {
+  return (input.weatherCode != null && Number.isInteger(input.weatherCode) && input.weatherCode >= 0 && input.weatherCode <= 99)
+    || (input.thunderstormProbability != null && Number.isFinite(input.thunderstormProbability) && input.thunderstormProbability >= 0 && input.thunderstormProbability <= 100)
+    || (input.cape != null && Number.isFinite(input.cape) && input.cape >= 0
+      && input.precipitationProbability != null && Number.isFinite(input.precipitationProbability)
+      && input.precipitationProbability >= 0 && input.precipitationProbability <= 100);
+}
 
 export function classifyRisk(input: RiskInputs): RiskLevel {
   // An upstream thunderstorm code is the clearest available signal in this
   // globally usable forecast. Hail codes are included in the same top class.
-  if (input.weatherCode != null && THUNDERSTORM_CODES.has(input.weatherCode)) {
+  if (isThunderstormCode(input.weatherCode)) {
     return "high";
   }
 
   // When supplied, the upstream thunderstorm probability is authoritative
   // over the weaker CAPE + precipitation fallback, including values below
   // our Elevated cutoff. Open-Meteo's coverage for this field is model-limited.
-  if (input.thunderstormProbability != null) {
+  if (input.thunderstormProbability != null && input.thunderstormProbability >= 0 && input.thunderstormProbability <= 100) {
     if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityHigh) return "high";
     if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityElevated) return "elevated";
     return "low";
@@ -71,7 +84,7 @@ export function classifyRisk(input: RiskInputs): RiskLevel {
   return "low";
 }
 
-export function selectNext24Hours(hours: ForecastHour[], nowMs = Date.now()): ForecastHour[] {
+export function selectNext24Hours<T extends ForecastHour>(hours: T[], nowMs = Date.now()): T[] {
   // Keep 24 chronological hourly buckets beginning with the current hour.
   // Epoch seconds make this work across midnight and daylight-saving changes.
   const firstHour = Math.floor(nowMs / 3_600_000) * 3_600;
@@ -88,7 +101,7 @@ export interface RiskWindow {
 const SEVERITY: Record<RiskLevel, number> = { low: 0, elevated: 1, high: 2 };
 
 export function calculateHighestRiskWindow(hours: ForecastHour[]): RiskWindow | null {
-  const peak = Math.max(0, ...hours.map((hour) => SEVERITY[hour.risk]));
+  const peak = Math.max(0, ...hours.map((hour) => SEVERITY[hour.risk ?? "low"]));
   if (peak === 0) return null;
 
   const candidates: RiskWindow[] = [];
@@ -100,7 +113,7 @@ export function calculateHighestRiskWindow(hours: ForecastHour[]): RiskWindow | 
   };
 
   for (const hour of hours) {
-    const isPeak = SEVERITY[hour.risk] === peak;
+    const isPeak = SEVERITY[hour.risk ?? "low"] === peak;
     const continues = run.length > 0 && hour.time === run[run.length - 1].time + 3_600;
     if (!isPeak) saveRun();
     else {
@@ -159,6 +172,7 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
       convectiveInhibition: optionalNumber(hourly.convective_inhibition, index),
       thunderstormProbability: optionalNumber(hourly.thunderstorm_probability, index),
     };
+    if (inputs.thunderstormProbability != null && (inputs.thunderstormProbability < 0 || inputs.thunderstormProbability > 100)) inputs.thunderstormProbability = undefined;
     return {
       time,
       weatherCode: inputs.weatherCode ?? undefined,
@@ -166,7 +180,7 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
       cape: inputs.cape ?? undefined,
       convectiveInhibition: inputs.convectiveInhibition ?? undefined,
       thunderstormProbability: inputs.thunderstormProbability ?? undefined,
-      risk: classifyRisk(inputs),
+      ...(hasRiskEvidence(inputs) ? { risk: classifyRisk(inputs) } : {}),
     } satisfies ForecastHour;
   });
 
@@ -181,7 +195,7 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
 
 export function describeWeatherCode(code?: number): string {
   if (code == null) return "Weather code unavailable";
-  if ([95, 96, 99].includes(code)) return "Thunderstorm signal";
+  if (isThunderstormCode(code)) return "Thunderstorm signal";
   if ([80, 81, 82].includes(code)) return "Rain showers";
   if ([61, 63, 65].includes(code)) return "Rain";
   if ([51, 53, 55, 56, 57].includes(code)) return "Drizzle";

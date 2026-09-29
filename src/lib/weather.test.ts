@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateHighestRiskWindow, classifyRisk, selectNext24Hours, type ForecastHour } from "./weather.ts";
+import { calculateHighestRiskWindow, classifyRisk, describeWeatherCode, hasRiskEvidence, selectNext24Hours, type ForecastHour } from "./weather.ts";
 
 const hour = (time: number, risk: ForecastHour["risk"]): ForecastHour => ({ time, risk });
 
 test("direct thunderstorm weather codes classify as high", () => {
-  for (const weatherCode of [95, 96, 99]) assert.equal(classifyRisk({ weatherCode }), "high");
+  for (const weatherCode of [95, 96, 97, 99]) {
+    assert.equal(classifyRisk({ weatherCode }), "high");
+    assert.equal(describeWeatherCode(weatherCode), "Thunderstorm signal");
+  }
   assert.equal(classifyRisk({ weatherCode: 95, thunderstormProbability: 0 }), "high");
 });
 
@@ -32,6 +35,15 @@ test("CAPE and precipitation raise risk only when direct thunderstorm probabilit
 test("missing optional forecast values safely fall back to low", () => {
   assert.equal(classifyRisk({ weatherCode: null, cape: null, precipitationProbability: null, thunderstormProbability: null }), "low");
   assert.equal(classifyRisk({ convectiveInhibition: 0 }), "low");
+});
+
+test("a qualitative level requires a usable deterministic signal", () => {
+  assert.equal(hasRiskEvidence({}), false);
+  assert.equal(hasRiskEvidence({ cape: 800 }), false);
+  assert.equal(hasRiskEvidence({ precipitationProbability: 50 }), false);
+  assert.equal(hasRiskEvidence({ cape: 800, precipitationProbability: 50 }), true);
+  assert.equal(hasRiskEvidence({ weatherCode: 3 }), true);
+  assert.equal(hasRiskEvidence({ thunderstormProbability: 0 }), true);
 });
 
 test("convective inhibition is informational and does not change the qualitative heuristic", () => {
