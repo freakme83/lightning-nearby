@@ -1,4 +1,5 @@
 import { greatCircleDistanceKm } from "./distance.ts";
+import { compassDirection, initialBearingDegrees } from "./bearing.ts";
 import { LIGHTNING_QUERY_RADIUS_KM, LIGHTNING_WINDOW_MINUTES, type LiveLightningSummary, type LiveStrike, type ProviderDiagnostics } from "./types.ts";
 
 const RADIUS_EPSILON_KM = 1e-8;
@@ -31,6 +32,7 @@ export function summarizeRecentActivity(
     fetchedAt,
     latestEventAt,
     nearestKm: nearest?.distanceKm ?? null,
+    nearestDirection: nearest ? compassDirection(initialBearingDegrees(latitude, longitude, nearest.event.latitude, nearest.event.longitude)) : null,
     nearestAgeMinutes: nearest ? Math.max(0, (fetchedAt - nearest.event.observedAtMs) / 60_000) : null,
     counts: { within5Km: within(5), within10Km: within(10), within25Km: within(25), within50Km: within(50) },
     totalEvents: recent.length,

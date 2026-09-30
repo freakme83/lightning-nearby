@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { greatCircleDistanceKm } from "./lightning/distance.ts";
+import { compassDirection, initialBearingDegrees } from "./lightning/bearing.ts";
 import { handleLiveLightningRequest } from "./lightning/handler.ts";
 import { summarizeRecentActivity } from "./lightning/summary.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, LIGHTNING_QUERY_RADIUS_KM, type LiveStrike } from "./lightning/types.ts";
@@ -37,6 +38,36 @@ test("Haversine distance handles a known equatorial arc and longitude wrap", () 
   assert.ok(greatCircleDistanceKm(0, 179.9, 0, -179.9) < 23);
 });
 
+test("initial bearing handles cardinal, intercardinal and dateline routes", () => {
+  assert.ok(Math.abs(initialBearingDegrees(0, 0, 1, 0)!) < 1e-8);
+  assert.ok(Math.abs(initialBearingDegrees(0, 0, 0, 1)! - 90) < 1e-8);
+  assert.ok(Math.abs(initialBearingDegrees(0, 0, -1, 0)! - 180) < 1e-8);
+  assert.ok(Math.abs(initialBearingDegrees(0, 0, 0, -1)! - 270) < 1e-8);
+  assert.equal(compassDirection(initialBearingDegrees(0, 179.9, 0, -179.9)), "E");
+  assert.equal(compassDirection(initialBearingDegrees(0, 0, 1, 1)), "NE");
+});
+
+test("eight compass sectors include boundaries and wrap to north", () => {
+  assert.equal(compassDirection(22.499), "N");
+  assert.equal(compassDirection(22.5), "NE");
+  assert.equal(compassDirection(67.5), "E");
+  assert.equal(compassDirection(112.5), "SE");
+  assert.equal(compassDirection(157.5), "S");
+  assert.equal(compassDirection(202.5), "SW");
+  assert.equal(compassDirection(247.5), "W");
+  assert.equal(compassDirection(292.5), "NW");
+  assert.equal(compassDirection(337.5), "N");
+  assert.equal(compassDirection(-22.5), "N");
+  assert.equal(compassDirection(Number.NaN), null);
+});
+
+test("coincident or ambiguous points do not invent a direction", () => {
+  assert.equal(initialBearingDegrees(52, -7, 52, -7), null);
+  assert.equal(initialBearingDegrees(0, 0, 0, 180), null);
+  assert.equal(initialBearingDegrees(91, 0, 0, 0), null);
+  assert.equal(compassDirection(null), null);
+});
+
 test("summary counts events in inclusive 5/10/25/50 km bands and excludes outside the query radius", () => {
   const events = [5, 10, 25, 50, 50.01].map((km) => eventAt(km, 1));
   const summary = summarizeRecentActivity(events, 0, 0, now, 0, EMPTY_PROVIDER_DIAGNOSTICS);
@@ -60,6 +91,14 @@ test("an empty healthy provider response is a live zero, with unavailable distan
   assert.deepEqual(summary.counts, { within5Km: 0, within10Km: 0, within25Km: 0, within50Km: 0 });
   assert.equal(summary.latestEventAt, null);
   assert.equal(summary.nearestKm, null);
+  assert.equal(summary.nearestDirection, null);
+});
+
+test("summary sends derived direction without nearest event coordinates", () => {
+  const summary = summarizeRecentActivity([eventAt(2, 1)], 0, 0, now, 0, EMPTY_PROVIDER_DIAGNOSTICS);
+  assert.equal(summary.nearestDirection, "E");
+  assert.equal(JSON.stringify(summary).includes("longitude"), false);
+  assert.equal(JSON.stringify(summary).includes("latitude"), false);
 });
 
 test("events outside the latest five-minute window are ignored", () => {
