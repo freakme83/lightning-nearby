@@ -124,10 +124,18 @@ export function parseXweatherSummaryResearch(
   const upstreamError = providerError(payload);
   if (upstreamError) return { ok: false, mode, status: upstreamError.status, message: "Xweather rejected the summary request.", providerCode: upstreamError.code, diagnostics };
   if (successfulNoData(payload)) return { ok: true, mode, ...metadata, fetchedAt, returnedCount: 0, oldestEventAt: null, newestEventAt: null, actualRangeFrom: null, actualRangeTo: null, pulseCounts: { total: 0, cloudToGround: 0, intracloud: 0 }, diagnostics };
-  if (!isRecord(payload) || payload.success !== true || payload.error !== null || !isRecord(payload.response) || !isRecord(payload.response.summary)) {
+  if (!isRecord(payload) || payload.success !== true || payload.error !== null) {
     return { ok: false, mode, status: "malformed-response", message: "Xweather returned an unexpected summary response.", providerCode: null, diagnostics };
   }
-  const summary = payload.response.summary;
+  const response = isRecord(payload.response)
+    ? payload.response
+    : Array.isArray(payload.response) && payload.response.length === 1 && isRecord(payload.response[0])
+      ? payload.response[0]
+      : null;
+  if (!response || !isRecord(response.summary)) {
+    return { ok: false, mode, status: "malformed-response", message: "Xweather returned an unexpected summary response.", providerCode: null, diagnostics };
+  }
+  const summary = response.summary;
   const range = isRecord(summary.range) ? summary.range : null;
   const pulse = isRecord(summary.pulse) ? summary.pulse : null;
   const total = nonNegativeInteger(pulse?.count) ?? nonNegativeInteger(range?.count);

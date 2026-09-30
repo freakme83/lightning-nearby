@@ -64,6 +64,13 @@ test("summary research parses aggregate counts and reported time range", () => {
   assert.equal(result.newestEventAt, now - 60_000);
 });
 
+test("summary research accepts the documented action-dependent single-item response array", () => {
+  const payload = summaryPayload();
+  const result = parseXweatherSummaryResearch({ ...payload, response: [payload.response] }, "summary-30m", now, EMPTY_PROVIDER_DIAGNOSTICS);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.returnedCount, 3);
+});
+
 test("healthy zero summary is distinct from provider rejection", () => {
   const zero = parseXweatherSummaryResearch(summaryPayload(0), "summary-default", now, EMPTY_PROVIDER_DIAGNOSTICS);
   assert.equal(zero.ok, true);
