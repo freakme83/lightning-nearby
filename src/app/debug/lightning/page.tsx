@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { isValidCoordinates, LOCATION_STORAGE_KEY, parseMonitoredLocation } from "@/lib/location";
 import type { LiveLightningApiResult, ProviderDiagnostics } from "@/lib/lightning/types";
+import type { XweatherResearchMode, XweatherResearchResult } from "@/lib/lightning/xweather-research";
 import styles from "./debug.module.css";
 
 type Coordinates = { latitude: number; longitude: number };
@@ -34,6 +35,9 @@ export default function LightningDebugPage() {
   const [validationError, setValidationError] = useState("");
   const [result, setResult] = useState<LiveLightningApiResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [researchMode, setResearchMode] = useState<XweatherResearchMode>("summary-default");
+  const [researchResult, setResearchResult] = useState<XweatherResearchResult | null>(null);
+  const [researchLoading, setResearchLoading] = useState(false);
 
   useEffect(() => {
     try {
@@ -80,6 +84,33 @@ export default function LightningDebugPage() {
       return;
     }
     void loadActivity({ latitude, longitude });
+  }
+
+  async function submitResearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    if (!latitudeText.trim() || !longitudeText.trim() || !isValidCoordinates(latitude, longitude)) {
+      setValidationError("Enter a latitude from -90 to 90 and a longitude from -180 to 180.");
+      setResearchResult(null);
+      return;
+    }
+    setResearchLoading(true);
+    setResearchResult(null);
+    setValidationError("");
+    try {
+      const response = await fetch("/api/lightning/debug-research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ latitude, longitude, mode: researchMode }),
+      });
+      setResearchResult(await response.json() as XweatherResearchResult);
+    } catch {
+      setResearchResult({ ok: false, mode: researchMode, status: "provider-unavailable", message: "The app could not reach its research endpoint.", providerCode: null, diagnostics: { httpStatus: null, costTokens: null, costMultiplier: null, remainingMinute: null, remainingPeriod: null } });
+    } finally {
+      setResearchLoading(false);
+    }
   }
 
   const diagnostics = result?.ok ? result.summary.diagnostics : result?.diagnostics;
@@ -152,6 +183,53 @@ export default function LightningDebugPage() {
         <dl className={styles.grid}>
           {diagnosticsRows(diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
         </dl>
+      </section>}
+
+      <section className={styles.panel} aria-labelledby="research-heading">
+        <h2 id="research-heading">History endpoint research</h2>
+        <form className={styles.coordinateForm} onSubmit={submitResearch}>
+          <label>Endpoint / window
+            <select value={researchMode} onChange={(event) => setResearchMode(event.target.value as XweatherResearchMode)}>
+              <option value="summary-default">Summary · provider default</option>
+              <option value="summary-15m">Summary · requested 15 minutes</option>
+              <option value="summary-30m">Summary · requested 30 minutes</option>
+              <option value="flash-5m">Flash · documented 5 minutes</option>
+            </select>
+          </label>
+          <button type="submit" disabled={researchLoading}>{researchLoading ? "Researching…" : "Run one research request"}</button>
+        </form>
+        <p className={styles.note}>Uses the coordinates above. Each click makes exactly one upstream request; there is no automatic refresh. Summary data is aggregate-only, while flash is limited here to its documented five-minute window.</p>
+      </section>
+
+      {researchResult && !researchResult.ok && <section className={styles.panel} aria-live="polite">
+        <h2>Research request unavailable</h2>
+        <p className={styles.error}><strong>{researchResult.status}</strong> · {researchResult.message}</p>
+        <dl className={styles.grid}>
+          <div><dt>Mode</dt><dd>{researchResult.mode ?? "invalid"}</dd></div>
+          <div><dt>Provider code</dt><dd>{researchResult.providerCode ?? "unavailable"}</dd></div>
+          {diagnosticsRows(researchResult.diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+        </dl>
+        <p className={styles.note}>A failed research request is never represented as zero activity.</p>
+      </section>}
+
+      {researchResult?.ok && <section className={styles.panel} aria-live="polite">
+        <h2>Research result</h2>
+        <dl className={styles.grid}>
+          <div><dt>Endpoint</dt><dd>{researchResult.endpoint}</dd></div>
+          <div><dt>Mode</dt><dd>{researchResult.mode}</dd></div>
+          <div><dt>Data kind</dt><dd>{researchResult.dataKind}</dd></div>
+          <div><dt>Requested window</dt><dd>{researchResult.requestedWindowMinutes === null ? "provider default" : `${researchResult.requestedWindowMinutes} minutes`}</dd></div>
+          <div><dt>Returned count</dt><dd>{researchResult.returnedCount}</dd></div>
+          <div><dt>Fetched at</dt><dd>{formatDate(researchResult.fetchedAt)}</dd></div>
+          <div><dt>Oldest event</dt><dd>{formatDate(researchResult.oldestEventAt)}</dd></div>
+          <div><dt>Newest event</dt><dd>{formatDate(researchResult.newestEventAt)}</dd></div>
+          <div><dt>Reported range from</dt><dd>{formatDate(researchResult.actualRangeFrom)}</dd></div>
+          <div><dt>Reported range to</dt><dd>{formatDate(researchResult.actualRangeTo)}</dd></div>
+          <div><dt>Cloud-to-ground pulses</dt><dd>{researchResult.pulseCounts?.cloudToGround ?? "not provided"}</dd></div>
+          <div><dt>Intracloud pulses</dt><dd>{researchResult.pulseCounts?.intracloud ?? "not provided"}</dd></div>
+          {diagnosticsRows(researchResult.diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+        </dl>
+        <p className={styles.note}>The summary endpoint does not return raw event coordinates or a nearest-event distance. These debug results do not change the app’s live observation behavior.</p>
       </section>}
 
       <footer className={styles.footer}>

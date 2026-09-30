@@ -9,7 +9,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function diagnosticsFromHeaders(headers: Headers, httpStatus: number): ProviderDiagnostics {
+export function diagnosticsFromHeaders(headers: Headers, httpStatus: number): ProviderDiagnostics {
   return {
     httpStatus,
     costTokens: headers.get("x-cost-tokens"),
@@ -23,7 +23,7 @@ function failure(status: ProviderFailureStatus, message: string, diagnostics = E
   return { ok: false, status, message, diagnostics };
 }
 
-function classifyProviderError(code: unknown): ProviderFailureStatus {
+export function classifyProviderError(code: unknown): ProviderFailureStatus {
   if (code === "invalid_client" || code === "unauthorized_namespace" || code === "insufficient_scope") return "provider-auth-error";
   if (code === "maxhits" || code === "maxhits_daily" || code === "maxhits_min") return "provider-quota-exceeded";
   return "provider-rejected-request";
