@@ -34,12 +34,22 @@ The comparison reports presence match, direction match, and absolute nearest-dis
 
 ## Initial Deploy Preview cases
 
-These rows will be completed with one active and one quiet case after the draft PR Deploy Preview is available. If the known active point is no longer active, that is recorded rather than repeatedly searching for a manufactured positive sample.
+The PR #15 Deploy Preview was tested once at the known active candidate and once at the quiet control on 30 September 2026. Each comparison made exactly one Raw request and one Flash request; no additional locations were searched.
 
 | Location | Raw present | Flash present | Raw nearest | Flash nearest | Raw age | Flash age | Direction match | Raw count | Flash count | Raw cost | Flash cost | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Active candidate — southern France, `43.58, 3.88` | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | One manual comparison only. |
-| Negative control — Ankara, `39.91, 32.84` | Pending | Pending | — | — | — | — | — | Pending | Pending | Pending | Pending | One manual comparison only. |
+| Active candidate — southern France, `43.58, 3.88` | Yes | Yes | 21.9 km SE | 33.1 km SE | 4.12 min | 4.12 min | Yes | 5 | 4 | 10 | 1 | Presence, direction, and nearest age agreed. Flash nearest was 11.19 km farther away. Raw newest age was 2.53 min; Flash newest age was 1.92 min. |
+| Negative control — Ankara, `39.91, 32.84` | No | No | — | — | — | — | N/A | 0 | 0 | 10 | 1 | Both returned HTTP 200 healthy-zero results, with zero records in every distance band. |
+
+Both active responses were HTTP 200 and below the provider result limit. Raw reported one pulse within 25 km and five within 40 km; Flash reported no flash within 25 km and four within 40 km. The count difference is expected because pulses/strikes and consolidated flashes are different event units. The 11.19 km nearest-distance difference is material enough to track in later cases, but Flash did not miss the active system in this first comparison and preserved its broad direction and recency.
+
+Both control responses were also HTTP 200, successful, and below the provider result limit. Raw and Flash each returned zero within 5, 10, 25, and 40 km, preserving the distinction between healthy absence and provider failure.
+
+Observed request diagnostics in both cases were:
+
+- Raw: `X-Cost-Tokens: 10`, `X-Cost-Multiplier(s): endpoint=10; spatial=1; temporal=1`.
+- Flash: `X-Cost-Tokens: 1`, `X-Cost-Multiplier(s): endpoint=1; spatial=1; temporal=1`.
+- The responses showed `Remaining this minute: 99` for Raw and `98` for Flash, and `Remaining this period: 14753` for both. These quota headers are observations only; this spike does not infer instantaneous billing semantics or future pricing from them.
 
 ## Manual collection table
 
@@ -73,7 +83,9 @@ No production radius or severity threshold changes in this spike.
 3. Flash five minutes / 40 km for a cheap precise current-event layer.
 4. Raw `/lightning/closest` retained as debug/reference or fallback if Flash validation exposes meaningful misses.
 
-The current evidence classification remains **inconclusive** until the two initial live comparisons are recorded. One or two cases can make Flash look promising or concerning, but cannot establish equivalence or justify a production migration.
+## Current evidence classification
+
+**Promising — continue manual validation.** The one active comparison preserved activity presence, SE direction, and a 4.12-minute nearest age while costing one token rather than ten. The healthy-zero control also matched. However, Flash's nearest location was 11.19 km farther away and its count represented four consolidated flashes rather than five Raw pulses/strikes. One active case and one control do not establish equivalence or justify a production migration; more manually selected active systems are needed, with particular attention to nearest-distance shifts and any one-sided presence results.
 
 ## Sources
 
