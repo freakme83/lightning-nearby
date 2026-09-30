@@ -4,7 +4,7 @@ Research snapshot: 30 September 2026. This spike adds a manually invoked server 
 
 ## Decision and release boundary
 
-**Prototype only; no public release with real credentials until Xweather confirms the applicable licence in writing.** The current Xweather service terms describe a freemium license for internal business use and generally restrict publishing, distributing, or making service information available to third parties unless the service description grants broader rights. They also require attribution when third-party availability is permitted. Xweather’s product page advertises a free tier with access to all endpoints, but endpoint availability does not itself grant public redistribution rights. A public hobby website is not clearly covered by “internal business” use. [X1] [X3] [X7]
+**Prototype only; no public release with real credentials until Xweather confirms the applicable licence in writing.** The General Conditions document currently linked from Xweather (dated 1 January 2023) describes a freemium license for internal business use and generally restricts publishing, distributing, or making service information available to third parties unless the service description grants broader rights. It also requires attribution when third-party availability is permitted. Xweather’s product page advertises a free tier with access to all endpoints, but endpoint availability does not itself grant public redistribution rights. A public hobby website is not clearly covered by “internal business” use. [X1] [X3] [X7]
 
 The route has no account or request authentication. It is harmless while credentials are absent, but anyone who can reach it could spend the configured account’s quota if credentials are added. Keep credentials unset on public deploys. Before any credentialed preview or production deploy, obtain the appropriate rights and add access control and quota protection. This is a technical prototype, not approval to use or republish Xweather data.
 
@@ -62,7 +62,7 @@ Before considering a credentialed release:
 
 - [X1] [Xweather lightning endpoint](https://www.xweather.com/docs/weather-api/endpoints/lightning) — endpoint, standard access limits, event fields, and endpoint multiplier.
 - [X2] [Xweather authentication](https://www.xweather.com/docs/weather-api/getting-started/authentication) — application credentials and namespace restrictions.
-- [X3] [Vaisala General Conditions for Subscription Services](https://docs.vaisala.com/api/khub/documents/_2cuASo637CBKluQEurbLA/content) — internal-use license, limits on third-party distribution, freemium restrictions, and attribution terms. The linked PDF is dated 1 January 2023; confirm the current agreement before use.
+- [X3] [Vaisala General Conditions for Subscription Services](https://docs.vaisala.com/api/khub/documents/_2cuASo637CBKluQEurbLA/content) — linked from Xweather’s terms page; internal-use license, limits on third-party distribution, freemium restrictions, and attribution terms. The PDF is dated 1 January 2023; confirm the current agreement before use.
 - [X4] [Xweather cost headers](https://www.xweather.com/docs/weather-api/getting-started/cost-headers) — request cost and token metadata.
 - [X5] [Xweather API rate limiting](https://www.xweather.com/docs/weather-api/getting-started/rate-limiting) — per-minute and billing-period limits and headers.
 - [X6] [Xweather subscription plans](https://www.xweather.com/products/weather-api) — advertised free-tier allowance and endpoint availability. Account-level terms and entitlement remain unverified.
