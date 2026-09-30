@@ -30,31 +30,36 @@ No other official Xweather endpoint was found that more directly provides inexpe
 
 Xweather documents `X-Cost-Tokens` as the product of endpoint, temporal, and spatial multipliers. It also states that successful 2xx API responses contain cost headers and count toward usage, while 4xx/5xx responses do not. Therefore a healthy HTTP 200 response with zero lightning still consumes the tokens reported by its headers. This is documented behavior; the spike does not intentionally spend quota manufacturing failures. A healthy zero remains semantically distinct from an unavailable or rejected request.
 
-## Live account test matrix
+## Live account results
 
 Live requests are made only through the Netlify Deploy Preview and the debug-only server route. Each button press makes exactly one upstream request. Credentials remain in `XWEATHER_CLIENT_ID` and `XWEATHER_CLIENT_SECRET`; they are never serialized in the browser response.
 
-The live-result table will be completed after the draft PR Deploy Preview is available. A known-recent-activity coordinate near Finike, Türkiye (`36.30, 30.15`, approximate) is used unless activity has moved. Unsupported paths are stopped after the first clear entitlement or parameter error.
+The requests below ran through draft PR #14's Netlify Deploy Preview using the existing server-side credentials. The first approximate point near Finike, Türkiye (`36.30, 30.15`) returned a healthy zero and served as the empty-result control. A previously active southern France point (`43.58, 3.88`) still had detections and supplied the positive time-window comparisons. These are small functional examples, not provider-coverage benchmarks.
 
-| Test | Requested shape | Live result | Observed cost |
+| Test | Requested shape | Live result | Observed headers |
 | --- | --- | --- | --- |
-| Control | `/lightning/closest`, 50 km, provider-standard five minutes | Pending Deploy Preview | Pending |
-| Summary default | `/lightning/summary/closest`, 50 km, no explicit time range | Pending Deploy Preview | Pending |
-| Summary 15 minutes | Same endpoint, `from=-15minutes`, `to=now` | Pending; attempted only if summary access succeeds | Pending |
-| Summary 30 minutes | Same endpoint, `from=-30minutes`, `to=now` | Pending; attempted only if the preceding test succeeds | Pending |
-| Flash | `/lightning/flash/closest`, 40 km, documented five minutes | Pending Deploy Preview | Pending |
+| Standard healthy zero | `/lightning/closest`, 50 km, provider-standard five minutes; Finike point | HTTP 200, zero raw events, with no latest or nearest event. | `X-Cost-Tokens: 10`; `endpoint=10; spatial=1; temporal=1` |
+| Standard positive control | Same request; southern France point | HTTP 200, 2 raw events within 50 km. Latest event was about 17 seconds before fetch; nearest event was about 37.4 km away and 4.71 minutes old. | `10`; `endpoint=10; spatial=1; temporal=1` |
+| Summary default healthy zero | `/lightning/summary/closest`, 50 km, no explicit time range; Finike point | HTTP 200, zero aggregate pulses. A no-data response did not include inferable range timestamps. | `1`; `endpoint=1; spatial=1; temporal=1` |
+| Summary 15 minutes | Same endpoint, `from=-15minutes`, `to=now`; southern France point | HTTP 200, 3 aggregate pulses, all CG. Reported range was exactly 15 minutes; oldest pulse was about 11 minutes 17 seconds before fetch and newest about 4 minutes 10 seconds before fetch. | `1`; `endpoint=1; spatial=1; temporal=1` |
+| Summary 30 minutes | Same endpoint, `from=-30minutes`, `to=now`; southern France point | HTTP 200, 8 aggregate pulses, all CG. Reported range was exactly 30 minutes; oldest pulse was about 29 minutes 9 seconds before fetch and newest about 3 minutes 55 seconds before fetch. | `1`; `endpoint=1; spatial=1; temporal=1` |
+| Flash | `/lightning/flash/closest`, 40 km, documented five minutes; southern France point | HTTP 200, 3 consolidated flashes. Oldest was about 4 minutes 25 seconds before fetch and newest about 1 minute 37 seconds before fetch. | `1`; `endpoint=1; spatial=1; temporal=1` |
 
-The documented Flash endpoint is not tested with 15- or 30-minute parameters because its official page limits it to five minutes; the task explicitly avoids brute-forcing undocumented combinations. A 60-minute Summary request is omitted unless the shorter configured windows succeed and the observed cost makes one additional request justified.
+The Summary 15- and 30-minute parameters were accepted by the configured account and positive responses proved that data older than five minutes was included. The maximum window verified in this spike is therefore **30 minutes**. A 60-minute or 24-hour request was not made, so the Summary page's longer statement remains unverified for this account. The documented Flash endpoint was not tested with 15- or 30-minute parameters because its official page limits it to five minutes; the spike avoids brute-forcing undocumented combinations.
+
+One initial positive Summary request exposed the documented action-dependent response variation: `/closest` returned the summary inside a one-item array rather than the top-level object shown by the example. The debug parser was corrected and fixture-tested before the successful positive retries. This was an implementation parsing issue, not an entitlement failure. No endpoint tested live returned an account/add-on rejection. Extended raw `/lightning` history was not attempted because the official page explicitly assigns it to the Enterprise add-on.
+
+All successful live shapes returned `Remaining this period: 14830` during this short test, even as requests were made, and `Remaining this minute` varied from 97 to 99. As in the earlier spike, these are diagnostics only and are not treated as instantaneous balance semantics.
 
 ## Pure arithmetic cadence comparison
 
-A 30-day month contains 8,640 five-minute intervals or 4,320 ten-minute intervals. “Manual” below is explicitly modeled as five refreshes per day, or 150 requests/month. Multiply these request counts by each mode's observed `X-Cost-Tokens` value after live validation.
+A 30-day month contains 8,640 five-minute intervals or 4,320 ten-minute intervals. “Manual” below is explicitly modeled as five refreshes per day, or 150 requests/month.
 
-| Cadence assumption | Requests per 30-day month | Tokens per month at observed cost `C` |
-| --- | ---: | ---: |
-| Manual: 5 refreshes/day | 150 | `150 × C` |
-| Poll every 5 minutes | 8,640 | `8,640 × C` |
-| Poll every 10 minutes | 4,320 | `4,320 × C` |
+| Successful query shape | Observed tokens/request | Manual: 150 requests | 5-minute polling: 8,640 requests | 10-minute polling: 4,320 requests |
+| --- | ---: | ---: | ---: | ---: |
+| Standard `/lightning/closest` | 10 | 1,500 | 86,400 | 43,200 |
+| Summary default / 15 min / 30 min | 1 | 150 | 8,640 | 4,320 |
+| Flash documented 5 min | 1 | 150 | 8,640 | 4,320 |
 
 These are arithmetic comparisons, not an implementation proposal. This spike adds no polling, caching, persistence, or background work. The advertised allowance, token cost, and quota-header semantics can change and are not guaranteed to behave identically forever.
 
@@ -73,7 +78,15 @@ After live validation, each path is classified as:
 - **B — Technically useful but unavailable:** could answer the product question but requires a different entitlement, add-on, or permission.
 - **C — Not useful for this product question:** cannot extend the time window, lacks the required granularity, or has an unsuitable cost/shape.
 
-The key distinction is that Summary can establish count and time bounds within a query radius but not a particular event's distance. Unless extended raw `/lightning` access succeeds, the exact statement “Lightning was detected 3 km away 12 minutes ago” cannot be derived from Summary alone.
+| Path | Classification | Conclusion |
+| --- | --- | --- |
+| Standard `/lightning/closest` for current activity | **A — useful and usable now** | Raw events support current nearest distance and age, but only for the latest five minutes and at the observed 10-token cost. |
+| Summary 15/30 minutes for regional history | **A — useful and usable now** | The configured account returned positive aggregate windows at 1 token. Suitable for copy such as “3 detections within 50 km in the last 15 minutes” or “8 detections within 50 km in the last 30 minutes.” |
+| Extended raw `/lightning` history | **B — technically useful but unavailable under documented standard access** | It would support exact historical distance/age, but Xweather documents older-than-five-minute raw access as an Enterprise add-on. No wasteful entitlement request was made. |
+| Flash for history beyond five minutes | **C — not useful for this product question** | Account access and 1-token requests work, and consolidated flashes may be a useful semantic alternative for current activity, but the documented window remains five minutes and radius is capped at 40 km. |
+| Summary for exact nearest-distance history | **C — wrong granularity** | It supplies aggregate counts, IC/CG breakdown, and time bounds, but no raw coordinates, nearest distance, or distance bands. |
+
+The key product result is therefore: the current account can cheaply provide **15- and 30-minute aggregate regional history**, but it cannot support the exact statement “Lightning was detected 3 km away 12 minutes ago.” That statement requires older raw coordinates, which remain behind the documented Enterprise boundary. Keep the production live path unchanged; if the product later needs a compact “recent activity ending” cue, add a separate provider capability that consumes one Summary window on explicit refresh, rather than distorting the raw-event provider interface. Do not add polling until licensing, abuse protection, quota policy, and product semantics are resolved.
 
 ## Sources
 

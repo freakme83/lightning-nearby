@@ -229,7 +229,9 @@ export default function LightningDebugPage() {
           <div><dt>Intracloud pulses</dt><dd>{researchResult.pulseCounts?.intracloud ?? "not provided"}</dd></div>
           {diagnosticsRows(researchResult.diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
         </dl>
-        <p className={styles.note}>The summary endpoint does not return raw event coordinates or a nearest-event distance. These debug results do not change the app’s live observation behavior.</p>
+        <p className={styles.note}>{researchResult.dataKind === "aggregate-summary"
+          ? "The summary endpoint does not return raw event coordinates or a nearest-event distance."
+          : "Flash results are consolidated events, but the provider’s documented flash window remains five minutes."} These debug results do not change the app’s live observation behavior.</p>
       </section>}
 
       <footer className={styles.footer}>
