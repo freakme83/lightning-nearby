@@ -1,12 +1,12 @@
 # Xweather live lightning spike
 
-Research snapshot: 30 September 2026. This spike adds a manually invoked server route and a private debug page; it does not add a live layer to the normal app. No Xweather credentials were available in the development environment, so no live upstream request was made. Tests use synthetic fixtures.
+Research and live-validation snapshot: 30 September 2026. This spike adds a manually invoked server route and a private debug page; it does not add a live layer to the normal app. Live requests have now succeeded through a Netlify Deploy Preview using real Xweather credentials. The examples below are small validation observations, not scientific benchmark results. Credential values are not recorded here.
 
 ## Decision and release boundary
 
 **Prototype only; no public release with real credentials until Xweather confirms the applicable licence in writing.** The General Conditions document currently linked from Xweather (dated 1 January 2023) describes a freemium license for internal business use and generally restricts publishing, distributing, or making service information available to third parties unless the service description grants broader rights. It also requires attribution when third-party availability is permitted. Xweather’s product page advertises a free tier with access to all endpoints, but endpoint availability does not itself grant public redistribution rights. A public hobby website is not clearly covered by “internal business” use. [X1] [X3] [X7]
 
-The route has no account or request authentication. It is harmless while credentials are absent, but anyone who can reach it could spend the configured account’s quota if credentials are added. Keep credentials unset on public deploys. Before any credentialed preview or production deploy, obtain the appropriate rights and add access control and quota protection. This is a technical prototype, not approval to use or republish Xweather data.
+The route has no account or request authentication or server-side rate limit. Real credentials were configured in the Netlify Deploy Preview for validation. Anyone who can reach that preview route could potentially spend the configured account’s quota; verify preview access restrictions or remove its credentials after testing. Before any publicly reachable credentialed deploy, obtain the appropriate rights and add access control and quota protection. This is a technical prototype, not approval to use or republish Xweather data.
 
 ## What Xweather documents
 
@@ -19,13 +19,13 @@ The route has no account or request authentication. It is harmless while credent
 | Response health | The JSON envelope reports `success`, `error`, and `response`. Authentication, rate, server, malformed, and network failures are not equivalent to an empty event list. | Only a successful no-data response produces a healthy zero. Failures stay explicitly unavailable and do not become zero counts. |
 | Attribution | Xweather requires attribution for products using its data; the guidance specifies “Powered by Vaisala Xweather” with a link, or a logo, and prohibits implying endorsement. | The debug page includes linked “Powered by Vaisala Xweather” attribution. Confirm whether this is sufficient for the chosen agreement. |
 
-Standard access documentation says the `/lightning` endpoint has a 10× endpoint multiplier. Actual cost is also affected by spatial and temporal multipliers; use response cost headers, especially `X-Cost-Tokens`, as the authoritative measurement. Cost headers and minute / billing-period rate-limit headers are copied into safe diagnostic metadata when present. Radius-specific spatial pricing could not be determined from the public documentation, so the figures below are planning lower bounds, not a quote. [X1] [X4] [X5]
+Standard access documentation says the `/lightning` endpoint has a 10× endpoint multiplier. In the live Deploy Preview test, the existing 50 km / five-minute query consistently returned `X-Cost-Tokens: 10` and `X-Cost-Multipliers: endpoint=10; spatial=1; temporal=1`. Treat **10 tokens as the verified observation for this tested query shape only**; this does not guarantee future pricing. The route copies cost and rate-limit headers into safe diagnostic metadata when present. [X1] [X4] [X5]
 
 ## Cost and request cadence
 
-Xweather currently advertises 15,000 monthly accesses on its free tier. The account, plan, applicable token definition, and actual request charge have not been verified. Assuming the documented 10× endpoint factor is charged against that allowance and spatial / temporal factors are each at least one, a request costs **at least 10 allowance units**. Runtime `X-Cost-Tokens` must replace that assumption after authorized testing. [X4] [X5] [X6]
+Xweather currently advertises 15,000 monthly accesses on its free tier. The account plan and the exact long-term quota behavior have not been established. The request cost observed in this live test was 10 tokens for the query described above. The calculations below use that observed cost and the advertised allowance for rough planning only; they are not a guarantee of future pricing or an interpretation of the `Remaining this period` header. [X4] [X5] [X6]
 
-| Manual or polling rate | Requests in 30 days | Minimum units at 10× | Approximate time to use 15,000 units at this rate |
+| Manual or hypothetical polling rate | Requests in 30 days | Arithmetic at observed 10 tokens/query | Approximate time to use 15,000 advertised accesses at this rate |
 | --- | ---: | ---: | ---: |
 | 1 manual refresh/day | 30 | 300 | 50 months |
 | 5 manual refreshes/day | 150 | 1,500 | 10 months |
@@ -33,7 +33,52 @@ Xweather currently advertises 15,000 monthly accesses on its free tier. The acco
 | Poll every minute | 43,200 | 432,000 | 25 hours |
 | Poll every 2 minutes | 21,600 | 216,000 | 50 hours |
 
-At the minimum 10 units per query, the nominal free allowance would cover about 1,500 requests/month, or 50 per day averaged over 30 days. Actual costs may be higher. The spike deliberately has no polling, background refresh, or cache. Manual requests alone are inexpensive at prototype scale under this lower-bound assumption, but public access, spatial pricing, and account-level restrictions remain unverified. Rate-limit headers are useful evidence, not a substitute for an application-side cap.
+At the observed 10 tokens per query, 15,000 advertised monthly accesses would arithmetically correspond to 1,500 such requests if the account applies those units as assumed. The spike deliberately has no polling, background refresh, or cache; the polling rows are hypothetical cost comparisons only. Actual future cost and quota accounting remain unverified. Rate-limit headers are useful diagnostics, not a substitute for an application-side cap.
+
+## Live validation in Netlify Deploy Preview
+
+The verified request path was:
+
+`Browser → Netlify Deploy Preview → POST /api/lightning/live → Xweather → normalized summary`
+
+Authentication succeeded and the server route returned HTTP 200. The existing query used a 50 km radius and the provider’s five-minute observation window. Real upstream payloads were parsed into the normalized summary.
+
+Observed diagnostics across the test requests:
+
+| Diagnostic | Observed value |
+| --- | --- |
+| Upstream HTTP status | `200` |
+| `X-Cost-Tokens` | `10` |
+| `X-Cost-Multipliers` | `endpoint=10; spatial=1; temporal=1` |
+| Remaining this minute | `99` |
+| Remaining this period | `15000` on the first request; `14990` on subsequent requests |
+
+Do not infer exact real-time monthly balance semantics from `Remaining this period`; its observed values are recorded only as diagnostics. The verified cost observation is 10 tokens for this tested request shape, not a future price guarantee.
+
+The following cases are validation examples, not a scientific benchmark:
+
+| Case and approximate queried point | Xweather result | Interpretation |
+| --- | --- | --- |
+| Positive — Ireland sparse activity, `52.89, -6.98` | Nearest event about `0.7 km` away and `2.13 min` old; counts: 5 km `2`, 10 km `3`, 25 km `3`, 50 km `3`; latest event roughly 2 minutes before fetch. Blitzortung showed recent sparse activity nearby. | Strong spatial/time agreement with an independently observed active area. This does not establish that any particular Xweather and Blitzortung records were the same physical discharge. |
+| Positive — southern France / Monaco-region active system, `43.58, 3.88` | Nearest event about `12.3 km`; 17 events within 25 km and 26 within 50 km; latest event roughly 1 minute before fetch. | Higher counts were returned in a visibly active lightning system. |
+| Positive — Ireland active area, `52.72, -7.29` | Nearest event about `18.6 km`; 4 events within 50 km, all 4 within 25 km; latest event about 1 minute before fetch. | Another positive regional match. |
+| Negative control — Ankara, `39.91, 32.84` | Healthy HTTP 200 response; zero events within 5 / 10 / 25 / 50 km; no latest or nearest event. No recent activity was visible in the independent external live view used to select the point. | A healthy zero-activity result was returned as a successful observation, separate from provider failure. |
+
+### Proven by this validation
+
+- Xweather credentials authenticate successfully when held in the Netlify server environment.
+- The Netlify server-side route works in a real Deploy Preview, and `/lightning/closest` returns live event data for the tested point and time window.
+- The tested 50 km / five-minute query cost 10 tokens, with the multipliers listed above.
+- Parsing and normalized summaries work with real upstream payloads in both active-area and healthy-zero examples.
+- The implementation keeps provider failures distinct from healthy zero activity. Live provider failure was not forced during this validation; fixture tests cover failure handling.
+
+### Still unproven and release gates
+
+- Current licensing and public redistribution rights, and suitability for public production deployment.
+- Long-term reliability, global detection completeness, and provider-versus-Blitzortung detection sensitivity.
+- Exact latency distribution and long-term quota behavior.
+- Whether `Remaining this period` represents an instantaneous monthly balance; no such inference is made from the two observed values.
+- Public endpoint abuse protection. The prototype route has no access control or server-side request rate limit.
 
 ## Implementation and privacy
 
@@ -48,15 +93,15 @@ Next.js Route Handlers are supported by Netlify’s Next.js adapter and run as s
 
 ## Validation and remaining questions
 
-The parser and route are tested with fixtures for valid IC/CG records, malformed rows, healthy empty responses, absent credentials, authentication and quota failures, malformed payloads, network failure, credential secrecy, coordinate bounds, radius boundaries, the provider event cap, and the five-minute cutoff. `npm test` passes 73 tests; lint and TypeScript checks pass. The production build passes from a clean `.next` directory. No live request was possible because this environment had no configured credentials.
+The parser and route are tested with fixtures for valid IC/CG records, malformed rows, healthy empty responses, absent credentials, authentication and quota failures, malformed payloads, network failure, credential secrecy, coordinate bounds, radius boundaries, the provider event cap, and the five-minute cutoff. `npm test` passes 73 tests; lint and TypeScript checks pass. The production build passes from a clean `.next` directory. Live validation is summarized above; no test calls the live API.
 
 Before considering a credentialed release:
 
 1. Get written confirmation that the project, deployment model, and public derived proximity summaries are allowed under the intended plan. Confirm whether a freemium plan permits this non-internal, third-party display.
-2. Verify account entitlement, cost for a 50 km query, billing units, rate limits, and attribution wording with one authorized request. Record actual `X-Cost-Tokens` and rate-limit headers.
-3. Add request authentication and a server-side rate cap before putting credentials in any publicly reachable environment.
-4. Confirm how Netlify access, function logs, retention, and secret configuration work for the intended deploy context.
-5. Test live semantics and coverage, including no-data responses, latency, duplication, and whether the five-minute window is complete enough to interpret a zero.
+2. Recheck the tested query cost and account entitlement over time; one observed cost does not guarantee future pricing or establish long-term quota behavior.
+3. Add request authentication and a server-side rate cap before putting credentials in any publicly reachable production environment.
+4. Confirm how Netlify access, function logs, retention, and secret configuration work for the intended production deploy.
+5. Continue checking live semantics and coverage across more conditions; the examples above do not establish detection completeness, sensitivity, or an exact latency distribution.
 
 ## Sources
 

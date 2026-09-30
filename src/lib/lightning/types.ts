@@ -58,7 +58,3 @@ export interface LiveLightningSummary {
 export type LiveLightningApiResult =
   | { ok: true; summary: LiveLightningSummary }
   | { ok: false; status: ProviderFailureStatus | "invalid-coordinates"; message: string; diagnostics: ProviderDiagnostics };
-
-export interface LightningProvider {
-  fetchRecentActivity(latitude: number, longitude: number, signal?: AbortSignal): Promise<ProviderResult>;
-}
