@@ -1,3 +1,5 @@
+import type { CompassDirection } from "./bearing.ts";
+
 export const LIGHTNING_WINDOW_MINUTES = 5;
 export const LIGHTNING_QUERY_RADIUS_KM = 50;
 export const LIGHTNING_QUERY_LIMIT = 1000;
@@ -47,6 +49,7 @@ export interface LiveLightningSummary {
   fetchedAt: number;
   latestEventAt: number | null;
   nearestKm: number | null;
+  nearestDirection?: CompassDirection | null;
   nearestAgeMinutes: number | null;
   counts: { within5Km: number; within10Km: number; within25Km: number; within50Km: number };
   totalEvents: number;

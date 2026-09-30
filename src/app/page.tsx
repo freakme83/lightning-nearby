@@ -8,6 +8,7 @@ import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24H
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
+import LiveObservation from "./live-observation";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
@@ -276,10 +277,13 @@ export default function Home() {
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
       {forecast && !loading && <>
         <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
+          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">FORECAST · NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
           <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
           {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
         </div>
+      </>}
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecastHours={forecast && !loading ? hours : []} />
+      {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
           <p className="timeline-instruction">Tap an hour to see its forecast values.</p>
@@ -314,6 +318,6 @@ export default function Home() {
     </section>}
 
     <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>Forecast guidance, not an official warning.</strong> Forecasts can change and may miss local conditions. Follow your local meteorological and emergency authorities for safety advice.</p></footer>
-    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a></span><span>Location stays on this device</span></div>
+    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Location stays on this device</span></div>
   </main>;
 }
