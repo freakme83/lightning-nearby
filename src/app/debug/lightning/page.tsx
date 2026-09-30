@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { isValidCoordinates, LOCATION_STORAGE_KEY, parseMonitoredLocation } from "@/lib/location";
 import type { LiveLightningApiResult, ProviderDiagnostics } from "@/lib/lightning/types";
 import styles from "./debug.module.css";
@@ -91,7 +92,10 @@ export default function LightningDebugPage() {
           <h1>Live lightning test</h1>
           <p>Recent detected lightning events from Xweather. This is an observation test, separate from the forecast.</p>
         </div>
-        <a href="/debug/forecast">Forecast diagnostics</a>
+        <nav className={styles.navigation} aria-label="Page navigation">
+          <Link href="/">Back to app</Link>
+          <Link href="/debug/forecast">Forecast debug</Link>
+        </nav>
       </header>
 
       <section className={styles.panel} aria-labelledby="coordinates-heading">

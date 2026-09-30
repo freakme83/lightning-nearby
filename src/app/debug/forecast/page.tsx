@@ -181,7 +181,10 @@ export default function ForecastDebugPage() {
   return <main className={styles.page}>
     <header className={styles.header}>
       <div><p className={styles.kicker}>DEVELOPER TOOL</p><h1>Forecast diagnostics</h1><p>Observe the production forecast inputs and decision path for any coordinate.</p></div>
-      <Link href="/">Back to Lightning Nearby</Link>
+      <nav className={styles.navigation} aria-label="Page navigation">
+        <Link href="/">Back to app</Link>
+        <Link href="/debug/lightning">Lightning debug</Link>
+      </nav>
     </header>
 
     <section className={styles.panel} aria-labelledby="coordinate-title">

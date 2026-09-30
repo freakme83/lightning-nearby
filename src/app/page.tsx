@@ -318,6 +318,6 @@ export default function Home() {
     </section>}
 
     <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>Forecast guidance, not an official warning.</strong> Forecasts can change and may miss local conditions. Follow your local meteorological and emergency authorities for safety advice.</p></footer>
-    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Location stays on this device</span></div>
+    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Location stays on this device</span><nav className="footer-debug-links" aria-label="Developer pages"><a href="/debug/forecast">Forecast debug</a><a href="/debug/lightning">Lightning debug</a></nav></div>
   </main>;
 }
