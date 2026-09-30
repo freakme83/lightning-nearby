@@ -277,7 +277,7 @@ export default function Home() {
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
       {forecast && !loading && <>
         <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">FORECAST · NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
+          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">FORECAST · NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal in next 24h</span></> : "Forecast signal"}</h1></div></div>
           <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
           {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
         </div>
