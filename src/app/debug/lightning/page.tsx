@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { isValidCoordinates, LOCATION_STORAGE_KEY, parseMonitoredLocation } from "@/lib/location";
 import type { LiveLightningApiResult, ProviderDiagnostics } from "@/lib/lightning/types";
+import type { ComparableLightningResult, RawFlashComparisonApiResult } from "@/lib/lightning/xweather-flash-comparison";
 import type { XweatherResearchMode, XweatherResearchResult } from "@/lib/lightning/xweather-research";
 import styles from "./debug.module.css";
 
@@ -18,6 +19,10 @@ function formatNumber(value: number | null, digits = 1): string {
   return value === null ? "None" : value.toFixed(digits);
 }
 
+function formatAge(value: number | null): string {
+  return value === null ? "None" : `${value.toFixed(2)} min`;
+}
+
 function diagnosticsRows(diagnostics: ProviderDiagnostics) {
   return [
     ["Upstream HTTP status", diagnostics.httpStatus],
@@ -26,6 +31,40 @@ function diagnosticsRows(diagnostics: ProviderDiagnostics) {
     ["Remaining this minute", diagnostics.remainingMinute],
     ["Remaining this period", diagnostics.remainingPeriod],
   ] as const;
+}
+
+function ComparisonSide({ title, result }: { title: string; result: ComparableLightningResult }) {
+  if (!result.ok) return <div className={styles.comparisonSide}>
+    <h3>{title}</h3>
+    <p className={styles.error}><strong>{result.status}</strong> · {result.message}</p>
+    <dl className={styles.grid}>
+      <div><dt>Endpoint</dt><dd>{result.endpoint}</dd></div>
+      <div><dt>Successful</dt><dd>no</dd></div>
+      {diagnosticsRows(result.diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+    </dl>
+  </div>;
+  return <div className={styles.comparisonSide}>
+    <h3>{title}</h3>
+    <dl className={styles.grid}>
+      <div><dt>Endpoint</dt><dd>{result.endpoint}</dd></div>
+      <div><dt>Data kind</dt><dd>{result.kind}</dd></div>
+      <div><dt>Successful</dt><dd>yes</dd></div>
+      <div><dt>Activity present</dt><dd>{result.activityPresent ? "yes" : "no"}</dd></div>
+      <div><dt>Returned count</dt><dd>{result.returnedCount}</dd></div>
+      <div><dt>Nearest distance</dt><dd>{formatNumber(result.nearestKm)} km</dd></div>
+      <div><dt>Nearest direction</dt><dd>{result.nearestDirection ?? "None"}</dd></div>
+      <div><dt>Nearest age</dt><dd>{formatAge(result.nearestAgeMinutes)}</dd></div>
+      <div><dt>Newest age</dt><dd>{formatAge(result.newestAgeMinutes)}</dd></div>
+      <div><dt>Oldest age</dt><dd>{formatAge(result.oldestAgeMinutes)}</dd></div>
+      <div><dt>Within 5 km</dt><dd>{result.counts.within5Km}</dd></div>
+      <div><dt>Within 10 km</dt><dd>{result.counts.within10Km}</dd></div>
+      <div><dt>Within 25 km</dt><dd>{result.counts.within25Km}</dd></div>
+      <div><dt>Within 40 km</dt><dd>{result.counts.within40Km}</dd></div>
+      <div><dt>Rejected records</dt><dd>{result.rejectedEventCount}</dd></div>
+      <div><dt>At provider limit</dt><dd>{result.mayBeTruncated ? "yes — may be truncated" : "no"}</dd></div>
+      {diagnosticsRows(result.diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+    </dl>
+  </div>;
 }
 
 export default function LightningDebugPage() {
@@ -38,6 +77,9 @@ export default function LightningDebugPage() {
   const [researchMode, setResearchMode] = useState<XweatherResearchMode>("summary-default");
   const [researchResult, setResearchResult] = useState<XweatherResearchResult | null>(null);
   const [researchLoading, setResearchLoading] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState<RawFlashComparisonApiResult | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
 
   useEffect(() => {
     try {
@@ -111,6 +153,42 @@ export default function LightningDebugPage() {
     } finally {
       setResearchLoading(false);
     }
+  }
+
+  async function submitComparison(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const latitude = Number(latitudeText);
+    const longitude = Number(longitudeText);
+    if (!latitudeText.trim() || !longitudeText.trim() || !isValidCoordinates(latitude, longitude)) {
+      setValidationError("Enter a latitude from -90 to 90 and a longitude from -180 to 180.");
+      setComparisonResult(null);
+      return;
+    }
+    setComparisonLoading(true);
+    setComparisonResult(null);
+    setCopyStatus("");
+    setValidationError("");
+    try {
+      const response = await fetch("/api/lightning/debug-compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ latitude, longitude }),
+      });
+      setComparisonResult(await response.json() as RawFlashComparisonApiResult);
+    } catch {
+      setComparisonResult({ ok: false, status: "provider-unavailable", message: "The app could not reach its comparison endpoint." });
+    } finally {
+      setComparisonLoading(false);
+    }
+  }
+
+  async function copyComparisonJson() {
+    if (!comparisonResult?.ok) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(comparisonResult.comparison, null, 2));
+      setCopyStatus("Copied comparison JSON.");
+    } catch { setCopyStatus("Copy failed; select the JSON block manually."); }
   }
 
   const diagnostics = result?.ok ? result.summary.diagnostics : result?.diagnostics;
@@ -232,6 +310,35 @@ export default function LightningDebugPage() {
         <p className={styles.note}>{researchResult.dataKind === "aggregate-summary"
           ? "The summary endpoint does not return raw event coordinates or a nearest-event distance."
           : "Flash results are consolidated events, but the provider’s documented flash window remains five minutes."} These debug results do not change the app’s live observation behavior.</p>
+      </section>}
+
+      <section className={styles.panel} aria-labelledby="comparison-heading">
+        <h2 id="comparison-heading">Raw vs Flash comparison</h2>
+        <form className={styles.coordinateForm} onSubmit={submitComparison}>
+          <button type="submit" disabled={comparisonLoading}>{comparisonLoading ? "Comparing…" : "Compare Raw vs Flash"}</button>
+        </form>
+        <p className={styles.note}>Uses the coordinates above. One click intentionally makes two no-store upstream requests at approximately the same time: Raw 40 km and Flash 40 km. Nothing refreshes automatically.</p>
+      </section>
+
+      {comparisonResult && !comparisonResult.ok && <section className={styles.panel} aria-live="polite">
+        <h2>Comparison unavailable</h2>
+        <p className={styles.error}><strong>{comparisonResult.status}</strong> · {comparisonResult.message}</p>
+      </section>}
+
+      {comparisonResult?.ok && <section className={styles.panel} aria-live="polite">
+        <h2>Comparison result</h2>
+        <pre className={styles.summaryBlock}>{comparisonResult.comparison.summaryLines.join("\n")}</pre>
+        <div className={styles.comparisonColumns}>
+          <ComparisonSide title="Raw pulses / strikes" result={comparisonResult.comparison.raw} />
+          <ComparisonSide title="Consolidated flashes" result={comparisonResult.comparison.flash} />
+        </div>
+        <button className={styles.copyButton} type="button" onClick={() => void copyComparisonJson()}>Copy comparison JSON</button>
+        {copyStatus && <span className={styles.copyStatus} role="status">{copyStatus}</span>}
+        <details className={styles.jsonDetails}>
+          <summary>Show copyable JSON</summary>
+          <pre className={styles.jsonBlock}>{JSON.stringify(comparisonResult.comparison, null, 2)}</pre>
+        </details>
+        <p className={styles.note}>Pulse and flash counts use different event units and are not treated as an accuracy ratio. The primary comparison is presence, nearest distance, direction and recency within the shared 40 km radius.</p>
       </section>}
 
       <footer className={styles.footer}>
