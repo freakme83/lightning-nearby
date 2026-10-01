@@ -51,8 +51,8 @@ function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: numbe
         <circle className="proximity-flash-halo" r="3.1" />
         <circle className="proximity-flash-marker" r="2.4" />
       </g>}
-      <circle className="proximity-center-halo" cx="50" cy="50" r="2.6" />
-      <circle className="proximity-center" cx="50" cy="50" r="1.4" />
+      <circle className="proximity-center-halo" cx="50" cy="50" r="4" />
+      <circle className="proximity-center" cx="50" cy="50" r="2.2" />
       {point && <path className="proximity-flash-glyph" d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" transform={`translate(${point.x} ${point.y}) scale(.38)`} />}
     </svg>
     <figcaption>{point && distanceKm != null && directionLabel ? `${distanceKm.toFixed(1)} km ${directionLabel} · ` : ""}Schematic proximity · not a map</figcaption>
