@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CompassDirection } from "@/lib/lightning/bearing";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
-import { isCurrentLiveRequest, liveActivityCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
+import { isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
 import { proximityPoint } from "@/lib/proximity";
 import type { RiskLevel } from "@/lib/weather";
 
@@ -32,9 +32,9 @@ function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: numbe
   const point = distanceKm != null && direction ? proximityPoint(distanceKm, direction) : null;
   const directionLabel = direction ? DIRECTION[direction] : null;
   const description = point && distanceKm != null && directionLabel
-    ? `Nearest detected flash is ${distanceKm.toFixed(1)} kilometres ${directionLabel}. Schematic proximity, not a map.`
+    ? `Closest lightning activity is ${distanceKm.toFixed(1)} kilometres ${directionLabel}. Schematic proximity, not a map.`
     : clear
-      ? "No current flashes detected within 40 kilometres. Schematic proximity, not a map."
+      ? "No current lightning activity detected within 40 kilometres. Schematic proximity, not a map."
       : "Schematic proximity, not a map.";
 
   return <figure className={`proximity ${clear ? "is-clear" : ""}`} aria-label={description}>
@@ -127,13 +127,13 @@ export default function LiveObservation({ latitude, longitude, forecast }: Props
       {loading ? <><h1 id="overview-title">Checking nearby lightning…</h1><p>Requesting the latest manual observation for this location.</p></>
         : !result ? <><h1 id="overview-title">{forecast?.headline ?? "Check current lightning nearby"}</h1><p>{forecast?.summary ?? "Run a live check to see whether lightning is currently detected nearby."}</p>{forecast?.strongestWindow && <p className="strongest-window">Strongest window <strong>{forecast.strongestWindow}</strong></p>}</>
           : !summary ? <><h1 id="overview-title">Live lightning unavailable</h1><p>The current observation could not be completed. Try again when you’re ready.</p></>
-            : current?.status === "unavailable" ? <><h1 id="overview-title">Current lightning unavailable</h1><p>{liveActivityCopy(summary)}</p><p className="live-context">{summary.recentArea.totalDetections} {summary.recentArea.totalDetections === 1 ? "detection" : "detections"} reported within 50 km in the last 30 min</p></>
+            : current?.status === "unavailable" ? <><h1 id="overview-title">Current lightning unavailable</h1><p>{liveActivityCopy(summary)}</p></>
               : active ? <><h1 id="overview-title">Lightning activity nearby</h1>
-                {current.nearestKm !== null && <p className="nearest-line">Nearest detection: <strong>{current.nearestKm.toFixed(1)} km{current.nearestDirection ? ` ${DIRECTION[current.nearestDirection]}` : ""}{current.nearestAgeMinutes !== null ? ` · ${Math.max(0, Math.round(current.nearestAgeMinutes))} min ago` : ""}</strong></p>}
-                {count !== null && <p className="flash-count"><strong>{count}</strong> {count === 1 ? "flash" : "flashes"} within {countRadius} km in the last 5 min</p>}
-                <p className="live-context">{summary.recentArea.totalDetections} {summary.recentArea.totalDetections === 1 ? "detection" : "detections"} reported within 50 km in the last 30 min</p>
+                {current.nearestKm !== null && <p className="nearest-line">Closest activity: <strong>{current.nearestKm.toFixed(1)} km{current.nearestDirection ? ` ${DIRECTION[current.nearestDirection]}` : ""}{current.nearestAgeMinutes !== null ? ` · ${Math.max(0, Math.round(current.nearestAgeMinutes))} min ago` : ""}</strong></p>}
+                {count !== null && countRadius !== null && <p className="flash-count">{liveEventCountCopy(count, countRadius)}</p>}
+                <p className="live-context">{liveActivityCopy(summary)}</p>
               </>
-                : <><h1 id="overview-title">No current flashes detected within 40 km</h1><p>{liveActivityCopy(summary)}</p>{summary.recentArea.totalDetections > 0 && <p className="live-context">{summary.recentArea.totalDetections} {summary.recentArea.totalDetections === 1 ? "detection" : "detections"} reported within 50 km in the last 30 min</p>}</>}
+                : <><h1 id="overview-title">No current lightning activity detected within 40 km</h1><p>{liveActivityCopy(summary)}</p></>}
     </div>
     <button className={`${result ? "secondary-button" : "primary-button"} live-action`} type="button" disabled={loading} onClick={() => void checkActivity()}>{loading ? "Checking…" : checkedAt ? "Refresh live activity" : "Check live activity"}</button>
     {!loading && active && <ProximityGraphic distanceKm={current.nearestKm} direction={current.nearestDirection} />}
