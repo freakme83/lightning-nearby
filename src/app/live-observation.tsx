@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CompassDirection } from "@/lib/lightning/bearing";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
+import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
 import { proximityPoint } from "@/lib/proximity";
 import type { RiskLevel } from "@/lib/weather";
@@ -26,6 +27,7 @@ interface Props {
   latitude: number;
   longitude: number;
   forecast: ForecastContext | null;
+  autoCheckEligible: boolean;
 }
 
 function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: number | null; direction?: CompassDirection | null; clear?: boolean }) {
@@ -59,12 +61,13 @@ function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: numbe
   </figure>;
 }
 
-export default function LiveObservation({ latitude, longitude, forecast }: Props) {
+export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible }: Props) {
   const [result, setResult] = useState<LiveLightningApiResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const controller = useRef<AbortController | null>(null);
   const requestId = useRef(0);
+  const automaticEffectGeneration = useRef(0);
   const locationKey = `${latitude},${longitude}`;
   const locationRef = useRef(locationKey);
 
@@ -73,7 +76,7 @@ export default function LiveObservation({ latitude, longitude, forecast }: Props
     controller.current?.abort();
   }, []);
 
-  async function checkActivity() {
+  const checkActivity = useCallback(async () => {
     if (controller.current && !controller.current.signal.aborted) return;
     const active = new AbortController();
     controller.current = active;
@@ -102,7 +105,20 @@ export default function LiveObservation({ latitude, longitude, forecast }: Props
         setLoading(false);
       }
     }
-  }
+  }, [latitude, longitude, locationKey]);
+
+  useEffect(() => {
+    if (!autoCheckEligible) return;
+    const generation = ++automaticEffectGeneration.current;
+    // Defer one microtask so React Strict Mode's setup/cleanup replay cancels its
+    // first setup before it claims the session guard or starts the request.
+    queueMicrotask(() => {
+      if (generation !== automaticEffectGeneration.current) return;
+      if (!claimInitialLiveCheck(() => window.sessionStorage)) return;
+      void checkActivity();
+    });
+    return () => { automaticEffectGeneration.current += 1; };
+  }, [autoCheckEligible, checkActivity]);
 
   const severity = liveSeverity(result);
   const summary = result?.ok ? result.summary : null;
@@ -124,7 +140,7 @@ export default function LiveObservation({ latitude, longitude, forecast }: Props
       {active && liveBadge && <span className="current-badge">{liveBadge}</span>}
     </div>
     <div className="current-hero-content" aria-live="polite" aria-busy={loading}>
-      {loading ? <><h1 id="overview-title">Checking nearby lightning…</h1><p>Requesting the latest manual observation for this location.</p></>
+      {loading ? <><h1 id="overview-title">Checking nearby lightning…</h1><p>Requesting the latest lightning observation for this location.</p></>
         : !result ? <><h1 id="overview-title">{forecast?.headline ?? "Check current lightning nearby"}</h1><p>{forecast?.summary ?? "Run a live check to see whether lightning is currently detected nearby."}</p>{forecast?.strongestWindow && <p className="strongest-window">Strongest window <strong>{forecast.strongestWindow}</strong></p>}</>
           : !summary ? <><h1 id="overview-title">Live lightning unavailable</h1><p>The current observation could not be completed. Try again when you’re ready.</p></>
             : current?.status === "unavailable" ? <><h1 id="overview-title">Current lightning unavailable</h1><p>{liveActivityCopy(summary)}</p></>
@@ -143,6 +159,6 @@ export default function LiveObservation({ latitude, longitude, forecast }: Props
       <p>{forecast.summary}</p>
       {forecast.strongestWindow && <p className="strongest-window">Strongest window <strong>{forecast.strongestWindow}</strong></p>}
     </aside>}
-    {checkedAt !== null && <p className="manual-note">Manual check · refresh for a new observation</p>}
+    {checkedAt !== null && <p className="manual-note">Live check · refresh for a new observation</p>}
   </section>;
 }

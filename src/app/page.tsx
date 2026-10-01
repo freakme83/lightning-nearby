@@ -9,6 +9,7 @@ import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest,
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
+import { suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
@@ -31,6 +32,7 @@ function locationErrorMessage(code?: number) {
 export default function Home() {
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
+  const [initialSavedLocationKey, setInitialSavedLocationKey] = useState<string | null>(null);
   const [forecast, setForecast] = useState<Outlook | null>(null);
   const [hours, setHours] = useState<OutlookHour[]>([]);
   const [selectedTime, setSelectedTime] = useState<number | null>(null);
@@ -65,6 +67,7 @@ export default function Home() {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
+          setInitialSavedLocationKey(`${parsed.latitude},${parsed.longitude}`);
         }
       }
     } catch { /* Storage may be unavailable or contain malformed data; continue without a saved location. */ }
@@ -128,7 +131,13 @@ export default function Home() {
     setLocating(true);
     navigator.geolocation.getCurrentPosition(({ coords }) => {
       const reduced = reduceLocationPrecision(coords.latitude, coords.longitude);
-      try { const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" }); if (saved) setLocation(saved); }
+      try {
+        const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" });
+        if (saved) {
+          suppressInitialLiveCheckForSession(() => window.sessionStorage);
+          setInitialSavedLocationKey(null); setLocation(saved);
+        }
+      }
       catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
       setLocating(false);
     }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
@@ -236,6 +245,8 @@ export default function Home() {
     try {
       const saved = saveMonitoredLocation(localStorage, selection);
       if (!saved) return;
+      suppressInitialLiveCheckForSession(() => window.sessionStorage);
+      setInitialSavedLocationKey(null);
       setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
     } catch {
       setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
@@ -305,7 +316,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={initialSavedLocationKey === `${location.latitude},${location.longitude}`} />
       {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
