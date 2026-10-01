@@ -8,6 +8,7 @@ import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24H
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
+import TodayBriefing from "./today-briefing";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
 import { suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
@@ -357,6 +358,7 @@ export default function Home() {
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
       <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={initialSavedLocationKey === `${location.latitude},${location.longitude}`} />
       {forecast && !loading && <>
+        <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} />
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
           <p className="timeline-instruction">Tap an hour to see its forecast values.</p>

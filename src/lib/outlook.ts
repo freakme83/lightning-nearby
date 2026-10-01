@@ -1,3 +1,4 @@
+import type { DailyWeather } from "./today-briefing.ts";
 import { fetchEnsembleForecast, type EnsembleForecast, type LocalEnsembleThunderstormSupport } from "./ensemble.ts";
 import { explainRiskDecision, fetchForecast, hasRiskEvidence, type Forecast, type ForecastHour, type RiskInputs, type RiskLevel } from "./weather.ts";
 
@@ -51,6 +52,7 @@ export interface OutlookHour extends ForecastHour {
 export interface Outlook {
   timezone: string;
   hours: OutlookHour[];
+  daily?: DailyWeather[];
   fetchedAt: number;
   ensembleFetchedAt?: number;
 }
@@ -109,6 +111,7 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
   return {
     timezone: deterministic?.timezone ?? ensemble!.timezone,
     hours,
+    daily: deterministic?.daily,
     fetchedAt: Math.max(deterministic?.fetchedAt ?? 0, ensemble?.fetchedAt ?? 0),
     ...(ensemble ? { ensembleFetchedAt: ensemble.fetchedAt } : {}),
   };
