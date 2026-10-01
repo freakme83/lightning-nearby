@@ -127,6 +127,24 @@ test("source failures are isolated", async () => {
   assert.equal(await bothFailed.ensemble, null);
 });
 
+test("a forecast refresh can re-run the existing pipeline with the same saved coordinates", async () => {
+  const savedLocation = { latitude: 39.91, longitude: 32.84, label: "Selected coordinates", savedAt: 1 };
+  const originalLocation = { ...savedLocation };
+  const requestedPoints: Array<[number, number]> = [];
+  const requests = fetchOutlook(savedLocation.latitude, savedLocation.longitude, undefined,
+    async (latitude, longitude) => {
+      requestedPoints.push([latitude, longitude]);
+      return forecast([{ time: start, risk: "low" }]);
+    },
+    async (latitude, longitude) => {
+      requestedPoints.push([latitude, longitude]);
+      return ensemble([]);
+    });
+  await Promise.all([requests.primary, requests.ensemble]);
+  assert.deepEqual(requestedPoints, [[39.91, 32.84], [39.91, 32.84]]);
+  assert.deepEqual(savedLocation, originalLocation);
+});
+
 test("fast deterministic outlook resolves before slow ensemble; late evidence merges without changing risk or selection", async () => {
   let resolveEnsemble!: (value: EnsembleForecast) => void;
   let ensembleStarted = false;
