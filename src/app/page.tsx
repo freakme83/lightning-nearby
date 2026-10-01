@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
-import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
+import { INITIAL_VISIBLE_PLACE_RESULTS, MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, visiblePlaceResults, type PlaceResult } from "@/lib/geocoding";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
@@ -48,6 +48,7 @@ export default function Home() {
   const [candidate, setCandidate] = useState<LocationSelection | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [showAllSearchResults, setShowAllSearchResults] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchNotice, setSearchNotice] = useState("");
@@ -178,7 +179,7 @@ export default function Home() {
 
   const openPicker = useCallback(() => {
     setCandidate(location ? { ...location } : null);
-    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
     setLocationMessage(""); setPickerOpen(true);
   }, [location]);
 
@@ -187,17 +188,17 @@ export default function Home() {
     const coordinateQuery = parseCoordinateQuery(searchQuery);
     if (coordinateQuery.kind === "coordinates") {
       setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
-      setSearchError(""); setSearchResults([]); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      setSearchError(""); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
       return;
     }
     if (coordinateQuery.kind === "invalid") {
       setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
-      setSearchResults([]); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
       return;
     }
-    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setSearchNotice(""); setHasSearched(false); return; }
+    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); return; }
     immediateSearchRef.current = true;
-    setSearchError(""); setSearchNotice(""); setSearchRevision((revision) => revision + 1);
+    setSearchError(""); setSearchNotice(""); setShowAllSearchResults(false); setSearchRevision((revision) => revision + 1);
   }, [searchQuery]);
 
   useEffect(() => {
@@ -213,11 +214,11 @@ export default function Home() {
       setSearching(true); setSearchError("");
       void searchPlaces(query, controller.signal).then(({ results, fallbackMessage }) => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
-        setSearchResults(results); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
+        setSearchResults(results); setShowAllSearchResults(false); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
       }).catch(() => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
         setSearchError("Place search is unavailable right now. Check your connection and try again.");
-        setSearchResults([]); setSearchNotice(""); setHasSearched(true);
+        setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(true);
       }).finally(() => {
         if (!controller.signal.aborted && requestId === searchRequestRef.current) setSearching(false);
       });
@@ -229,7 +230,7 @@ export default function Home() {
   }, [pickerOpen, pickerMode, searchQuery, searchRevision]);
 
   const changeSearchQuery = useCallback((query: string) => {
-    setSearchQuery(query); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setSearchQuery(query); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
     const coordinateQuery = parseCoordinateQuery(query);
     if (coordinateQuery.kind === "coordinates") {
       setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
@@ -240,7 +241,7 @@ export default function Home() {
   }, []);
 
   const switchPickerMode = useCallback((mode: "search" | "map") => {
-    setSearching(false); setPickerMode(mode);
+    setSearching(false); setShowAllSearchResults(false); setPickerMode(mode);
   }, []);
 
   const selectPlace = useCallback((place: PlaceResult) => {
@@ -255,7 +256,7 @@ export default function Home() {
 
   const cancelPicker = useCallback(() => {
     searchRequestRef.current += 1; confirmRequestRef.current += 1; reverseControllerRef.current?.abort();
-    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setSearching(false); setResolvingLocation(false);
+    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setShowAllSearchResults(false); setSearching(false); setResolvingLocation(false);
   }, []);
 
   const confirmCandidate = useCallback(async () => {
@@ -288,6 +289,7 @@ export default function Home() {
   }, [candidate, resolvingLocation]);
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
+  const visibleSearchResults = visiblePlaceResults(searchResults, showAllSearchResults);
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
   const forecastContext: ForecastContext | null = forecast && !loading ? {
     risk: highestWindow?.risk ?? "low",
@@ -311,9 +313,10 @@ export default function Home() {
       {searching && <p className="picker-note" role="status">Searching places…</p>}
       {searchNotice && <p className="picker-note" role="status">{searchNotice}</p>}
       {!searching && hasSearched && !searchError && searchResults.length === 0 && <p className="picker-note" role="status">No matching places found. Try a nearby town or a broader search.</p>}
-      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{searchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
+      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{visibleSearchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
         <button type="button" onClick={() => selectPlace(place)}><strong>{place.label}</strong><span>{[place.admin1, place.country].filter(Boolean).join(", ") || formatCoordinates(place.latitude, place.longitude)}</span></button>
       </li>)}</ul>}
+      {searchResults.length > INITIAL_VISIBLE_PLACE_RESULTS && !showAllSearchResults && <button className="text-button" type="button" onClick={() => setShowAllSearchResults(true)}>Show more</button>}
     </> : <>
       <p className="picker-note">Tap the map to place one marker. Pan and zoom to refine the point.</p>
       <LocationMap candidate={candidate} onPick={pickMapPoint} />

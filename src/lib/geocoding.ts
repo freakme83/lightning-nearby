@@ -3,6 +3,10 @@ import { isValidCoordinates, type LocationSelection } from "./location.ts";
 export interface PlaceResult extends LocationSelection {
   label: string;
   source: "search";
+  /** Additional Open-Meteo administrative levels used only while matching search context. */
+  admin2?: string;
+  admin3?: string;
+  admin4?: string;
 }
 
 export interface PlaceSearchResults {
@@ -18,7 +22,7 @@ export type CoordinateQuery =
   | { kind: "not-coordinate" };
 export const MIN_PLACE_QUERY_LENGTH = 3;
 export const PLACE_SEARCH_DEBOUNCE_MS = 400;
-const MAX_VISIBLE_PLACE_RESULTS = 5;
+export const INITIAL_VISIBLE_PLACE_RESULTS = 5;
 const COORDINATE_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const NUMERIC_LIKE_VALUE = /^[+\-.\deE]+$/;
 
@@ -35,8 +39,8 @@ export function parseCoordinateQuery(query: string): CoordinateQuery {
   return { kind: "coordinates", latitude, longitude };
 }
 
-function limitedResults(results: PlaceResult[]): PlaceResult[] {
-  return results.slice(0, MAX_VISIBLE_PLACE_RESULTS);
+export function visiblePlaceResults(results: PlaceResult[], expanded: boolean): PlaceResult[] {
+  return expanded ? results : results.slice(0, INITIAL_VISIBLE_PLACE_RESULTS);
 }
 
 /** Drop malformed or unusable API rows rather than exposing unsafe coordinates to the picker. */
@@ -54,6 +58,9 @@ export function parsePlaceResults(payload: unknown): PlaceResult[] {
       ...(typeof row.timezone === "string" && row.timezone.trim() ? { timezone: row.timezone.trim() } : {}),
       ...(typeof row.country === "string" && row.country.trim() ? { country: row.country.trim() } : {}),
       ...(typeof row.admin1 === "string" && row.admin1.trim() ? { admin1: row.admin1.trim() } : {}),
+      ...(typeof row.admin2 === "string" && row.admin2.trim() ? { admin2: row.admin2.trim() } : {}),
+      ...(typeof row.admin3 === "string" && row.admin3.trim() ? { admin3: row.admin3.trim() } : {}),
+      ...(typeof row.admin4 === "string" && row.admin4.trim() ? { admin4: row.admin4.trim() } : {}),
       source: "search",
     }];
   });
@@ -78,8 +85,21 @@ function normalized(value: string): string {
 }
 
 function matchesContext(place: PlaceResult, context: string): boolean {
-  const haystack = normalized([place.label, place.admin1, place.country].filter(Boolean).join(" "));
-  return normalized(context).split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
+  const metadataWords = new Set(normalized([
+    place.label, place.admin1, place.admin2, place.admin3, place.admin4, place.country,
+  ].filter(Boolean).join(" ")).split(/[^\p{Letter}\p{Number}]+/u).filter(Boolean));
+  const contextWords = normalized(context).split(/[^\p{Letter}\p{Number}]+/u).filter(Boolean);
+  return contextWords.length > 0 && contextWords.every((word) => metadataWords.has(word));
+}
+
+function uniquePlaces(places: PlaceResult[]): PlaceResult[] {
+  const seen = new Set<string>();
+  return places.filter((place) => {
+    const key = `${place.latitude},${place.longitude}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -92,32 +112,35 @@ export async function searchPlaces(query: string, signal?: AbortSignal, lookup: 
   if (Array.from(fullQuery).length < MIN_PLACE_QUERY_LENGTH) return { results: [] };
   const exact = await lookup(fullQuery, signal);
   throwIfAborted(signal);
-  if (exact.length || !fullQuery.includes(",")) return { results: limitedResults(exact) };
+  if (exact.length || !fullQuery.includes(",")) return { results: exact };
 
   const parts = fullQuery.split(",").map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2) return { results: exact };
 
-  const primaryResults = await lookup(parts[0], signal);
-  throwIfAborted(signal);
-  const matching = primaryResults.filter((place) => parts.slice(1).some((context) => matchesContext(place, context)));
-  if (matching.length) {
-    return { results: limitedResults(matching), fallbackMessage: `No exact combined match; showing “${parts[0]}” results matching the remaining location context.` };
+  const lookupCache = new Map<string, Promise<PlaceResult[]>>();
+  const contextualMatches: PlaceResult[] = [];
+  for (const [candidateIndex, candidateTerm] of parts.entries()) {
+    throwIfAborted(signal);
+    const key = normalized(candidateTerm);
+    let candidateResults = lookupCache.get(key);
+    if (!candidateResults) {
+      candidateResults = lookup(candidateTerm, signal);
+      lookupCache.set(key, candidateResults);
+    }
+    const results = await candidateResults;
+    throwIfAborted(signal);
+    const context = parts.filter((_, index) => index !== candidateIndex).join(" ");
+    contextualMatches.push(...results.filter((place) => matchesContext(place, context)));
   }
 
-  // A small place may not exist in the gazetteer. Offer its broader context as a map starting point
-  // instead of presenting same-named places from unrelated regions as if they matched.
-  for (const context of parts.slice(1).reverse()) {
-    throwIfAborted(signal);
-    const broaderResults = await lookup(context, signal);
-    throwIfAborted(signal);
-    if (broaderResults.length) {
-      return { results: limitedResults(broaderResults), fallbackMessage: `No exact match found; showing the broader place “${context}”. Refine the point on the map.` };
-    }
+  const matchedPlaces = uniquePlaces(contextualMatches);
+  if (matchedPlaces.length) {
+    return { results: matchedPlaces, fallbackMessage: "No exact combined match; showing places that match the supplied location context." };
   }
 
   return {
-    results: limitedResults(primaryResults),
-    ...(primaryResults.length ? { fallbackMessage: `No exact combined match; showing results for “${parts[0]}” only. Check the region before selecting.` } : {}),
+    results: [],
+    fallbackMessage: "No exact combined match found. Try a broader search or choose a point on the map.",
   };
 }
 

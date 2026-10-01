@@ -21,6 +21,22 @@ test("searched locations save coordinates with optional place metadata and sourc
   assert.equal(formatLocationLabel(saved!), "Ankara, Türkiye");
 });
 
+test("extra administrative search context is not added to saved location metadata", () => {
+  const storage = memoryStorage();
+  const selection = {
+    latitude: 39.9, longitude: 32.8, label: "Belde", admin1: "Batman", country: "Türkiye", source: "search" as const,
+    admin2: "Batman", admin3: "Township", admin4: "Ward",
+  };
+  const saved = saveMonitoredLocation(storage, selection, 123);
+  assert.deepEqual(saved, {
+    latitude: 39.9, longitude: 32.8, savedAt: 123,
+    label: "Belde", admin1: "Batman", country: "Türkiye", source: "search",
+  });
+  assert.equal(storage.value?.includes("admin2"), false);
+  assert.equal(storage.value?.includes("admin3"), false);
+  assert.equal(storage.value?.includes("admin4"), false);
+});
+
 test("map-selected location saves without fabricated place metadata", () => {
   const storage = memoryStorage();
   const saved = saveMonitoredLocation(storage, { latitude: 52.52004, longitude: 13.40495, source: "map" }, 456);
@@ -75,7 +91,7 @@ test("search waits for a useful query length and uses a bounded type-ahead delay
   assert.equal(PLACE_SEARCH_DEBOUNCE_MS, 400);
 });
 
-test("multipart search falls back to the broader context instead of unrelated same-name places", async () => {
+test("multipart search does not promote unrelated places when no full context matches", async () => {
   const calls: string[] = [];
   const lookup = async (query: string) => {
     calls.push(query);
@@ -85,8 +101,8 @@ test("multipart search falls back to the broader context instead of unrelated sa
   };
   const result = await searchPlaces("Ayrancı, Ankara", undefined, lookup);
   assert.deepEqual(calls, ["Ayrancı, Ankara", "Ayrancı", "Ankara"]);
-  assert.deepEqual(result.results.map(({ label }) => label), ["Ankara"]);
-  assert.match(result.fallbackMessage ?? "", /broader place “Ankara”/);
+  assert.deepEqual(result.results, []);
+  assert.match(result.fallbackMessage ?? "", /No exact combined match found/);
 });
 
 test("multipart search keeps a first-component result when its context matches", async () => {
