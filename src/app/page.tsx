@@ -8,7 +8,7 @@ import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24H
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
-import LiveObservation from "./live-observation";
+import LiveObservation, { type ForecastContext } from "./live-observation";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
@@ -222,6 +222,12 @@ export default function Home() {
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
+  const forecastContext: ForecastContext | null = forecast && !loading ? {
+    risk: highestWindow?.risk ?? "low",
+    headline: `${RISK_LABEL[highestWindow?.risk ?? "low"]} signal in next 24h`,
+    summary: summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : ""),
+    strongestWindow: highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : null,
+  } : null;
   const locationPicker = pickerOpen && <section className="location-picker" aria-label="Choose a monitored location">
     <div className="picker-heading"><div><p className="eyebrow">LOCATION</p><h2>Choose a point</h2></div><button className="text-button" type="button" onClick={cancelPicker}>Cancel</button></div>
     <div className="picker-tabs" role="group" aria-label="Location selection method">
@@ -275,19 +281,12 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      {forecast && !loading && <>
-        <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">FORECAST · NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal in next 24h</span></> : "Forecast signal"}</h1></div></div>
-          <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
-          {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
-        </div>
-      </>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecastHours={forecast && !loading ? hours : []} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecastHours={forecast && !loading ? hours : []} forecast={forecastContext} />
       {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
           <p className="timeline-instruction">Tap an hour to see its forecast values.</p>
-          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook; scroll horizontally"><ol className="timeline">
+          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook"><ol className="timeline">
             {hours.map((hour, index) => {
               const previous = hours[index - 1];
               const showDate = index === 0 || !previous || localDateKey(previous.time, forecast.timezone) !== localDateKey(hour.time, forecast.timezone);
