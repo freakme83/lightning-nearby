@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
 import { INITIAL_VISIBLE_PLACE_RESULTS, MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, visiblePlaceResults, type PlaceResult } from "@/lib/geocoding";
+import { isCurrentGeolocationRequest, resolveGeolocationSelection } from "@/lib/geolocation";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
@@ -64,6 +65,15 @@ export default function Home() {
   const forecastRefreshPendingRef = useRef(false);
   const previousForecastLocationKeyRef = useRef<string | null>(null);
   const currentOutlookRef = useRef<Outlook | null>(null);
+  const geolocationRequestRef = useRef(0);
+  const geolocationControllerRef = useRef<AbortController | null>(null);
+
+  const invalidateGeolocationRequest = useCallback(() => {
+    geolocationRequestRef.current += 1;
+    geolocationControllerRef.current?.abort();
+    geolocationControllerRef.current = null;
+    setLocating(false);
+  }, []);
 
   useEffect(() => {
     try {
@@ -162,33 +172,54 @@ export default function Home() {
   const requestLocation = useCallback(() => {
     setLocationMessage("");
     if (!navigator.geolocation) { setLocationMessage("Location isn’t available in this browser. Try again in a browser that supports location."); return; }
+    geolocationControllerRef.current?.abort();
+    geolocationControllerRef.current = null;
+    const requestId = ++geolocationRequestRef.current;
     setLocating(true);
     navigator.geolocation.getCurrentPosition(({ coords }) => {
-      const reduced = reduceLocationPrecision(coords.latitude, coords.longitude);
-      try {
-        const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" });
-        if (saved) {
-          const locationKey = `${saved.latitude},${saved.longitude}`;
-          const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey: initialAutoCheckLocationKey, selectedLocationKey: locationKey });
-          if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
-          else {
-            suppressInitialLiveCheckForSession(() => window.sessionStorage);
-            setInitialAutoCheckLocationKey(null);
+      if (requestId !== geolocationRequestRef.current) return;
+      const controller = new AbortController();
+      geolocationControllerRef.current = controller;
+      void resolveGeolocationSelection(coords.latitude, coords.longitude, controller.signal).then((selection) => {
+        if (!isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) return;
+        try {
+          const saved = saveMonitoredLocation(localStorage, selection);
+          if (saved) {
+            const locationKey = `${saved.latitude},${saved.longitude}`;
+            const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey, selectedLocationKey: locationKey });
+            if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
+            else {
+              suppressInitialLiveCheckForSession(() => window.sessionStorage);
+              setInitialAutoCheckLocationKey(null);
+            }
+            setLocation(saved);
           }
-          setLocation(saved);
+        } catch {
+          setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again.");
         }
-      }
-      catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
-      setLocating(false);
-    }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
+      }).catch(() => {
+        if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
+          setLocationMessage("We couldn’t get your location. Check your device settings and try again.");
+        }
+      }).finally(() => {
+        if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
+          geolocationControllerRef.current = null;
+          setLocating(false);
+        }
+      });
+    }, (error) => {
+      if (requestId !== geolocationRequestRef.current) return;
+      setLocationMessage(locationErrorMessage(error.code)); setLocating(false);
+    },
     { enableHighAccuracy: false, maximumAge: 300_000, timeout: 15_000 });
   }, [initialAutoCheckLocationKey, location, storageReady]);
 
   const openPicker = useCallback(() => {
+    invalidateGeolocationRequest();
     setCandidate(location ? { ...location } : null);
     setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
     setLocationMessage(""); setPickerOpen(true);
-  }, [location]);
+  }, [invalidateGeolocationRequest, location]);
 
   const submitPlaceSearch = useCallback((event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -404,6 +435,6 @@ export default function Home() {
     </section>}
 
     <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>Forecast guidance, not an official warning.</strong> Forecasts can change and may miss local conditions. Follow your local meteorological and emergency authorities for safety advice.</p></footer>
-    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Location stays on this device</span><nav className="footer-debug-links" aria-label="Developer pages"><a href="/debug/forecast">Forecast debug</a><a href="/debug/lightning">Lightning debug</a></nav></div>
+    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Saved here · device/map coordinates sent to OpenStreetMap for place labels</span><nav className="footer-debug-links" aria-label="Developer pages"><a href="/debug/forecast">Forecast debug</a><a href="/debug/lightning">Lightning debug</a></nav></div>
   </main>;
 }
