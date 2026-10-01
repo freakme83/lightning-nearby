@@ -68,3 +68,13 @@ Flash cannot provide precise current position information for the existing 40–
 ## Release gates
 
 Successful technical integration does not resolve Xweather licensing, public redistribution rights, production suitability, abuse protection, access control, server-side rate limiting, long-term reliability, global detection completeness, latency distribution, or long-term quota/pricing behavior. Those remain release gates before public production use.
+
+## Initial Deploy Preview validation
+
+Validated on PR #16 on 1 October 2026:
+
+- **Quiet control — Ankara (`39.91, 32.84`):** Summary returned HTTP 200 with zero detections. Flash was `not-requested`. The Summary request reported `X-Cost-Tokens: 1` and `X-Cost-Multiplier(s): endpoint=1; spatial=1; temporal=1`. The normal product card independently displayed: “No lightning activity detected within 50 km in the last 30 minutes.”
+- **Previously active candidate (`42.93, -2.01`):** Summary also returned HTTP 200 with zero detections at validation time. Flash was correctly not requested and the observed cost was one token. The candidate was no longer active, so this is another branching check rather than an active-system validation.
+- **Active and recent-but-currently-clear cases:** not naturally available during this small validation pass. No additional locations were searched, to avoid spending quota to manufacture samples.
+
+The active Summary-to-Flash branch and partial-failure states are covered by fixtures and unit tests, but a real positive Deploy Preview comparison remains an explicit pre-merge validation gap.
