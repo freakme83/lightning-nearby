@@ -1,3 +1,5 @@
+import { parseDailyWeather, type DailyWeather } from "./today-briefing.ts";
+
 export type RiskLevel = "low" | "elevated" | "high";
 
 export interface ForecastHour {
@@ -17,6 +19,8 @@ export interface Forecast {
   latitude: number;
   longitude: number;
   hours: ForecastHour[];
+  daily?: DailyWeather[];
+  currentTemperatureC?: number;
   fetchedAt: number;
 }
 
@@ -166,6 +170,9 @@ export function calculateHighestRiskWindow(hours: ForecastHour[]): RiskWindow | 
 }
 
 interface OpenMeteoResponse {
+  utc_offset_seconds?: number;
+  daily?: unknown;
+  current?: { temperature_2m?: unknown };
   timezone?: string;
   latitude?: number;
   longitude?: number;
@@ -186,16 +193,22 @@ function optionalNumber(values: Array<number | null> | undefined, index: number)
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-export async function fetchForecast(latitude: number, longitude: number, signal?: AbortSignal): Promise<Forecast> {
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export async function fetchForecast(latitude: number, longitude: number, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<Forecast> {
   const url = new URL("https://api.open-meteo.com/v1/forecast");
   url.searchParams.set("latitude", String(latitude));
   url.searchParams.set("longitude", String(longitude));
   url.searchParams.set("hourly", "weather_code,precipitation_probability,cape,convective_inhibition,thunderstorm_probability");
+  url.searchParams.set("current", "temperature_2m");
+  url.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum");
   url.searchParams.set("forecast_hours", "48");
   url.searchParams.set("timezone", "auto");
   url.searchParams.set("timeformat", "unixtime");
 
-  const response = await fetch(url, { signal, cache: "no-store" });
+  const response = await fetcher(url, { signal, cache: "no-store" });
   if (!response.ok) throw new Error("forecast-unavailable");
   const data = await response.json() as OpenMeteoResponse;
   const times = data.hourly?.time;
@@ -204,6 +217,7 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
   }
 
   const hourly = data.hourly!;
+  const currentTemperatureC = optionalFiniteNumber(data.current?.temperature_2m);
   const hours = times.map((time, index) => {
     const inputs: RiskInputs = {
       weatherCode: optionalNumber(hourly.weather_code, index),
@@ -229,6 +243,8 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
     latitude: data.latitude ?? latitude,
     longitude: data.longitude ?? longitude,
     hours,
+    daily: parseDailyWeather(data.daily, data.utc_offset_seconds),
+    ...(currentTemperatureC != null ? { currentTemperatureC } : {}),
     fetchedAt: Date.now(),
   };
 }
