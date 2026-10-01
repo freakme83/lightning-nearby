@@ -11,7 +11,7 @@ import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLoc
 import TodayBriefing from "./today-briefing";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
-import { suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
+import { firstLocationAutoCheckKey, isInitialLiveCheckEligible, suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
@@ -34,7 +34,7 @@ function locationErrorMessage(code?: number) {
 export default function Home() {
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
-  const [initialSavedLocationKey, setInitialSavedLocationKey] = useState<string | null>(null);
+  const [initialAutoCheckLocationKey, setInitialAutoCheckLocationKey] = useState<string | null>(null);
   const [forecast, setForecast] = useState<Outlook | null>(null);
   const [hours, setHours] = useState<OutlookHour[]>([]);
   const [selectedTime, setSelectedTime] = useState<number | null>(null);
@@ -74,7 +74,7 @@ export default function Home() {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
-          setInitialSavedLocationKey(`${parsed.latitude},${parsed.longitude}`);
+          setInitialAutoCheckLocationKey(`${parsed.latitude},${parsed.longitude}`);
         }
       }
     } catch { /* Storage may be unavailable or contain malformed data; continue without a saved location. */ }
@@ -168,15 +168,21 @@ export default function Home() {
       try {
         const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" });
         if (saved) {
-          suppressInitialLiveCheckForSession(() => window.sessionStorage);
-          setInitialSavedLocationKey(null); setLocation(saved);
+          const locationKey = `${saved.latitude},${saved.longitude}`;
+          const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey: initialAutoCheckLocationKey, selectedLocationKey: locationKey });
+          if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
+          else {
+            suppressInitialLiveCheckForSession(() => window.sessionStorage);
+            setInitialAutoCheckLocationKey(null);
+          }
+          setLocation(saved);
         }
       }
       catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
       setLocating(false);
     }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
     { enableHighAccuracy: false, maximumAge: 300_000, timeout: 15_000 });
-  }, []);
+  }, [initialAutoCheckLocationKey, location, storageReady]);
 
   const openPicker = useCallback(() => {
     setCandidate(location ? { ...location } : null);
@@ -279,15 +285,20 @@ export default function Home() {
     try {
       const saved = saveMonitoredLocation(localStorage, selection);
       if (!saved) return;
-      suppressInitialLiveCheckForSession(() => window.sessionStorage);
-      setInitialSavedLocationKey(null);
+      const locationKey = `${saved.latitude},${saved.longitude}`;
+      const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey, selectedLocationKey: locationKey });
+      if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
+      else {
+        suppressInitialLiveCheckForSession(() => window.sessionStorage);
+        setInitialAutoCheckLocationKey(null);
+      }
       setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
     } catch {
       setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
     } finally {
       if (requestId === confirmRequestRef.current) setResolvingLocation(false);
     }
-  }, [candidate, resolvingLocation]);
+  }, [candidate, initialAutoCheckLocationKey, location, resolvingLocation, storageReady]);
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
   const visibleSearchResults = visiblePlaceResults(searchResults, showAllSearchResults);
@@ -356,7 +367,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={initialSavedLocationKey === `${location.latitude},${location.longitude}`} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} />
       {forecast && !loading && <>
         <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} />
         <section className="timeline-section" aria-labelledby="timeline-title">

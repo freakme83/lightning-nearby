@@ -5,7 +5,7 @@ import type { CompassDirection } from "@/lib/lightning/bearing";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
-import { proximityPoint } from "@/lib/proximity";
+import { DEFAULT_PROXIMITY_SCALE, proximityColor, proximityPoint, proximityScale } from "@/lib/proximity";
 import type { RiskLevel } from "@/lib/weather";
 
 const DIRECTION: Record<CompassDirection, string> = {
@@ -31,33 +31,38 @@ interface Props {
 }
 
 function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: number | null; direction?: CompassDirection | null; clear?: boolean }) {
-  const point = distanceKm != null && direction ? proximityPoint(distanceKm, direction) : null;
+  const scale = distanceKm != null && Number.isFinite(distanceKm) && distanceKm >= 0
+    ? proximityScale(distanceKm) : DEFAULT_PROXIMITY_SCALE;
+  const point = distanceKm != null && direction ? proximityPoint(distanceKm, direction, scale.outerKm) : null;
   const directionLabel = direction ? DIRECTION[direction] : null;
+  const scaleLabel = `Scale ${scale.outerKm} km`;
   const description = point && distanceKm != null && directionLabel
-    ? `Closest lightning activity is ${distanceKm.toFixed(1)} kilometres ${directionLabel}. Schematic proximity, not a map.`
+    ? `${scaleLabel}. Closest lightning activity is ${distanceKm.toFixed(1)} kilometres ${directionLabel}. Schematic proximity, not a map.`
     : clear
-      ? "No current lightning activity detected within 40 kilometres. Schematic proximity, not a map."
-      : "Schematic proximity, not a map.";
+      ? `Scale 40 kilometres. No current lightning activity detected within 40 kilometres. Schematic proximity, not a map.`
+      : `${scaleLabel}. Schematic proximity, not a map.`;
+  const ringRadius = (distance: number) => distance / scale.outerKm * 42;
+  const ringLabelY = (distance: number) => distance === scale.outerKm ? 12 : 50 - ringRadius(distance) - 2;
+  const [innerKm, middleKm, outerKm] = scale.ringsKm;
+  const color = distanceKm != null && Number.isFinite(distanceKm) ? proximityColor(distanceKm) : null;
 
   return <figure className={`proximity ${clear ? "is-clear" : ""}`} aria-label={description}>
     <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
       <circle className="proximity-fill" cx="50" cy="50" r="42" />
-      <circle className="proximity-ring" cx="50" cy="50" r="42" />
-      <circle className="proximity-ring" cx="50" cy="50" r="26.25" />
-      <circle className="proximity-ring" cx="50" cy="50" r="10.5" />
-      <text className="proximity-range range-40" x="50" y="13">40 km</text>
-      <text className="proximity-range range-25" x="50" y="21.5">25 km</text>
-      <text className="proximity-range range-10" x="50" y="37.5">10 km</text>
+      {[outerKm, middleKm, innerKm].map((range) => <circle key={range} className="proximity-ring" cx="50" cy="50" r={ringRadius(range)} />)}
+      {[outerKm, middleKm, innerKm].map((range) => <text key={range} className="proximity-range" x="50" y={ringLabelY(range)}>{range} km</text>)}
       <text className="proximity-north" x="50" y="3">N</text>
-      {point && <g className="proximity-flash" transform={`translate(${point.x} ${point.y})`}>
-        <circle className="proximity-flash-halo" r="3.1" />
-        <circle className="proximity-flash-marker" r="2.4" />
+      {point && color && <g className={`proximity-flash proximity-flash-${color}`} transform={`translate(${point.x} ${point.y})`}>
+        <circle className="proximity-flash-halo" r="2.5" />
+        <circle className="proximity-flash-marker" r="1.8" />
+        <path className="proximity-flash-glyph" d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" transform="scale(.25)" />
       </g>}
-      <circle className="proximity-center-halo" cx="50" cy="50" r="4" />
-      <circle className="proximity-center" cx="50" cy="50" r="2.2" />
-      {point && <path className="proximity-flash-glyph" d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" transform={`translate(${point.x} ${point.y}) scale(.38)`} />}
+      <circle className="proximity-center-halo" cx="50" cy="50" r="3.5" />
+      <circle className="proximity-center" cx="50" cy="50" r="2" />
     </svg>
-    <figcaption>{point && distanceKm != null && directionLabel ? `${distanceKm.toFixed(1)} km ${directionLabel} · ` : ""}Schematic proximity · not a map</figcaption>
+    <figcaption>{point && distanceKm != null && directionLabel
+      ? `${scaleLabel} · closest activity ${distanceKm.toFixed(1)} km ${directionLabel} · schematic proximity, not a map`
+      : clear ? "Scale 40 km · no current activity · schematic proximity, not a map" : `${scaleLabel} · schematic proximity, not a map`}</figcaption>
   </figure>;
 }
 
