@@ -51,34 +51,34 @@ export function parseDailyWeather(raw: unknown, utcOffsetSeconds: unknown): Dail
 
 const WET_CODES = new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 97, 99]);
 export const BRIEFING_PRECIPITATION = { possiblePercent: 20, likelyPercent: 60, measurableMm: 0.1 } as const;
-function condition(code?: number): string | undefined {
-  if (code === 0) return "Clear skies";
-  if (code === 1) return "Mostly clear skies";
-  if (code === 2) return "Partly cloudy skies";
-  if (code === 3) return "Overcast skies";
-  if (code === 45 || code === 48) return "Fog";
-  if ([51, 53, 55, 56, 57].includes(code ?? -1)) return "Drizzle";
-  if ([61, 63, 65, 66, 67].includes(code ?? -1)) return "Rain";
-  if ([80, 81, 82].includes(code ?? -1)) return "Rain showers";
-  if ([71, 73, 75, 77, 85, 86].includes(code ?? -1)) return "Snow";
-  if ([95, 96, 97, 99].includes(code ?? -1)) return "Thunderstorms";
+function condition(code: number | undefined, locale: Locale): string | undefined {
+  if (code === 0) return t(locale, "clearSkies");
+  if (code === 1) return t(locale, "mostlyClear");
+  if (code === 2) return t(locale, "partlyCloudy");
+  if (code === 3) return t(locale, "overcast");
+  if (code === 45 || code === 48) return t(locale, "fog");
+  if ([51, 53, 55, 56, 57].includes(code ?? -1)) return t(locale, "drizzle");
+  if ([61, 63, 65, 66, 67].includes(code ?? -1)) return t(locale, "rain");
+  if ([80, 81, 82].includes(code ?? -1)) return t(locale, "rainShowers");
+  if ([71, 73, 75, 77, 85, 86].includes(code ?? -1)) return t(locale, "snow");
+  if ([95, 96, 97, 99].includes(code ?? -1)) return t(locale, "thunderstorms");
 }
 
 /** Whole local day, never the rolling hourly window; no lightning-risk inputs. */
-export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: string, nowMs = Date.now(), currentTemperatureC?: number): string | null {
+export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: string, nowMs = Date.now(), currentTemperatureC?: number, locale: Locale = "en"): string | null {
   const day = days?.find((entry) => entry.date === localCalendarDate(nowMs, timezone));
   if (!day) return null;
-  const conditions = condition(day.weatherCode);
-  const temperatures = [day.highC != null && Number.isFinite(day.highC) ? `high ${Math.round(day.highC)}°C` : "", day.lowC != null && Number.isFinite(day.lowC) ? `low ${Math.round(day.lowC)}°C` : ""].filter(Boolean).join(", ");
+  const conditions = condition(day.weatherCode, locale);
+  const temperatures = [day.highC != null && Number.isFinite(day.highC) ? t(locale, "highTemp", { temp: Math.round(day.highC) }) : "", day.lowC != null && Number.isFinite(day.lowC) ? t(locale, "lowTemp", { temp: Math.round(day.lowC) }) : ""].filter(Boolean).join(", ");
   const current = currentTemperatureC != null && Number.isFinite(currentTemperatureC)
-    ? `Now ${Math.round(currentTemperatureC)}°C` : "";
+    ? t(locale, "nowTemp", { temp: Math.round(currentTemperatureC) }) : "";
   const first = [conditions, temperatures].filter(Boolean).join(" · ");
   const probability = day.precipitationProbability;
   const sum = day.precipitationMm;
   let precipitation = "";
-  if (probability != null && probability >= BRIEFING_PRECIPITATION.likelyPercent) precipitation = "Precipitation is likely today.";
-  else if ((probability != null && probability >= BRIEFING_PRECIPITATION.possiblePercent) || (sum != null && sum >= BRIEFING_PRECIPITATION.measurableMm)) precipitation = "Precipitation is possible today.";
-  else if (!WET_CODES.has(day.weatherCode ?? -1) && probability != null && sum != null) precipitation = "Little or no precipitation is expected today.";
+  if (probability != null && probability >= BRIEFING_PRECIPITATION.likelyPercent) precipitation = t(locale, "precipLikely");
+  else if ((probability != null && probability >= BRIEFING_PRECIPITATION.possiblePercent) || (sum != null && sum >= BRIEFING_PRECIPITATION.measurableMm)) precipitation = t(locale, "precipPossible");
+  else if (!WET_CODES.has(day.weatherCode ?? -1) && probability != null && sum != null) precipitation = t(locale, "precipLittle");
   const temperatureLine = current
     ? [current, temperatures].filter(Boolean).join(" · ")
     : first;
@@ -86,3 +86,4 @@ export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: s
   const text = [temperatureLine ? `${temperatureLine}.` : "", conditionsLine, precipitation].filter(Boolean).join(" ");
   return text || null;
 }
+import { t, type Locale } from "./i18n.ts";

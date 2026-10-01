@@ -3,13 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import type * as Leaflet from "leaflet";
 import type { LocationSelection } from "@/lib/location";
+import { t, type Locale } from "@/lib/i18n";
 
 interface LocationMapProps {
   candidate: LocationSelection | null;
   onPick: (latitude: number, longitude: number) => void;
+  locale: Locale;
 }
 
-export default function LocationMap({ candidate, onPick }: LocationMapProps) {
+export default function LocationMap({ candidate, onPick, locale }: LocationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const mapRef = useRef<Leaflet.Map | null>(null);
@@ -69,8 +71,8 @@ export default function LocationMap({ candidate, onPick }: LocationMapProps) {
   }, [candidate]);
 
   return <div className="map-frame">
-    {!mapReady && !mapError && <p className="map-status" role="status">Loading map…</p>}
-    {mapError && <p className="inline-error" role="alert">The map could not be loaded. You can still search for a place.</p>}
-    <div ref={containerRef} className="map-canvas" aria-label="Choose a location on the map" />
+    {!mapReady && !mapError && <p className="map-status" role="status">{t(locale, "mapLoading")}</p>}
+    {mapError && <p className="inline-error" role="alert">{t(locale, "mapError")}</p>}
+    <div ref={containerRef} className="map-canvas" aria-label={t(locale, "mapLabel")} />
   </div>;
 }

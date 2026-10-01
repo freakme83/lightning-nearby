@@ -249,12 +249,13 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
   };
 }
 
-export function describeWeatherCode(code?: number): string {
-  if (code == null) return "Weather code unavailable";
-  if (isThunderstormCode(code)) return "Thunderstorm signal";
-  if ([80, 81, 82].includes(code)) return "Rain showers";
-  if ([61, 63, 65].includes(code)) return "Rain";
-  if ([51, 53, 55, 56, 57].includes(code)) return "Drizzle";
-  if ([0, 1, 2, 3].includes(code)) return "No rain indicated";
-  return `WMO weather code ${code}`;
+export function describeWeatherCode(code?: number, locale: Locale = "en"): string {
+  if (code == null) return t(locale, "weatherUnavailable");
+  if (isThunderstormCode(code)) return t(locale, "thunderstormSignal");
+  if ([80, 81, 82].includes(code)) return t(locale, "rainShowers");
+  if ([61, 63, 65].includes(code)) return t(locale, "rain");
+  if ([51, 53, 55, 56, 57].includes(code)) return t(locale, "drizzle");
+  if ([0, 1, 2, 3].includes(code)) return t(locale, "noRain");
+  return t(locale, "wmoCode", { code });
 }
+import { t, type Locale } from "./i18n.ts";
