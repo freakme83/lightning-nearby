@@ -35,9 +35,15 @@
 .proximity-north{fill:#66777e;font:700 3.5px ui-monospace,monospace;text-anchor:middle}
 .proximity-center-halo{fill:#fff;opacity:.8}
 .proximity-center{fill:var(--deep)}
-.proximity-flash-halo{fill:none;stroke:#fff;stroke-width:1.2}
-.proximity-flash-marker{fill:var(--hero-soft);stroke:var(--hero-accent);stroke-width:.65}
-.proximity-flash-glyph{fill:var(--hero-accent);stroke:#fff;stroke-width:.8;stroke-linejoin:round;paint-order:stroke}
+.proximity-flash-halo{fill:#fff;stroke:#34434a;stroke-width:.35;opacity:.92}
+.proximity-flash-marker{stroke-width:.45}
+.proximity-flash-glyph{stroke:#fff;stroke-width:.8;stroke-linejoin:round;paint-order:stroke}
+.proximity-flash-red .proximity-flash-marker{fill:#f7d9d5;stroke:#bd3b32}
+.proximity-flash-red .proximity-flash-glyph{fill:#bd3027}
+.proximity-flash-amber .proximity-flash-marker{fill:#f7ebc8;stroke:#b98719}
+.proximity-flash-amber .proximity-flash-glyph{fill:#a87508}
+.proximity-flash-green .proximity-flash-marker{fill:#e0eedf;stroke:#438453}
+.proximity-flash-green .proximity-flash-glyph{fill:#317442}
 .proximity.is-clear .proximity-fill{fill:#eef3f180}
 .proximity figcaption{margin-top:4px;color:#7c888d;font:9px ui-monospace,monospace;text-align:center}
 .forecast-context{margin-top:23px;padding:18px 19px;border:1px solid #d9dfdc;border-radius:8px;background:#ffffffb8}
