@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { OutlookHour } from "@/lib/outlook";
 import type { CompassDirection } from "@/lib/lightning/bearing";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
-import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity } from "@/lib/live-observation";
+import { isCurrentLiveRequest, liveActivityCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
 import { proximityPoint } from "@/lib/proximity";
 import type { RiskLevel } from "@/lib/weather";
 
@@ -26,7 +25,6 @@ export interface ForecastContext {
 interface Props {
   latitude: number;
   longitude: number;
-  forecastHours: readonly Pick<OutlookHour, "time" | "signal">[];
   forecast: ForecastContext | null;
 }
 
@@ -45,22 +43,23 @@ function ProximityGraphic({ distanceKm, direction, clear }: { distanceKm?: numbe
       <circle className="proximity-ring" cx="50" cy="50" r="42" />
       <circle className="proximity-ring" cx="50" cy="50" r="26.25" />
       <circle className="proximity-ring" cx="50" cy="50" r="10.5" />
-      <text className="proximity-range range-40" x="50" y="6">40 km</text>
+      <text className="proximity-range range-40" x="50" y="13">40 km</text>
       <text className="proximity-range range-25" x="50" y="21.5">25 km</text>
       <text className="proximity-range range-10" x="50" y="37.5">10 km</text>
       <text className="proximity-north" x="50" y="3">N</text>
-      <circle className="proximity-center-halo" cx="50" cy="50" r="4" />
-      <circle className="proximity-center" cx="50" cy="50" r="2.2" />
       {point && <g className="proximity-flash" transform={`translate(${point.x} ${point.y})`}>
-        <circle r="5" />
-        <path d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" />
+        <circle className="proximity-flash-halo" r="3.1" />
+        <circle className="proximity-flash-marker" r="2.4" />
       </g>}
+      <circle className="proximity-center-halo" cx="50" cy="50" r="2.6" />
+      <circle className="proximity-center" cx="50" cy="50" r="1.4" />
+      {point && <path className="proximity-flash-glyph" d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" transform={`translate(${point.x} ${point.y}) scale(.38)`} />}
     </svg>
     <figcaption>{point && distanceKm != null && directionLabel ? `${distanceKm.toFixed(1)} km ${directionLabel} · ` : ""}Schematic proximity · not a map</figcaption>
   </figure>;
 }
 
-export default function LiveObservation({ latitude, longitude, forecastHours, forecast }: Props) {
+export default function LiveObservation({ latitude, longitude, forecast }: Props) {
   const [result, setResult] = useState<LiveLightningApiResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
@@ -106,9 +105,6 @@ export default function LiveObservation({ latitude, longitude, forecastHours, fo
   }
 
   const severity = liveSeverity(result);
-  const currentHour = forecastHours.find((hour) => checkedAt !== null && hour.time === Math.floor(checkedAt / 3_600_000) * 3_600);
-  const forecastRisk = currentHour?.signal.kind === "qualitative" ? currentHour.signal.risk : null;
-  const combined = result?.ok && result.summary.current.status !== "unavailable" ? currentSeverity(forecastRisk, severity) : null;
   const summary = result?.ok ? result.summary : null;
   const current = summary?.current;
   const countRadius = current?.status === "active" && severity && severity !== "none"
@@ -119,13 +115,13 @@ export default function LiveObservation({ latitude, longitude, forecastHours, fo
   const clear = current?.status === "clear" || current?.status === "not-requested";
   const unavailableState = Boolean(result && (!result.ok || current?.status === "unavailable"));
   const heroClass = active && severity ? `live-${severity}` : clear ? "live-clear" : unavailableState ? "live-unavailable" : forecast ? `forecast-fallback risk-${forecast.risk}` : "forecast-fallback";
-  const currentPicture = combined === "nearby" ? "Nearby activity" : combined ? combined[0].toUpperCase() + combined.slice(1) : null;
+  const liveBadge = liveSeverityLabel(severity);
   const checkedTime = checkedAt !== null ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(checkedAt) : null;
 
   return <section className={`current-hero ${heroClass}`} aria-labelledby="overview-title">
     <div className="current-hero-top">
       <div><p className="eyebrow">{result ? "LIVE LIGHTNING" : "CURRENT PICTURE"}</p>{checkedTime && <p className="live-checked">Checked {checkedTime} local time</p>}</div>
-      {active && currentPicture && <span className="current-badge">{currentPicture}</span>}
+      {active && liveBadge && <span className="current-badge">{liveBadge}</span>}
     </div>
     <div className="current-hero-content" aria-live="polite" aria-busy={loading}>
       {loading ? <><h1 id="overview-title">Checking nearby lightning…</h1><p>Requesting the latest manual observation for this location.</p></>

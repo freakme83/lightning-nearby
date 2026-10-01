@@ -35,8 +35,9 @@
 .proximity-north{fill:#66777e;font:700 3.5px ui-monospace,monospace;text-anchor:middle}
 .proximity-center-halo{fill:#fff;opacity:.8}
 .proximity-center{fill:var(--deep)}
-.proximity-flash circle{fill:var(--hero-soft);stroke:var(--hero-accent);stroke-width:.7}
-.proximity-flash path{fill:var(--hero-accent)}
+.proximity-flash-halo{fill:none;stroke:#fff;stroke-width:1.2}
+.proximity-flash-marker{fill:var(--hero-soft);stroke:var(--hero-accent);stroke-width:.65}
+.proximity-flash-glyph{fill:var(--hero-accent);stroke:#fff;stroke-width:.8;stroke-linejoin:round;paint-order:stroke}
 .proximity.is-clear .proximity-fill{fill:#eef3f180}
 .proximity figcaption{margin-top:4px;color:#7c888d;font:9px ui-monospace,monospace;text-align:center}
 .forecast-context{margin-top:23px;padding:18px 19px;border:1px solid #d9dfdc;border-radius:8px;background:#ffffffb8}
@@ -54,7 +55,7 @@
 .hour-slot{min-width:0}
 .hour-button{width:100%;min-width:0}
 .location-line>div:first-child{min-width:0}.coordinates{overflow-wrap:anywhere}
-body{overflow-x:hidden}.page-shell{width:100%}
+.page-shell{width:100%}
 
 @media(max-width:600px){
   .current-hero{margin-top:18px;padding:19px 16px;border-radius:10px}

@@ -4,6 +4,14 @@ import type { LiveLightningApiResult, LiveLightningSummary } from "./lightning/t
 export type LiveSeverity = "none" | "nearby" | "elevated" | "high";
 export type CurrentSeverity = RiskLevel | "nearby";
 
+/** Human-readable label for the live observation alone. */
+export function liveSeverityLabel(severity: LiveSeverity | null): string | null {
+  if (severity === "high") return "High";
+  if (severity === "elevated") return "Elevated";
+  if (severity === "nearby") return "Nearby activity";
+  return null;
+}
+
 /** A successful empty window is zero; a failed or unobserved request is unknown. */
 export function liveSeverity(result: LiveLightningApiResult | null): LiveSeverity | null {
   if (!result?.ok) return null;

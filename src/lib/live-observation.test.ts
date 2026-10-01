@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
-import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity } from "./live-observation.ts";
+import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity, liveSeverityLabel } from "./live-observation.ts";
 
 function observed(nearestKm: number | null, status: "not-requested" | "clear" | "active" = nearestKm === null ? "clear" : "active"): LiveLightningApiResult {
   if (status === "not-requested") {
@@ -41,6 +41,16 @@ test("current picture selects strongest evidence without changing either source"
   assert.equal(currentSeverity("elevated", liveSeverity(observed(40))), "elevated");
   assert.equal(currentSeverity(null, "nearby"), "nearby");
   assert.equal(currentSeverity(null, "none"), null);
+});
+
+test("live severity badge labels use the live result even when forecast severity is higher", () => {
+  const live = liveSeverity(observed(25));
+  assert.equal(currentSeverity("high", live), "high");
+  assert.equal(liveSeverityLabel(live), "Elevated");
+  assert.equal(liveSeverityLabel("high"), "High");
+  assert.equal(liveSeverityLabel("nearby"), "Nearby activity");
+  assert.equal(liveSeverityLabel("none"), null);
+  assert.equal(liveSeverityLabel(null), null);
 });
 
 test("failed live data stays unknown and cannot lower the forecast", () => {

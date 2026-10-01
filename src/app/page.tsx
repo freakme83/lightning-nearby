@@ -281,7 +281,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecastHours={forecast && !loading ? hours : []} forecast={forecastContext} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} />
       {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
