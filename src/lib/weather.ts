@@ -1,3 +1,5 @@
+import { parseDailyWeather, type DailyWeather } from "./today-briefing.ts";
+
 export type RiskLevel = "low" | "elevated" | "high";
 
 export interface ForecastHour {
@@ -17,6 +19,8 @@ export interface Forecast {
   latitude: number;
   longitude: number;
   hours: ForecastHour[];
+  daily?: DailyWeather[];
+  currentTemperatureC?: number;
   fetchedAt: number;
 }
 
@@ -53,35 +57,75 @@ export function hasRiskEvidence(input: RiskInputs): boolean {
       && input.precipitationProbability >= 0 && input.precipitationProbability <= 100);
 }
 
-export function classifyRisk(input: RiskInputs): RiskLevel {
+export interface RiskDecision {
+  risk: RiskLevel;
+  explanation: string;
+}
+
+/** Classification and its explanation share this single threshold decision path. */
+export function explainRiskDecision(input: RiskInputs): RiskDecision {
   // An upstream thunderstorm code is the clearest available signal in this
   // globally usable forecast. Hail codes are included in the same top class.
   if (isThunderstormCode(input.weatherCode)) {
-    return "high";
+    return {
+      risk: "high",
+      explanation: `High because deterministic WMO thunderstorm code ${input.weatherCode} is present.`,
+    };
   }
 
   // When supplied, the upstream thunderstorm probability is authoritative
   // over the weaker CAPE + precipitation fallback, including values below
   // our Elevated cutoff. Open-Meteo's coverage for this field is model-limited.
-  if (input.thunderstormProbability != null && input.thunderstormProbability >= 0 && input.thunderstormProbability <= 100) {
-    if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityHigh) return "high";
-    if (input.thunderstormProbability >= RISK_THRESHOLDS.directThunderstormProbabilityElevated) return "elevated";
-    return "low";
+  const probability = input.thunderstormProbability;
+  if (probability != null && Number.isFinite(probability) && probability >= 0 && probability <= 100) {
+    if (probability >= RISK_THRESHOLDS.directThunderstormProbabilityHigh) {
+      return {
+        risk: "high",
+        explanation: `High because provider thunderstorm probability is ${probability}%, at or above the ${RISK_THRESHOLDS.directThunderstormProbabilityHigh}% High threshold.`,
+      };
+    }
+    if (probability >= RISK_THRESHOLDS.directThunderstormProbabilityElevated) {
+      return {
+        risk: "elevated",
+        explanation: `Elevated because provider thunderstorm probability is ${probability}%, within the ${RISK_THRESHOLDS.directThunderstormProbabilityElevated}–${RISK_THRESHOLDS.directThunderstormProbabilityHigh - 1}% Elevated range.`,
+      };
+    }
+    return {
+      risk: "low",
+      explanation: `Low because provider thunderstorm probability is ${probability}%, below the ${RISK_THRESHOLDS.directThunderstormProbabilityElevated}% Elevated threshold. Provider probability takes precedence over the CAPE + precipitation fallback.`,
+    };
   }
 
   // Rain by itself and instability by itself are not thunderstorm evidence.
   // Elevated requires both meaningful CAPE and a precipitation signal. CIN
   // remains informational: model availability varies and we do not apply an
   // unvalidated CIN threshold to this deliberately small qualitative rule.
-  if (
+  const fallbackMet =
     input.cape != null && input.cape >= RISK_THRESHOLDS.elevatedCapeJPerKg &&
     input.precipitationProbability != null &&
-    input.precipitationProbability >= RISK_THRESHOLDS.elevatedPrecipitationProbabilityPercent
-  ) {
-    return "elevated";
+    input.precipitationProbability >= RISK_THRESHOLDS.elevatedPrecipitationProbabilityPercent;
+  if (fallbackMet) {
+    return {
+      risk: "elevated",
+      explanation: `Elevated because direct thunderstorm probability is unavailable, CAPE is ${input.cape} J/kg (threshold ${RISK_THRESHOLDS.elevatedCapeJPerKg} J/kg), and precipitation probability is ${input.precipitationProbability}% (threshold ${RISK_THRESHOLDS.elevatedPrecipitationProbabilityPercent}%), meeting the deterministic qualitative fallback.`,
+    };
   }
 
-  return "low";
+  if (input.cape != null || input.precipitationProbability != null) {
+    return {
+      risk: "low",
+      explanation: `Low because no direct thunderstorm code/probability triggered a higher level and the CAPE + precipitation fallback thresholds (${RISK_THRESHOLDS.elevatedCapeJPerKg} J/kg and ${RISK_THRESHOLDS.elevatedPrecipitationProbabilityPercent}%) were not both met.`,
+    };
+  }
+
+  return {
+    risk: "low",
+    explanation: "Low because the available deterministic weather code does not indicate a thunderstorm and no higher direct signal is present.",
+  };
+}
+
+export function classifyRisk(input: RiskInputs): RiskLevel {
+  return explainRiskDecision(input).risk;
 }
 
 export function selectNext24Hours<T extends ForecastHour>(hours: T[], nowMs = Date.now()): T[] {
@@ -126,6 +170,9 @@ export function calculateHighestRiskWindow(hours: ForecastHour[]): RiskWindow | 
 }
 
 interface OpenMeteoResponse {
+  utc_offset_seconds?: number;
+  daily?: unknown;
+  current?: { temperature_2m?: unknown };
   timezone?: string;
   latitude?: number;
   longitude?: number;
@@ -146,16 +193,22 @@ function optionalNumber(values: Array<number | null> | undefined, index: number)
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-export async function fetchForecast(latitude: number, longitude: number, signal?: AbortSignal): Promise<Forecast> {
+function optionalFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export async function fetchForecast(latitude: number, longitude: number, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<Forecast> {
   const url = new URL("https://api.open-meteo.com/v1/forecast");
   url.searchParams.set("latitude", String(latitude));
   url.searchParams.set("longitude", String(longitude));
   url.searchParams.set("hourly", "weather_code,precipitation_probability,cape,convective_inhibition,thunderstorm_probability");
+  url.searchParams.set("current", "temperature_2m");
+  url.searchParams.set("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum");
   url.searchParams.set("forecast_hours", "48");
   url.searchParams.set("timezone", "auto");
   url.searchParams.set("timeformat", "unixtime");
 
-  const response = await fetch(url, { signal, cache: "no-store" });
+  const response = await fetcher(url, { signal, cache: "no-store" });
   if (!response.ok) throw new Error("forecast-unavailable");
   const data = await response.json() as OpenMeteoResponse;
   const times = data.hourly?.time;
@@ -164,6 +217,7 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
   }
 
   const hourly = data.hourly!;
+  const currentTemperatureC = optionalFiniteNumber(data.current?.temperature_2m);
   const hours = times.map((time, index) => {
     const inputs: RiskInputs = {
       weatherCode: optionalNumber(hourly.weather_code, index),
@@ -189,6 +243,8 @@ export async function fetchForecast(latitude: number, longitude: number, signal?
     latitude: data.latitude ?? latitude,
     longitude: data.longitude ?? longitude,
     hours,
+    daily: parseDailyWeather(data.daily, data.utc_offset_seconds),
+    ...(currentTemperatureC != null ? { currentTemperatureC } : {}),
     fetchedAt: Date.now(),
   };
 }

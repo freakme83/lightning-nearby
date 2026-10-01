@@ -1,13 +1,48 @@
+import type { DailyWeather } from "./today-briefing.ts";
 import { fetchEnsembleForecast, type EnsembleForecast, type LocalEnsembleThunderstormSupport } from "./ensemble.ts";
-import { classifyRisk, fetchForecast, isThunderstormCode, type Forecast, type ForecastHour, type RiskLevel } from "./weather.ts";
+import { explainRiskDecision, fetchForecast, hasRiskEvidence, type Forecast, type ForecastHour, type RiskInputs, type RiskLevel } from "./weather.ts";
 
 export interface ThunderstormEvidence {
   providerProbability?: number;
-  deterministic?: { weatherCode?: number; risk?: RiskLevel };
+  deterministic?: {
+    weatherCode?: number;
+    precipitationProbability?: number;
+    cape?: number;
+    convectiveInhibition?: number;
+    risk?: RiskLevel;
+  };
   ensemble?: LocalEnsembleThunderstormSupport;
 }
 
 export type HourSignal = { kind: "qualitative"; risk: RiskLevel } | { kind: "unavailable" };
+
+export interface SignalDecisionExplanation {
+  qualitative: string;
+  ensemble: string;
+}
+
+function evidenceRiskInputs(evidence: ThunderstormEvidence): RiskInputs {
+  return {
+    weatherCode: evidence.deterministic?.weatherCode,
+    thunderstormProbability: evidence.providerProbability,
+    precipitationProbability: evidence.deterministic?.precipitationProbability,
+    cape: evidence.deterministic?.cape,
+    convectiveInhibition: evidence.deterministic?.convectiveInhibition,
+  };
+}
+
+function decisionFromEvidence(evidence: ThunderstormEvidence) {
+  const inputs = evidenceRiskInputs(evidence);
+  if (hasRiskEvidence(inputs)) return explainRiskDecision(inputs);
+  const normalizedRisk = evidence.deterministic?.risk;
+  if (normalizedRisk) {
+    return {
+      risk: normalizedRisk,
+      explanation: `${normalizedRisk[0].toUpperCase()}${normalizedRisk.slice(1)} because the normalized deterministic forecast already carries this qualitative result; raw inputs are unavailable.`,
+    };
+  }
+  return null;
+}
 
 export interface OutlookHour extends ForecastHour {
   evidence: ThunderstormEvidence;
@@ -17,17 +52,34 @@ export interface OutlookHour extends ForecastHour {
 export interface Outlook {
   timezone: string;
   hours: OutlookHour[];
+  daily?: DailyWeather[];
+  currentTemperatureC?: number;
   fetchedAt: number;
   ensembleFetchedAt?: number;
 }
 
-/** Only provider and deterministic inputs determine the qualitative level. Ensemble evidence stays secondary. */
+/** Only provider and deterministic inputs determine the qualitative level. */
 export function deriveSignal(evidence: ThunderstormEvidence): HourSignal {
-  if (isThunderstormCode(evidence.deterministic?.weatherCode)) return { kind: "qualitative", risk: "high" };
-  const probability = evidence.providerProbability;
-  const validProbability = probability != null && Number.isFinite(probability) && probability >= 0 && probability <= 100;
-  const risk = evidence.deterministic?.risk ?? (validProbability ? classifyRisk({ thunderstormProbability: probability }) : undefined);
-  return risk ? { kind: "qualitative", risk } : { kind: "unavailable" };
+  const decision = decisionFromEvidence(evidence);
+  return decision ? { kind: "qualitative", risk: decision.risk } : { kind: "unavailable" };
+}
+
+/** Explain the exact shared classifier result; ensemble support is narrated separately and never promotes it. */
+export function explainSignalDecision(evidence: ThunderstormEvidence): SignalDecisionExplanation {
+  const decision = decisionFromEvidence(evidence);
+  const qualitative = decision
+    ? decision.explanation
+    : "Qualitative signal unavailable because required deterministic/provider inputs are missing.";
+  const support = evidence.ensemble;
+  let ensemble: string;
+  if (!support) {
+    ensemble = "Ensemble support unavailable for this hour; no usable member count is available.";
+  } else if (support.supportingMembers === 0) {
+    ensemble = `Ensemble support: 0 / ${support.availableMembers} model members. Zero support does not override deterministic evidence and does not mean zero thunderstorm probability.`;
+  } else {
+    ensemble = `Ensemble support: ${support.supportingMembers} / ${support.availableMembers} model members. This is secondary evidence and does not change the qualitative level.`;
+  }
+  return { qualitative, ensemble };
 }
 
 /** Keep independent evidence sources together at exact Unix-hour timestamps. */
@@ -38,7 +90,13 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
     if (!Number.isInteger(hour.time) || hour.time % 3_600 !== 0) continue;
     const evidence: ThunderstormEvidence = {
       ...(hour.thunderstormProbability != null ? { providerProbability: hour.thunderstormProbability } : {}),
-      deterministic: { weatherCode: hour.weatherCode, risk: hour.risk },
+      deterministic: {
+        weatherCode: hour.weatherCode,
+        precipitationProbability: hour.precipitationProbability,
+        cape: hour.cape,
+        convectiveInhibition: hour.convectiveInhibition,
+        risk: hour.risk,
+      },
     };
     byTime.set(hour.time, { ...hour, evidence, signal: deriveSignal(evidence) });
   }
@@ -54,6 +112,8 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
   return {
     timezone: deterministic?.timezone ?? ensemble!.timezone,
     hours,
+    daily: deterministic?.daily,
+    currentTemperatureC: deterministic?.currentTemperatureC,
     fetchedAt: Math.max(deterministic?.fetchedAt ?? 0, ensemble?.fetchedAt ?? 0),
     ...(ensemble ? { ensembleFetchedAt: ensemble.fetchedAt } : {}),
   };

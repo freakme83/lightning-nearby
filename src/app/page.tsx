@@ -3,17 +3,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
-import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
+import { INITIAL_VISIBLE_PLACE_RESULTS, MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, visiblePlaceResults, type PlaceResult } from "@/lib/geocoding";
+import { isCurrentGeolocationRequest, resolveGeolocationSelection } from "@/lib/geolocation";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
+import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
+import TodayBriefing from "./today-briefing";
 import LocationMap from "./location-map";
+import LiveObservation, { type ForecastContext } from "./live-observation";
+import { firstLocationAutoCheckKey, isInitialLiveCheckEligible, suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
 function dayLabel(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, weekday: "short", day: "numeric", month: "short" }).format(epoch * 1000); }
 function period(start: number, end: number, timezone: string) { return `${localTime(start, timezone)}–${localTime(end, timezone)}`; }
+function displayLocationCoordinates(selection: LocationSelection): string {
+  return selection.label === "Selected coordinates"
+    ? `${selection.latitude}, ${selection.longitude}`
+    : formatCoordinates(selection.latitude, selection.longitude);
+}
 function locationErrorMessage(code?: number) {
   if (!navigator.geolocation) return "Location isn’t available in this browser. Try again in a browser that supports location.";
   if (code === 1) return "Location access was declined. Allow it in your browser or device settings, then try again.";
@@ -25,10 +35,13 @@ function locationErrorMessage(code?: number) {
 export default function Home() {
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
+  const [initialAutoCheckLocationKey, setInitialAutoCheckLocationKey] = useState<string | null>(null);
   const [forecast, setForecast] = useState<Outlook | null>(null);
   const [hours, setHours] = useState<OutlookHour[]>([]);
   const [selectedTime, setSelectedTime] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshingForecast, setRefreshingForecast] = useState(false);
+  const [forecastRefreshRevision, setForecastRefreshRevision] = useState(0);
   const [forecastError, setForecastError] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
@@ -37,6 +50,7 @@ export default function Home() {
   const [candidate, setCandidate] = useState<LocationSelection | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [showAllSearchResults, setShowAllSearchResults] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchNotice, setSearchNotice] = useState("");
@@ -48,7 +62,18 @@ export default function Home() {
   const confirmRequestRef = useRef(0);
   const reverseControllerRef = useRef<AbortController | null>(null);
   const forecastRequestRef = useRef(0);
+  const forecastRefreshPendingRef = useRef(false);
+  const previousForecastLocationKeyRef = useRef<string | null>(null);
   const currentOutlookRef = useRef<Outlook | null>(null);
+  const geolocationRequestRef = useRef(0);
+  const geolocationControllerRef = useRef<AbortController | null>(null);
+
+  const invalidateGeolocationRequest = useCallback(() => {
+    geolocationRequestRef.current += 1;
+    geolocationControllerRef.current?.abort();
+    geolocationControllerRef.current = null;
+    setLocating(false);
+  }, []);
 
   useEffect(() => {
     try {
@@ -59,6 +84,7 @@ export default function Home() {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
+          setInitialAutoCheckLocationKey(`${parsed.latitude},${parsed.longitude}`);
         }
       }
     } catch { /* Storage may be unavailable or contain malformed data; continue without a saved location. */ }
@@ -68,12 +94,20 @@ export default function Home() {
 
   useEffect(() => {
     if (!storageReady || !location) return;
+    const locationKey = `${location.latitude},${location.longitude}`;
+    const sameSavedPoint = previousForecastLocationKeyRef.current === locationKey;
+    previousForecastLocationKeyRef.current = locationKey;
     const controller = new AbortController();
     const requestId = ++forecastRequestRef.current;
     const isCurrentRequest = () => isCurrentForecastRequest(requestId, forecastRequestRef.current, controller.signal);
     // Clear prior results as this effect synchronizes to a different saved location.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true); setForecastError(false); setForecast(null); setHours([]); setSelectedTime(null);
+    setLoading(true); setForecastError(false); setForecast(null); setHours([]);
+    if (!sameSavedPoint) {
+      forecastRefreshPendingRef.current = false;
+      setRefreshingForecast(false);
+      setSelectedTime(null);
+    }
     currentOutlookRef.current = null;
     const requests = fetchOutlook(location.latitude, location.longitude, controller.signal);
     let pendingEnsemble: Awaited<typeof requests.ensemble> = null;
@@ -84,10 +118,14 @@ export default function Home() {
       const result = pendingEnsemble ? mergeEnsembleEvidence(primary, pendingEnsemble) : primary;
       const nextHours = selectNext24Hours(result.hours);
       if (!nextHours.some((hour) => hour.signal.kind === "qualitative")) {
-        setForecastError(true); setLoading(false); return;
+        setForecastError(true); setLoading(false);
+        forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
+        return;
       }
       currentOutlookRef.current = result;
-      setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null); setLoading(false);
+      setForecast(result); setHours(nextHours);
+      setSelectedTime((selected) => retainSelectedHour(sameSavedPoint ? selected : null, nextHours));
+      setLoading(false); forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
       if (isGenericFixedOffsetTimezone(result.timezone)) {
         void resolveDisplayTimezone(location.latitude, location.longitude, result.timezone, location.timezone, controller.signal)
           .then((timezone) => {
@@ -100,7 +138,10 @@ export default function Home() {
           });
       }
     }).catch(() => {
-      if (isCurrentRequest()) { setForecastError(true); setLoading(false); }
+      if (isCurrentRequest()) {
+        setForecastError(true); setLoading(false);
+        forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
+      }
     });
     void requests.ensemble.then((ensemble) => {
       if (!isCurrentRequest() || !ensemble) return;
@@ -114,37 +155,94 @@ export default function Home() {
       setSelectedTime((selected) => retainSelectedHour(selected, nextHours));
     });
     return () => controller.abort();
-  }, [location, storageReady]);
+  }, [forecastRefreshRevision, location, storageReady]);
+
+  const refreshForecast = useCallback(() => {
+    const nextRevision = nextForecastRefreshRevision(forecastRefreshRevision, {
+      loadingForecast: loading,
+      locating,
+      refreshPending: forecastRefreshPendingRef.current,
+    });
+    if (nextRevision === null) return;
+    forecastRefreshPendingRef.current = true;
+    setRefreshingForecast(true);
+    setForecastRefreshRevision(nextRevision);
+  }, [forecastRefreshRevision, loading, locating]);
 
   const requestLocation = useCallback(() => {
     setLocationMessage("");
     if (!navigator.geolocation) { setLocationMessage("Location isn’t available in this browser. Try again in a browser that supports location."); return; }
+    geolocationControllerRef.current?.abort();
+    geolocationControllerRef.current = null;
+    const requestId = ++geolocationRequestRef.current;
     setLocating(true);
     navigator.geolocation.getCurrentPosition(({ coords }) => {
-      const reduced = reduceLocationPrecision(coords.latitude, coords.longitude);
-      try { const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" }); if (saved) setLocation(saved); }
-      catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
-      setLocating(false);
-    }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
+      if (requestId !== geolocationRequestRef.current) return;
+      const controller = new AbortController();
+      geolocationControllerRef.current = controller;
+      void resolveGeolocationSelection(coords.latitude, coords.longitude, controller.signal).then((selection) => {
+        if (!isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) return;
+        try {
+          const saved = saveMonitoredLocation(localStorage, selection);
+          if (saved) {
+            const locationKey = `${saved.latitude},${saved.longitude}`;
+            const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey, selectedLocationKey: locationKey });
+            if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
+            else {
+              suppressInitialLiveCheckForSession(() => window.sessionStorage);
+              setInitialAutoCheckLocationKey(null);
+            }
+            setLocation(saved);
+          }
+        } catch {
+          setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again.");
+        }
+      }).catch(() => {
+        if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
+          setLocationMessage("We couldn’t get your location. Check your device settings and try again.");
+        }
+      }).finally(() => {
+        if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
+          geolocationControllerRef.current = null;
+          setLocating(false);
+        }
+      });
+    }, (error) => {
+      if (requestId !== geolocationRequestRef.current) return;
+      setLocationMessage(locationErrorMessage(error.code)); setLocating(false);
+    },
     { enableHighAccuracy: false, maximumAge: 300_000, timeout: 15_000 });
-  }, []);
+  }, [initialAutoCheckLocationKey, location, storageReady]);
 
   const openPicker = useCallback(() => {
+    invalidateGeolocationRequest();
     setCandidate(location ? { ...location } : null);
-    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
     setLocationMessage(""); setPickerOpen(true);
-  }, [location]);
+  }, [invalidateGeolocationRequest, location]);
 
   const submitPlaceSearch = useCallback((event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setSearchNotice(""); setHasSearched(false); return; }
+    const coordinateQuery = parseCoordinateQuery(searchQuery);
+    if (coordinateQuery.kind === "coordinates") {
+      setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
+      setSearchError(""); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      return;
+    }
+    if (coordinateQuery.kind === "invalid") {
+      setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
+      setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      return;
+    }
+    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); return; }
     immediateSearchRef.current = true;
-    setSearchError(""); setSearchNotice(""); setSearchRevision((revision) => revision + 1);
+    setSearchError(""); setSearchNotice(""); setShowAllSearchResults(false); setSearchRevision((revision) => revision + 1);
   }, [searchQuery]);
 
   useEffect(() => {
     if (!pickerOpen || pickerMode !== "search") return;
     const query = searchQuery.trim();
+    if (parseCoordinateQuery(query).kind !== "not-coordinate") return;
     if (Array.from(query).length < MIN_PLACE_QUERY_LENGTH) return;
     const requestId = ++searchRequestRef.current;
     const controller = new AbortController();
@@ -154,11 +252,11 @@ export default function Home() {
       setSearching(true); setSearchError("");
       void searchPlaces(query, controller.signal).then(({ results, fallbackMessage }) => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
-        setSearchResults(results); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
+        setSearchResults(results); setShowAllSearchResults(false); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
       }).catch(() => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
         setSearchError("Place search is unavailable right now. Check your connection and try again.");
-        setSearchResults([]); setSearchNotice(""); setHasSearched(true);
+        setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(true);
       }).finally(() => {
         if (!controller.signal.aborted && requestId === searchRequestRef.current) setSearching(false);
       });
@@ -170,11 +268,18 @@ export default function Home() {
   }, [pickerOpen, pickerMode, searchQuery, searchRevision]);
 
   const changeSearchQuery = useCallback((query: string) => {
-    setSearchQuery(query); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setSearchQuery(query); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    const coordinateQuery = parseCoordinateQuery(query);
+    if (coordinateQuery.kind === "coordinates") {
+      setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
+    } else {
+      setCandidate((current) => current?.label === "Selected coordinates" ? null : current);
+      if (coordinateQuery.kind === "invalid") setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
+    }
   }, []);
 
   const switchPickerMode = useCallback((mode: "search" | "map") => {
-    setSearching(false); setPickerMode(mode);
+    setSearching(false); setShowAllSearchResults(false); setPickerMode(mode);
   }, []);
 
   const selectPlace = useCallback((place: PlaceResult) => {
@@ -189,7 +294,7 @@ export default function Home() {
 
   const cancelPicker = useCallback(() => {
     searchRequestRef.current += 1; confirmRequestRef.current += 1; reverseControllerRef.current?.abort();
-    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setSearching(false); setResolvingLocation(false);
+    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setShowAllSearchResults(false); setSearching(false); setResolvingLocation(false);
   }, []);
 
   const confirmCandidate = useCallback(async () => {
@@ -211,16 +316,30 @@ export default function Home() {
     try {
       const saved = saveMonitoredLocation(localStorage, selection);
       if (!saved) return;
+      const locationKey = `${saved.latitude},${saved.longitude}`;
+      const autoCheckKey = firstLocationAutoCheckKey({ storageReady, currentLocationKey: location ? `${location.latitude},${location.longitude}` : null, initialAutoCheckLocationKey, selectedLocationKey: locationKey });
+      if (autoCheckKey) setInitialAutoCheckLocationKey(autoCheckKey);
+      else {
+        suppressInitialLiveCheckForSession(() => window.sessionStorage);
+        setInitialAutoCheckLocationKey(null);
+      }
       setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
     } catch {
       setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
     } finally {
       if (requestId === confirmRequestRef.current) setResolvingLocation(false);
     }
-  }, [candidate, resolvingLocation]);
+  }, [candidate, initialAutoCheckLocationKey, location, resolvingLocation, storageReady]);
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
+  const visibleSearchResults = visiblePlaceResults(searchResults, showAllSearchResults);
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
+  const forecastContext: ForecastContext | null = forecast && !loading ? {
+    risk: highestWindow?.risk ?? "low",
+    headline: `${RISK_LABEL[highestWindow?.risk ?? "low"]} signal in next 24h`,
+    summary: summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : ""),
+    strongestWindow: highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : null,
+  } : null;
   const locationPicker = pickerOpen && <section className="location-picker" aria-label="Choose a monitored location">
     <div className="picker-heading"><div><p className="eyebrow">LOCATION</p><h2>Choose a point</h2></div><button className="text-button" type="button" onClick={cancelPicker}>Cancel</button></div>
     <div className="picker-tabs" role="group" aria-label="Location selection method">
@@ -230,22 +349,23 @@ export default function Home() {
     {pickerMode === "search" ? <>
       <form className="place-search" onSubmit={submitPlaceSearch}>
         <label className="visually-hidden" htmlFor="place-search">Search for a place</label>
-        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, or place" autoComplete="off" />
+        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, place, or coordinates" autoComplete="off" />
         <button className="secondary-button" type="submit">{searching ? "Searching…" : "Search"}</button>
       </form>
       {searchError && <p className="inline-error" role="alert">{searchError}</p>}
       {searching && <p className="picker-note" role="status">Searching places…</p>}
       {searchNotice && <p className="picker-note" role="status">{searchNotice}</p>}
       {!searching && hasSearched && !searchError && searchResults.length === 0 && <p className="picker-note" role="status">No matching places found. Try a nearby town or a broader search.</p>}
-      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{searchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
+      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{visibleSearchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
         <button type="button" onClick={() => selectPlace(place)}><strong>{place.label}</strong><span>{[place.admin1, place.country].filter(Boolean).join(", ") || formatCoordinates(place.latitude, place.longitude)}</span></button>
       </li>)}</ul>}
+      {searchResults.length > INITIAL_VISIBLE_PLACE_RESULTS && !showAllSearchResults && <button className="text-button" type="button" onClick={() => setShowAllSearchResults(true)}>Show more</button>}
     </> : <>
       <p className="picker-note">Tap the map to place one marker. Pan and zoom to refine the point.</p>
       <LocationMap candidate={candidate} onPick={pickMapPoint} />
       <p className="picker-note">Map tiles and place labels © OpenStreetMap contributors.</p>
     </>}
-    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{formatCoordinates(candidate.latitude, candidate.longitude)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? "Finding place…" : "Use this location"}</button></div>}
+    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{displayLocationCoordinates(candidate)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? candidate.source === "map" ? "Finding place…" : "Saving location…" : "Use this location"}</button></div>}
     {candidate?.source === "map" && <p className="picker-note">Confirming this point may send its coordinates to OpenStreetMap Nominatim to find a place label.</p>}
   </section>;
 
@@ -268,22 +388,23 @@ export default function Home() {
       <p className="permission-note">Your browser asks before sharing device location. It is not requested until you tap “Use my location”.</p>
       <div className="welcome-rule" /><p className="micro-copy">Forecast guidance only. This is not an official weather warning.</p>
     </section> : <section className="overview" aria-labelledby="overview-title">
-      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{formatCoordinates(location.latitude, location.longitude)}</p>}</div>
-        <div className="location-actions"><button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Update location"}</button><button className="text-button" type="button" onClick={openPicker}>Search / map</button></div></div>
+      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
+        <div className="location-actions">
+          <button className="text-button" type="button" onClick={refreshForecast} disabled={loading || locating || refreshingForecast}>{refreshingForecast ? "Refreshing…" : "Refresh forecast"}</button>
+          <button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Use current location"}</button>
+          <button className="text-button" type="button" onClick={openPicker}>Search / map</button>
+        </div></div>
       {locationPicker}
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} />
       {forecast && !loading && <>
-        <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal</span></> : "Forecast signal"}</h1></div></div>
-          <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
-          {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
-        </div>
+        <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} />
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
           <p className="timeline-instruction">Tap an hour to see its forecast values.</p>
-          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook; scroll horizontally"><ol className="timeline">
+          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook. Scroll horizontally to see more hours."><ol className="timeline">
             {hours.map((hour, index) => {
               const previous = hours[index - 1];
               const showDate = index === 0 || !previous || localDateKey(previous.time, forecast.timezone) !== localDateKey(hour.time, forecast.timezone);
@@ -314,6 +435,6 @@ export default function Home() {
     </section>}
 
     <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>Forecast guidance, not an official warning.</strong> Forecasts can change and may miss local conditions. Follow your local meteorological and emergency authorities for safety advice.</p></footer>
-    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a></span><span>Location stays on this device</span></div>
+    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Saved here · device/map coordinates sent to OpenStreetMap for place labels</span><nav className="footer-debug-links" aria-label="Developer pages"><a href="/debug/forecast">Forecast debug</a><a href="/debug/lightning">Lightning debug</a></nav></div>
   </main>;
 }
