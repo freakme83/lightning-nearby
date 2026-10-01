@@ -191,7 +191,10 @@ export default function LightningDebugPage() {
     } catch { setCopyStatus("Copy failed; select the JSON block manually."); }
   }
 
-  const diagnostics = result?.ok ? result.summary.diagnostics : result?.diagnostics;
+  const summaryDiagnostics = result?.ok ? result.summary.recentArea.diagnostics : result?.diagnostics;
+  const currentDiagnostics = result?.ok && result.summary.current.status !== "not-requested"
+    ? result.summary.current.diagnostics
+    : null;
 
   return (
     <main className={styles.page}>
@@ -224,7 +227,7 @@ export default function LightningDebugPage() {
           }}>Use saved location</button>}
         </form>
         {validationError && <p className={styles.error} role="alert">{validationError}</p>}
-        <p className={styles.note}>Each click makes one request for events from the latest five minutes, within 50 km. Nothing refreshes automatically.</p>
+        <p className={styles.note}>Each click makes one 30-minute / 50 km Summary request, then one 5-minute / 40 km Flash request only when Summary is positive. Nothing refreshes automatically.</p>
       </section>
 
       {loading && <p className={styles.status} role="status">Requesting current observation data…</p>}
@@ -241,25 +244,41 @@ export default function LightningDebugPage() {
           <div><dt>Status</dt><dd>{result.summary.status}</dd></div>
           <div><dt>Provider</dt><dd>{result.summary.provider}</dd></div>
           <div><dt>Fetched at</dt><dd>{formatDate(result.summary.fetchedAt)}</dd></div>
-          <div><dt>Source window</dt><dd>{result.summary.observationWindowMinutes} minutes</dd></div>
-          <div><dt>Latest event</dt><dd>{formatDate(result.summary.latestEventAt)}</dd></div>
-          <div><dt>Nearest event</dt><dd>{formatNumber(result.summary.nearestKm)} km</dd></div>
-          <div><dt>Nearest event age</dt><dd>{formatNumber(result.summary.nearestAgeMinutes, 2)} min</dd></div>
-          <div><dt>Returned events within 50 km</dt><dd>{result.summary.totalEvents}</dd></div>
-          <div><dt>Within 5 km</dt><dd>{result.summary.counts.within5Km}</dd></div>
-          <div><dt>Within 10 km</dt><dd>{result.summary.counts.within10Km}</dd></div>
-          <div><dt>Within 25 km</dt><dd>{result.summary.counts.within25Km}</dd></div>
-          <div><dt>Within 50 km</dt><dd>{result.summary.counts.within50Km}</dd></div>
-          <div><dt>Malformed event records skipped</dt><dd>{result.summary.rejectedEventCount}</dd></div>
+          <div><dt>Recent-area status</dt><dd>{result.summary.recentArea.status}</dd></div>
+          <div><dt>Recent-area window / radius</dt><dd>{result.summary.recentArea.windowMinutes} min / {result.summary.recentArea.radiusKm} km</dd></div>
+          <div><dt>Summary detections</dt><dd>{result.summary.recentArea.totalDetections}</dd></div>
+          <div><dt>Oldest Summary activity</dt><dd>{formatDate(result.summary.recentArea.oldestEventAt)}</dd></div>
+          <div><dt>Newest Summary activity</dt><dd>{formatDate(result.summary.recentArea.newestEventAt)}</dd></div>
+          <div><dt>Current Flash status</dt><dd>{result.summary.current.status}</dd></div>
+          <div><dt>Current window / radius</dt><dd>{result.summary.current.windowMinutes} min / {result.summary.current.radiusKm} km</dd></div>
+          {result.summary.current.status === "unavailable" && <div><dt>Current failure</dt><dd>{result.summary.current.failureStatus} · {result.summary.current.message}</dd></div>}
+          {(result.summary.current.status === "clear" || result.summary.current.status === "active") && <>
+            <div><dt>Latest Flash</dt><dd>{formatDate(result.summary.current.latestEventAt)}</dd></div>
+            <div><dt>Nearest Flash</dt><dd>{formatNumber(result.summary.current.nearestKm)} km</dd></div>
+            <div><dt>Nearest Flash age</dt><dd>{formatNumber(result.summary.current.nearestAgeMinutes, 2)} min</dd></div>
+            <div><dt>Total flashes</dt><dd>{result.summary.current.totalFlashes}</dd></div>
+            <div><dt>Within 5 km</dt><dd>{result.summary.current.counts.within5Km}</dd></div>
+            <div><dt>Within 10 km</dt><dd>{result.summary.current.counts.within10Km}</dd></div>
+            <div><dt>Within 25 km</dt><dd>{result.summary.current.counts.within25Km}</dd></div>
+            <div><dt>Within 40 km</dt><dd>{result.summary.current.counts.within40Km}</dd></div>
+            <div><dt>Malformed Flash records skipped</dt><dd>{result.summary.current.rejectedEventCount}</dd></div>
+          </>}
         </dl>
-        {result.summary.mayBeTruncated && <p className={styles.error} role="status">Xweather returned the 1,000-record limit. Counts may be incomplete for this five-minute window.</p>}
-        <p className={styles.note}>Counts are provider event records, including intracloud pulses and cloud-to-ground strikes; they are not counts of storms.</p>
+        {(result.summary.current.status === "clear" || result.summary.current.status === "active") && result.summary.current.mayBeTruncated && <p className={styles.error} role="status">Xweather returned the 1,000-flash limit. Counts may be incomplete for this five-minute window.</p>}
+        <p className={styles.note}>Summary detections and consolidated Flash counts are different event units and are not compared as equivalents.</p>
       </section>}
 
-      {diagnostics && <section className={styles.panel}>
-        <h2>Request diagnostics</h2>
+      {summaryDiagnostics && <section className={styles.panel}>
+        <h2>Summary request diagnostics</h2>
         <dl className={styles.grid}>
-          {diagnosticsRows(diagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+          {diagnosticsRows(summaryDiagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
+        </dl>
+      </section>}
+
+      {currentDiagnostics && <section className={styles.panel}>
+        <h2>Flash request diagnostics</h2>
+        <dl className={styles.grid}>
+          {diagnosticsRows(currentDiagnostics).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value ?? "unavailable"}</dd></div>)}
         </dl>
       </section>}
 

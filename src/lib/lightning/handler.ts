@@ -1,7 +1,18 @@
 import { isValidCoordinates } from "../location.ts";
-import { createXweatherProvider } from "./xweather.ts";
-import { summarizeRecentActivity } from "./summary.ts";
-import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult, type ProviderDiagnostics } from "./types.ts";
+import { summarizeCurrentFlashes } from "./summary.ts";
+import {
+  EMPTY_PROVIDER_DIAGNOSTICS,
+  LIVE_AREA_RADIUS_KM,
+  LIVE_AREA_WINDOW_MINUTES,
+  LIVE_CURRENT_RADIUS_KM,
+  LIVE_CURRENT_WINDOW_MINUTES,
+  type LiveLightningApiResult,
+  type CurrentLightning,
+  type ProviderDiagnostics,
+  type ProviderFailureStatus,
+  type RecentAreaLightning,
+} from "./types.ts";
+import { createXweatherLiveProvider } from "./xweather-live.ts";
 
 export interface LightningHandlerOptions {
   clientId?: string;
@@ -16,6 +27,10 @@ export interface LightningHandlerResponse {
   body: LiveLightningApiResult;
 }
 
+function responseStatus(status: ProviderFailureStatus): number {
+  return status === "provider-not-configured" || status === "provider-quota-exceeded" || status === "provider-unavailable" ? 503 : 502;
+}
+
 export async function handleLiveLightningRequest(body: unknown, options: LightningHandlerOptions = {}): Promise<LightningHandlerResponse> {
   const noDiagnostics: ProviderDiagnostics = EMPTY_PROVIDER_DIAGNOSTICS;
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -26,21 +41,59 @@ export async function handleLiveLightningRequest(body: unknown, options: Lightni
     return { httpStatus: 400, body: { ok: false, status: "invalid-coordinates", message: "Latitude must be between -90 and 90 and longitude between -180 and 180.", diagnostics: noDiagnostics } };
   }
 
-  const provider = createXweatherProvider({ clientId: options.clientId, clientSecret: options.clientSecret }, options.fetcher);
-  const result = await provider.fetchRecentActivity(latitude, longitude, options.signal);
-  if (!result.ok) {
-    const httpStatus = result.status === "provider-not-configured" ? 503
-      : result.status === "provider-quota-exceeded" ? 503
-        : result.status === "provider-unavailable" ? 503 : 502;
-    return { httpStatus, body: { ok: false, status: result.status, message: result.message, diagnostics: result.diagnostics } };
+  const provider = createXweatherLiveProvider({ clientId: options.clientId, clientSecret: options.clientSecret }, options.fetcher);
+  const recentAreaResult = await provider.fetchRecentArea(latitude, longitude, options.signal);
+  if (!recentAreaResult.ok) {
+    return {
+      httpStatus: responseStatus(recentAreaResult.status),
+      body: { ok: false, status: recentAreaResult.status, message: recentAreaResult.message, diagnostics: recentAreaResult.diagnostics },
+    };
   }
 
+  const recentArea: RecentAreaLightning = {
+    status: recentAreaResult.totalDetections > 0 ? "active" as const : "clear" as const,
+    windowMinutes: LIVE_AREA_WINDOW_MINUTES,
+    radiusKm: LIVE_AREA_RADIUS_KM,
+    totalDetections: recentAreaResult.totalDetections,
+    oldestEventAt: recentAreaResult.oldestEventAt,
+    newestEventAt: recentAreaResult.newestEventAt,
+    diagnostics: recentAreaResult.diagnostics,
+  };
+
+  if (recentAreaResult.totalDetections === 0) {
+    const fetchedAt = (options.now ?? Date.now)();
+    return {
+      httpStatus: 200,
+      body: {
+        ok: true,
+        summary: {
+          status: "live",
+          provider: "xweather",
+          fetchedAt,
+          recentArea,
+          current: { status: "not-requested", windowMinutes: LIVE_CURRENT_WINDOW_MINUTES, radiusKm: LIVE_CURRENT_RADIUS_KM },
+        },
+      },
+    };
+  }
+
+  const currentResult = await provider.fetchCurrentFlashes(latitude, longitude, options.signal);
   const fetchedAt = (options.now ?? Date.now)();
+  const current: CurrentLightning = currentResult.ok
+    ? summarizeCurrentFlashes(currentResult.events, latitude, longitude, fetchedAt, currentResult.rejectedEventCount, currentResult.diagnostics, currentResult.mayBeTruncated)
+    : {
+      status: "unavailable" as const,
+      windowMinutes: LIVE_CURRENT_WINDOW_MINUTES,
+      radiusKm: LIVE_CURRENT_RADIUS_KM,
+      failureStatus: currentResult.status,
+      message: currentResult.message,
+      diagnostics: currentResult.diagnostics,
+    };
   return {
     httpStatus: 200,
     body: {
       ok: true,
-      summary: summarizeRecentActivity(result.events, latitude, longitude, fetchedAt, result.rejectedEventCount, result.diagnostics, result.mayBeTruncated),
+      summary: { status: "live", provider: "xweather", fetchedAt, recentArea, current },
     },
   };
 }

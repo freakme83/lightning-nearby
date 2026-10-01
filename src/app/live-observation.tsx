@@ -64,15 +64,16 @@ export default function LiveObservation({ latitude, longitude, forecastHours }: 
   const severity = liveSeverity(result);
   const currentHour = forecastHours.find((hour) => checkedAt !== null && hour.time === Math.floor(checkedAt / 3_600_000) * 3_600);
   const forecastRisk = currentHour?.signal.kind === "qualitative" ? currentHour.signal.risk : null;
-  const combined = result?.ok ? currentSeverity(forecastRisk, severity) : null;
+  const combined = result?.ok && result.summary.current.status !== "unavailable" ? currentSeverity(forecastRisk, severity) : null;
   const summary = result?.ok ? result.summary : null;
-  const countRadius = summary && severity && severity !== "none"
-    ? severity === "high" ? 10 : severity === "elevated" ? 25 : 50 : null;
-  const count = summary && countRadius
-    ? countRadius === 10 ? summary.counts.within10Km : countRadius === 25 ? summary.counts.within25Km : summary.counts.within50Km : null;
+  const current = summary?.current;
+  const countRadius = current?.status === "active" && severity && severity !== "none"
+    ? severity === "high" ? 10 : severity === "elevated" ? 25 : 40 : null;
+  const count = current?.status === "active" && countRadius
+    ? countRadius === 10 ? current.counts.within10Km : countRadius === 25 ? current.counts.within25Km : current.counts.within40Km : null;
 
   return <section className={`live-card ${severity && severity !== "none" ? `live-${severity}` : ""}`} aria-labelledby="live-title">
-    <div className="live-heading"><div><p className="eyebrow">LIVE ACTIVITY · LAST 5 MINUTES</p><h2 id="live-title">Nearby lightning</h2></div>
+    <div className="live-heading"><div><p className="eyebrow">LIVE LIGHTNING</p><h2 id="live-title">Nearby lightning</h2></div>
       <button className="secondary-button" type="button" disabled={loading} onClick={() => void checkActivity()}>{loading ? "Checking…" : checkedAt ? "Refresh live activity" : "Check live activity"}</button></div>
     <div className="live-content" aria-live="polite" aria-busy={loading}>
       {loading ? <p>Checking nearby lightning activity…</p>
@@ -80,9 +81,9 @@ export default function LiveObservation({ latitude, longitude, forecastHours }: 
           : !summary ? <p>Live lightning data is temporarily unavailable. Try again when you’re ready.</p>
             : <>
               <p className="live-message">{liveActivityCopy(summary)}</p>
-              {severity !== "none" && summary.nearestKm !== null && <p>Nearest detection: {summary.nearestKm.toFixed(1)} km{summary.nearestDirection ? ` ${DIRECTION[summary.nearestDirection]}` : ""}{summary.nearestAgeMinutes !== null ? ` · ${Math.max(0, Math.round(summary.nearestAgeMinutes))} min ago` : ""}</p>}
-              {count !== null && <p>{count} {count === 1 ? "detection" : "detections"} within {countRadius} km in the last 5 min</p>}
-              {severity === "none" && <p>Based on the last 5 minutes.</p>}
+              {current?.status === "active" && current.nearestKm !== null && <p>Nearest detection: {current.nearestKm.toFixed(1)} km{current.nearestDirection ? ` ${DIRECTION[current.nearestDirection]}` : ""}{current.nearestAgeMinutes !== null ? ` · ${Math.max(0, Math.round(current.nearestAgeMinutes))} min ago` : ""}</p>}
+              {count !== null && <p>{count} {count === 1 ? "flash" : "flashes"} within {countRadius} km in the last 5 min</p>}
+              {summary.recentArea.totalDetections > 0 && <p className="live-context">{summary.recentArea.totalDetections} {summary.recentArea.totalDetections === 1 ? "detection" : "detections"} within 50 km in the last 30 min</p>}
               {combined && <p className="current-picture">Current picture: <strong>{combined === "nearby" ? "Nearby activity" : combined[0].toUpperCase() + combined.slice(1)}</strong><span> · this hour’s forecast and last live check</span></p>}
             </>}
     </div>

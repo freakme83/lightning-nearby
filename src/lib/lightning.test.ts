@@ -5,6 +5,7 @@ import { compassDirection, initialBearingDegrees } from "./lightning/bearing.ts"
 import { handleLiveLightningRequest } from "./lightning/handler.ts";
 import { summarizeRecentActivity } from "./lightning/summary.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, LIGHTNING_QUERY_RADIUS_KM, type LiveStrike } from "./lightning/types.ts";
+import { buildXweatherLiveUrls, parseXweatherSummaryPayload } from "./lightning/xweather-live.ts";
 import { createXweatherProvider, parseXweatherLightningPayload } from "./lightning/xweather.ts";
 
 const now = Date.UTC(2026, 8, 30, 12, 0, 0);
@@ -31,6 +32,20 @@ function xweatherRecord({ latitude = 0, longitude = 0, timestamp = now / 1000, t
 
 function response(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json", ...headers } });
+}
+
+function summaryPayload(count: number, asArray = false) {
+  const summary = {
+    summary: {
+      range: {
+        count,
+        minTimestamp: count ? now / 1000 - 20 * 60 : null,
+        maxTimestamp: count ? now / 1000 - 60 : null,
+      },
+      pulse: { count, cg: count, ic: 0 },
+    },
+  };
+  return { success: true, error: null, response: asArray ? [summary] : summary };
 }
 
 test("Haversine distance handles a known equatorial arc and longitude wrap", () => {
@@ -164,7 +179,37 @@ test("missing credentials return provider-not-configured and do not call upstrea
   if (!result.body.ok) assert.equal(result.body.status, "provider-not-configured");
 });
 
-test("the standard request uses /lightning/closest with a 50 km radius and keeps credentials server-side", async () => {
+test("production URLs use Summary 30m / 50 km and Flash 5m / 40 km without Raw", () => {
+  const urls = buildXweatherLiveUrls(43.58, 3.88, { clientId: "private-test-id", clientSecret: "private-test-secret" });
+  assert.equal(urls.summary.pathname, "/lightning/summary/closest");
+  assert.equal(urls.summary.searchParams.get("radius"), "50km");
+  assert.equal(urls.summary.searchParams.get("from"), "-30minutes");
+  assert.equal(urls.summary.searchParams.get("to"), "now");
+  assert.equal(urls.flash.pathname, "/lightning/flash/closest");
+  assert.equal(urls.flash.searchParams.get("radius"), "40km");
+  assert.equal(urls.flash.searchParams.get("limit"), "1000");
+  assert.equal([urls.summary, urls.flash].some((url) => url.pathname === "/lightning/closest"), false);
+});
+
+test("Summary parser accepts object, single-item array and warn_no_data without exposing provider data", () => {
+  for (const payload of [summaryPayload(3), summaryPayload(3, true)]) {
+    const parsed = parseXweatherSummaryPayload(payload);
+    assert.equal(parsed.ok, true);
+    if (parsed.ok) {
+      assert.equal(parsed.totalDetections, 3);
+      assert.equal(parsed.oldestEventAt, now - 20 * 60_000);
+      assert.equal(parsed.newestEventAt, now - 60_000);
+    }
+  }
+  const empty = parseXweatherSummaryPayload({ success: true, error: { code: "warn_no_data" } });
+  assert.equal(empty.ok, true);
+  if (empty.ok) assert.equal(empty.totalDetections, 0);
+  const malformed = parseXweatherSummaryPayload({ success: true, error: null, response: [] });
+  assert.equal(malformed.ok, false);
+  if (!malformed.ok) assert.equal(malformed.status, "malformed-response");
+});
+
+test("quiet Summary makes exactly one upstream request and does not request Flash", async () => {
   const requestedUrls: URL[] = [];
   let requestCache: RequestCache | undefined;
   const handlerResult = await handleLiveLightningRequest(origin, {
@@ -174,8 +219,8 @@ test("the standard request uses /lightning/closest with a 50 km radius and keeps
     fetcher: async (input, init) => {
       requestedUrls.push(new URL(String(input)));
       requestCache = init?.cache;
-      return response({ success: true, error: null, response: [xweatherRecord({ timestamp: now / 1000 - 60 })] }, 200, {
-        "X-Cost-Tokens": "10", "X-Cost-Multiplier": "endpoint=10; spatial=1; temporal=1", "X-RateLimit-Remaining-Period": "14990",
+      return response(summaryPayload(0), 200, {
+        "X-Cost-Tokens": "1", "X-Cost-Multiplier": "endpoint=1; spatial=1; temporal=1", "X-RateLimit-Remaining-Period": "14990",
       });
     },
   });
@@ -184,41 +229,90 @@ test("the standard request uses /lightning/closest with a 50 km radius and keeps
   assert.equal(requestedUrls.length, 1);
   const requestedUrl = requestedUrls[0]!;
   assert.equal(requestedUrl.origin, "https://data.api.xweather.com");
-  assert.equal(requestedUrl.pathname, "/lightning/closest");
+  assert.equal(requestedUrl.pathname, "/lightning/summary/closest");
   assert.equal(requestedUrl.searchParams.get("radius"), "50km");
-  assert.equal(requestedUrl.searchParams.get("limit"), "1000");
+  assert.equal(requestedUrl.searchParams.get("from"), "-30minutes");
   assert.equal(requestedUrl.searchParams.get("client_secret"), "private-test-secret");
   assert.equal(requestCache, "no-store");
+  assert.equal(handlerResult.body.ok, true);
+  if (handlerResult.body.ok) {
+    assert.equal(handlerResult.body.summary.recentArea.totalDetections, 0);
+    assert.equal(handlerResult.body.summary.current.status, "not-requested");
+  }
   const serialized = JSON.stringify(handlerResult.body);
   assert.equal(serialized.includes("private-test-id"), false);
   assert.equal(serialized.includes("private-test-secret"), false);
   assert.equal(serialized.includes("private-upstream-id"), false);
-  assert.equal(serialized.includes('"costTokens":"10"'), true);
+  assert.equal(serialized.includes('"costTokens":"1"'), true);
   assert.equal(serialized.includes("14990"), true);
 });
 
-test("upstream quota and authentication failures are not converted to zero events", async () => {
-  const quota = await handleLiveLightningRequest(origin, {
-    clientId: "id", clientSecret: "secret",
-    fetcher: async () => response({ success: false, error: { code: "maxhits" }, response: [] }, 429),
+test("positive Summary makes exactly two ordered requests and preserves both diagnostics", async () => {
+  const paths: string[] = [];
+  const result = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret", now: () => now,
+    fetcher: async (input) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return path === "/lightning/summary/closest"
+        ? response(summaryPayload(8), 200, { "X-Cost-Tokens": "1" })
+        : response({ success: true, error: null, response: [xweatherRecord({ longitude: pointAtDistanceKm(9).longitude, timestamp: now / 1000 - 60 })] }, 200, { "X-Cost-Tokens": "1" });
+    },
   });
-  assert.equal(quota.body.ok, false);
-  if (!quota.body.ok) assert.equal(quota.body.status, "provider-quota-exceeded");
-
-  const auth = await handleLiveLightningRequest(origin, {
-    clientId: "id", clientSecret: "secret",
-    fetcher: async () => response({}, 401),
-  });
-  assert.equal(auth.body.ok, false);
-  if (!auth.body.ok) assert.equal(auth.body.status, "provider-auth-error");
+  assert.deepEqual(paths, ["/lightning/summary/closest", "/lightning/flash/closest"]);
+  assert.equal(result.body.ok, true);
+  if (!result.body.ok) return;
+  assert.equal(result.body.summary.recentArea.totalDetections, 8);
+  assert.equal(result.body.summary.recentArea.diagnostics.costTokens, "1");
+  assert.equal(result.body.summary.current.status, "active");
+  if (result.body.summary.current.status === "active") {
+    assert.equal(result.body.summary.current.totalFlashes, 1);
+    assert.equal(result.body.summary.current.diagnostics.costTokens, "1");
+  }
 });
 
-test("malformed upstream payload is unavailable rather than an empty live result", async () => {
-  const result = await handleLiveLightningRequest(origin, {
-    clientId: "id", clientSecret: "secret", fetcher: async () => response({ success: true, response: null }),
+test("Summary failure makes one request and never calls Flash", async () => {
+  const paths: string[] = [];
+  const quota = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret",
+    fetcher: async (input) => {
+      paths.push(new URL(String(input)).pathname);
+      return response({ success: false, error: { code: "maxhits" }, response: [] }, 429);
+    },
   });
-  assert.equal(result.body.ok, false);
-  if (!result.body.ok) assert.equal(result.body.status, "malformed-response");
+  assert.deepEqual(paths, ["/lightning/summary/closest"]);
+  assert.equal(quota.body.ok, false);
+  if (!quota.body.ok) assert.equal(quota.body.status, "provider-quota-exceeded");
+});
+
+test("Flash failure after positive Summary preserves partial regional context", async () => {
+  const paths: string[] = [];
+  const result = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret", now: () => now,
+    fetcher: async (input) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return path === "/lightning/summary/closest" ? response(summaryPayload(4), 200, { "X-Cost-Tokens": "1" }) : response({}, 503, { "X-Cost-Tokens": "1" });
+    },
+  });
+  assert.deepEqual(paths, ["/lightning/summary/closest", "/lightning/flash/closest"]);
+  assert.equal(result.httpStatus, 200);
+  assert.equal(result.body.ok, true);
+  if (!result.body.ok) return;
+  assert.equal(result.body.summary.recentArea.totalDetections, 4);
+  assert.equal(result.body.summary.current.status, "unavailable");
+  if (result.body.summary.current.status === "unavailable") assert.equal(result.body.summary.current.failureStatus, "provider-unavailable");
+});
+
+test("positive Summary with healthy-zero Flash is recent but currently clear", async () => {
+  const result = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret", now: () => now,
+    fetcher: async (input) => new URL(String(input)).pathname === "/lightning/summary/closest"
+      ? response(summaryPayload(2))
+      : response({ success: true, error: { code: "warn_no_data" } }),
+  });
+  assert.equal(result.body.ok, true);
+  if (result.body.ok) assert.equal(result.body.summary.current.status, "clear");
 });
 
 test("network failure is unavailable rather than zero activity", async () => {

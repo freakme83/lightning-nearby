@@ -7,9 +7,11 @@ export type CurrentSeverity = RiskLevel | "nearby";
 /** A successful empty window is zero; a failed or unobserved request is unknown. */
 export function liveSeverity(result: LiveLightningApiResult | null): LiveSeverity | null {
   if (!result?.ok) return null;
-  const { totalEvents, nearestKm } = result.summary;
-  if (totalEvents === 0) return "none";
-  if (nearestKm === null || !Number.isFinite(nearestKm) || nearestKm < 0 || nearestKm > 50) return null;
+  const current = result.summary.current;
+  if (current.status === "not-requested" || current.status === "clear") return "none";
+  if (current.status === "unavailable") return null;
+  const { nearestKm } = current;
+  if (nearestKm === null || !Number.isFinite(nearestKm) || nearestKm < 0 || nearestKm > 40) return null;
   if (nearestKm <= 10) return "high";
   if (nearestKm <= 25) return "elevated";
   return "nearby";
@@ -28,7 +30,14 @@ export function isCurrentLiveRequest(requestId: number, latestId: number, reques
 }
 
 export function liveActivityCopy(summary: LiveLightningSummary): string {
-  return summary.totalEvents === 0
-    ? "No recent lightning activity detected within 50 km."
-    : "Lightning activity detected nearby.";
+  if (summary.recentArea.totalDetections === 0) {
+    return "No lightning activity detected within 50 km in the last 30 minutes.";
+  }
+  if (summary.current.status === "unavailable") {
+    return "Lightning activity was detected within 50 km in the last 30 minutes, but current nearby activity is unavailable.";
+  }
+  if (summary.current.status === "clear" || summary.current.status === "not-requested") {
+    return "Lightning activity was detected nearby during the last 30 minutes, but no current flashes were detected within 40 km in the last 5 minutes.";
+  }
+  return "Lightning activity detected nearby.";
 }

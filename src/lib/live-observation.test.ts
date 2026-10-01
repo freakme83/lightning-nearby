@@ -3,25 +3,33 @@ import test from "node:test";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
 import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity } from "./live-observation.ts";
 
-function observed(nearestKm: number | null, totalEvents = nearestKm === null ? 0 : 1): LiveLightningApiResult {
+function observed(nearestKm: number | null, status: "not-requested" | "clear" | "active" = nearestKm === null ? "clear" : "active"): LiveLightningApiResult {
   return { ok: true, summary: {
-    status: "live", provider: "xweather", fetchedAt: 0, latestEventAt: null,
-    observationWindowMinutes: 5, nearestKm, nearestAgeMinutes: null,
-    counts: { within5Km: 0, within10Km: 0, within25Km: 0, within50Km: totalEvents },
-    totalEvents, rejectedEventCount: 0, mayBeTruncated: false,
-    diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
+    status: "live", provider: "xweather", fetchedAt: 0,
+    recentArea: {
+      status: status === "not-requested" ? "clear" : "active", windowMinutes: 30, radiusKm: 50,
+      totalDetections: status === "not-requested" ? 0 : 4, oldestEventAt: null, newestEventAt: null,
+      diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
+    },
+    current: status === "not-requested"
+      ? { status, windowMinutes: 5, radiusKm: 40 }
+      : {
+        status, windowMinutes: 5, radiusKm: 40, latestEventAt: null, nearestKm, nearestDirection: null, nearestAgeMinutes: null,
+        counts: { within5Km: 0, within10Km: 0, within25Km: 0, within40Km: status === "active" ? 1 : 0 },
+        totalFlashes: status === "active" ? 1 : 0, rejectedEventCount: 0, mayBeTruncated: false, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
+      },
   } };
 }
 
-test("live display severity uses inclusive 10/25/50 km boundaries", () => {
+test("live display severity uses inclusive 10/25/40 km Flash boundaries", () => {
   assert.equal(liveSeverity(observed(0)), "high");
   assert.equal(liveSeverity(observed(10)), "high");
   assert.equal(liveSeverity(observed(10.001)), "elevated");
   assert.equal(liveSeverity(observed(25)), "elevated");
   assert.equal(liveSeverity(observed(25.001)), "nearby");
-  assert.equal(liveSeverity(observed(50)), "nearby");
+  assert.equal(liveSeverity(observed(40)), "nearby");
   assert.equal(liveSeverity(observed(null)), "none");
-  assert.equal(liveSeverity(observed(null, 1)), null);
+  assert.equal(liveSeverity(observed(null, "not-requested")), "none");
 });
 
 test("current picture selects strongest evidence without changing either source", () => {
@@ -43,12 +51,28 @@ test("failed live data stays unknown and cannot lower the forecast", () => {
 });
 
 test("healthy zero copy describes a detected window without claiming safety", () => {
-  const result = observed(null);
+  const result = observed(null, "not-requested");
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(liveActivityCopy(result.summary), "No recent lightning activity detected within 50 km.");
-    assert.equal(result.summary.observationWindowMinutes, 5);
+    assert.equal(liveActivityCopy(result.summary), "No lightning activity detected within 50 km in the last 30 minutes.");
+    assert.equal(result.summary.recentArea.windowMinutes, 30);
   }
+});
+
+test("recent regional activity without current Flash stays non-severe and has distinct copy", () => {
+  const result = observed(null, "clear");
+  assert.equal(liveSeverity(result), "none");
+  if (result.ok) assert.match(liveActivityCopy(result.summary), /last 30 minutes.*no current flashes/i);
+});
+
+test("partial current-provider failure is unknown rather than clear", () => {
+  const result: LiveLightningApiResult = { ok: true, summary: {
+    status: "live", provider: "xweather", fetchedAt: 0,
+    recentArea: { status: "active", windowMinutes: 30, radiusKm: 50, totalDetections: 3, oldestEventAt: null, newestEventAt: null, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
+    current: { status: "unavailable", windowMinutes: 5, radiusKm: 40, failureStatus: "provider-unavailable", message: "Unavailable", diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
+  } };
+  assert.equal(liveSeverity(result), null);
+  assert.match(liveActivityCopy(result.summary), /current nearby activity is unavailable/i);
 });
 
 test("obsolete and aborted requests cannot own a changed location", () => {
