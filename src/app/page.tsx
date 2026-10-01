@@ -6,9 +6,11 @@ import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMoni
 import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
+import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
+import { suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
@@ -31,10 +33,13 @@ function locationErrorMessage(code?: number) {
 export default function Home() {
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
+  const [initialSavedLocationKey, setInitialSavedLocationKey] = useState<string | null>(null);
   const [forecast, setForecast] = useState<Outlook | null>(null);
   const [hours, setHours] = useState<OutlookHour[]>([]);
   const [selectedTime, setSelectedTime] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshingForecast, setRefreshingForecast] = useState(false);
+  const [forecastRefreshRevision, setForecastRefreshRevision] = useState(0);
   const [forecastError, setForecastError] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
@@ -54,6 +59,8 @@ export default function Home() {
   const confirmRequestRef = useRef(0);
   const reverseControllerRef = useRef<AbortController | null>(null);
   const forecastRequestRef = useRef(0);
+  const forecastRefreshPendingRef = useRef(false);
+  const previousForecastLocationKeyRef = useRef<string | null>(null);
   const currentOutlookRef = useRef<Outlook | null>(null);
 
   useEffect(() => {
@@ -65,6 +72,7 @@ export default function Home() {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
+          setInitialSavedLocationKey(`${parsed.latitude},${parsed.longitude}`);
         }
       }
     } catch { /* Storage may be unavailable or contain malformed data; continue without a saved location. */ }
@@ -74,12 +82,20 @@ export default function Home() {
 
   useEffect(() => {
     if (!storageReady || !location) return;
+    const locationKey = `${location.latitude},${location.longitude}`;
+    const sameSavedPoint = previousForecastLocationKeyRef.current === locationKey;
+    previousForecastLocationKeyRef.current = locationKey;
     const controller = new AbortController();
     const requestId = ++forecastRequestRef.current;
     const isCurrentRequest = () => isCurrentForecastRequest(requestId, forecastRequestRef.current, controller.signal);
     // Clear prior results as this effect synchronizes to a different saved location.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true); setForecastError(false); setForecast(null); setHours([]); setSelectedTime(null);
+    setLoading(true); setForecastError(false); setForecast(null); setHours([]);
+    if (!sameSavedPoint) {
+      forecastRefreshPendingRef.current = false;
+      setRefreshingForecast(false);
+      setSelectedTime(null);
+    }
     currentOutlookRef.current = null;
     const requests = fetchOutlook(location.latitude, location.longitude, controller.signal);
     let pendingEnsemble: Awaited<typeof requests.ensemble> = null;
@@ -90,10 +106,14 @@ export default function Home() {
       const result = pendingEnsemble ? mergeEnsembleEvidence(primary, pendingEnsemble) : primary;
       const nextHours = selectNext24Hours(result.hours);
       if (!nextHours.some((hour) => hour.signal.kind === "qualitative")) {
-        setForecastError(true); setLoading(false); return;
+        setForecastError(true); setLoading(false);
+        forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
+        return;
       }
       currentOutlookRef.current = result;
-      setForecast(result); setHours(nextHours); setSelectedTime(nextHours[0]?.time ?? null); setLoading(false);
+      setForecast(result); setHours(nextHours);
+      setSelectedTime((selected) => retainSelectedHour(sameSavedPoint ? selected : null, nextHours));
+      setLoading(false); forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
       if (isGenericFixedOffsetTimezone(result.timezone)) {
         void resolveDisplayTimezone(location.latitude, location.longitude, result.timezone, location.timezone, controller.signal)
           .then((timezone) => {
@@ -106,7 +126,10 @@ export default function Home() {
           });
       }
     }).catch(() => {
-      if (isCurrentRequest()) { setForecastError(true); setLoading(false); }
+      if (isCurrentRequest()) {
+        setForecastError(true); setLoading(false);
+        forecastRefreshPendingRef.current = false; setRefreshingForecast(false);
+      }
     });
     void requests.ensemble.then((ensemble) => {
       if (!isCurrentRequest() || !ensemble) return;
@@ -120,7 +143,19 @@ export default function Home() {
       setSelectedTime((selected) => retainSelectedHour(selected, nextHours));
     });
     return () => controller.abort();
-  }, [location, storageReady]);
+  }, [forecastRefreshRevision, location, storageReady]);
+
+  const refreshForecast = useCallback(() => {
+    const nextRevision = nextForecastRefreshRevision(forecastRefreshRevision, {
+      loadingForecast: loading,
+      locating,
+      refreshPending: forecastRefreshPendingRef.current,
+    });
+    if (nextRevision === null) return;
+    forecastRefreshPendingRef.current = true;
+    setRefreshingForecast(true);
+    setForecastRefreshRevision(nextRevision);
+  }, [forecastRefreshRevision, loading, locating]);
 
   const requestLocation = useCallback(() => {
     setLocationMessage("");
@@ -128,7 +163,13 @@ export default function Home() {
     setLocating(true);
     navigator.geolocation.getCurrentPosition(({ coords }) => {
       const reduced = reduceLocationPrecision(coords.latitude, coords.longitude);
-      try { const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" }); if (saved) setLocation(saved); }
+      try {
+        const saved = saveMonitoredLocation(localStorage, { ...reduced, source: "geolocation" });
+        if (saved) {
+          suppressInitialLiveCheckForSession(() => window.sessionStorage);
+          setInitialSavedLocationKey(null); setLocation(saved);
+        }
+      }
       catch { setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again."); }
       setLocating(false);
     }, (error) => { setLocationMessage(locationErrorMessage(error.code)); setLocating(false); },
@@ -236,6 +277,8 @@ export default function Home() {
     try {
       const saved = saveMonitoredLocation(localStorage, selection);
       if (!saved) return;
+      suppressInitialLiveCheckForSession(() => window.sessionStorage);
+      setInitialSavedLocationKey(null);
       setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
     } catch {
       setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
@@ -300,12 +343,16 @@ export default function Home() {
       <div className="welcome-rule" /><p className="micro-copy">Forecast guidance only. This is not an official weather warning.</p>
     </section> : <section className="overview" aria-labelledby="overview-title">
       <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
-        <div className="location-actions"><button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Update location"}</button><button className="text-button" type="button" onClick={openPicker}>Search / map</button></div></div>
+        <div className="location-actions">
+          <button className="text-button" type="button" onClick={refreshForecast} disabled={loading || locating || refreshingForecast}>{refreshingForecast ? "Refreshing…" : "Refresh forecast"}</button>
+          <button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Use current location"}</button>
+          <button className="text-button" type="button" onClick={openPicker}>Search / map</button>
+        </div></div>
       {locationPicker}
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={initialSavedLocationKey === `${location.latitude},${location.longitude}`} />
       {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
