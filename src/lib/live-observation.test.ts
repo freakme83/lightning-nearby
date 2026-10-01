@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
-import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity } from "./live-observation.ts";
+import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "./live-observation.ts";
 
 function observed(nearestKm: number | null, status: "not-requested" | "clear" | "active" = nearestKm === null ? "clear" : "active"): LiveLightningApiResult {
   if (status === "not-requested") {
@@ -43,6 +43,16 @@ test("current picture selects strongest evidence without changing either source"
   assert.equal(currentSeverity(null, "none"), null);
 });
 
+test("live severity badge labels use the live result even when forecast severity is higher", () => {
+  const live = liveSeverity(observed(25));
+  assert.equal(currentSeverity("high", live), "high");
+  assert.equal(liveSeverityLabel(live), "Elevated");
+  assert.equal(liveSeverityLabel("high"), "High");
+  assert.equal(liveSeverityLabel("nearby"), "Nearby activity");
+  assert.equal(liveSeverityLabel("none"), null);
+  assert.equal(liveSeverityLabel(null), null);
+});
+
 test("failed live data stays unknown and cannot lower the forecast", () => {
   const failure: LiveLightningApiResult = { ok: false, status: "provider-unavailable", message: "Unavailable", diagnostics: EMPTY_PROVIDER_DIAGNOSTICS };
   assert.equal(liveSeverity(failure), null);
@@ -55,15 +65,18 @@ test("healthy zero copy describes a detected window without claiming safety", ()
   const result = observed(null, "not-requested");
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(liveActivityCopy(result.summary), "No recent lightning detections reported within 50 km in the last 30 minutes.");
+    assert.equal(liveActivityCopy(result.summary), "No recent lightning activity was reported within 50 km in the last 30 minutes.");
     assert.equal(result.summary.recentArea.windowMinutes, 30);
   }
 });
 
-test("recent regional activity without current Flash stays non-severe and has distinct copy", () => {
+test("recent regional activity without current lightning stays non-severe and uses qualitative context", () => {
   const result = observed(null, "clear");
   assert.equal(liveSeverity(result), "none");
-  if (result.ok) assert.match(liveActivityCopy(result.summary), /last 30 minutes.*no current flashes/i);
+  if (result.ok) {
+    assert.equal(liveActivityCopy(result.summary), "Activity was also detected within 50 km during the last 30 minutes.");
+    assert.doesNotMatch(liveActivityCopy(result.summary), /flash|detections?/i);
+  }
 });
 
 test("partial current-provider failure is unknown rather than clear", () => {
@@ -73,7 +86,13 @@ test("partial current-provider failure is unknown rather than clear", () => {
     current: { status: "unavailable", windowMinutes: 5, radiusKm: 40, failureStatus: "provider-unavailable", message: "Unavailable", diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
   } };
   assert.equal(liveSeverity(result), null);
-  assert.match(liveActivityCopy(result.summary), /current nearby activity is unavailable/i);
+  assert.equal(liveActivityCopy(result.summary), "Activity was also detected within 50 km during the last 30 minutes, but current nearby activity is unavailable.");
+  assert.doesNotMatch(liveActivityCopy(result.summary), /flash|detections?/i);
+});
+
+test("active event count uses ordinary lightning-event wording", () => {
+  assert.equal(liveEventCountCopy(8, 10), "8 recent lightning events within 10 km · last 5 min");
+  assert.equal(liveEventCountCopy(1, 10), "1 recent lightning event within 10 km · last 5 min");
 });
 
 test("obsolete and aborted requests cannot own a changed location", () => {

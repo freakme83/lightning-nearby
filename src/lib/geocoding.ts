@@ -12,9 +12,28 @@ export interface PlaceSearchResults {
 
 export type PlaceLookup = (query: string, signal?: AbortSignal) => Promise<PlaceResult[]>;
 export type ResolvedPlaceLabel = Pick<LocationSelection, "label" | "admin1" | "country">;
+export type CoordinateQuery =
+  | { kind: "coordinates"; latitude: number; longitude: number }
+  | { kind: "invalid" }
+  | { kind: "not-coordinate" };
 export const MIN_PLACE_QUERY_LENGTH = 3;
 export const PLACE_SEARCH_DEBOUNCE_MS = 400;
 const MAX_VISIBLE_PLACE_RESULTS = 5;
+const COORDINATE_VALUE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+const NUMERIC_LIKE_VALUE = /^[+\-.\deE]+$/;
+
+/** Recognize only a complete comma-separated latitude/longitude pair. */
+export function parseCoordinateQuery(query: string): CoordinateQuery {
+  const parts = query.trim().split(",");
+  if (parts.length !== 2) return { kind: "not-coordinate" };
+  const [latitudeText, longitudeText] = parts.map((part) => part.trim());
+  if (!NUMERIC_LIKE_VALUE.test(latitudeText) || !NUMERIC_LIKE_VALUE.test(longitudeText)) return { kind: "not-coordinate" };
+  if (!COORDINATE_VALUE.test(latitudeText) || !COORDINATE_VALUE.test(longitudeText)) return { kind: "invalid" };
+  const latitude = Number(latitudeText);
+  const longitude = Number(longitudeText);
+  if (!isValidCoordinates(latitude, longitude)) return { kind: "invalid" };
+  return { kind: "coordinates", latitude, longitude };
+}
 
 function limitedResults(results: PlaceResult[]): PlaceResult[] {
   return results.slice(0, MAX_VISIBLE_PLACE_RESULTS);

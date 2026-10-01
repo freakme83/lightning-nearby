@@ -4,6 +4,14 @@ import type { LiveLightningApiResult, LiveLightningSummary } from "./lightning/t
 export type LiveSeverity = "none" | "nearby" | "elevated" | "high";
 export type CurrentSeverity = RiskLevel | "nearby";
 
+/** Human-readable label for the live observation alone. */
+export function liveSeverityLabel(severity: LiveSeverity | null): string | null {
+  if (severity === "high") return "High";
+  if (severity === "elevated") return "Elevated";
+  if (severity === "nearby") return "Nearby activity";
+  return null;
+}
+
 /** A successful empty window is zero; a failed or unobserved request is unknown. */
 export function liveSeverity(result: LiveLightningApiResult | null): LiveSeverity | null {
   if (!result?.ok) return null;
@@ -30,14 +38,22 @@ export function isCurrentLiveRequest(requestId: number, latestId: number, reques
 }
 
 export function liveActivityCopy(summary: LiveLightningSummary): string {
-  if (summary.recentArea.totalDetections === 0) {
-    return "No recent lightning detections reported within 50 km in the last 30 minutes.";
-  }
+  const hasRecentAreaActivity = summary.recentArea.totalDetections > 0;
   if (summary.current.status === "unavailable") {
-    return "Lightning activity was detected within 50 km in the last 30 minutes, but current nearby activity is unavailable.";
+    return hasRecentAreaActivity
+      ? "Activity was also detected within 50 km during the last 30 minutes, but current nearby activity is unavailable."
+      : "No recent lightning activity was reported within 50 km in the last 30 minutes.";
   }
   if (summary.current.status === "clear" || summary.current.status === "not-requested") {
-    return "Lightning activity was detected nearby during the last 30 minutes, but no current flashes were detected within 40 km in the last 5 minutes.";
+    return hasRecentAreaActivity
+      ? "Activity was also detected within 50 km during the last 30 minutes."
+      : "No recent lightning activity was reported within 50 km in the last 30 minutes.";
   }
-  return "Lightning activity detected nearby.";
+  return hasRecentAreaActivity
+    ? "Activity also detected within 50 km during the last 30 minutes."
+    : "Lightning activity detected nearby.";
+}
+
+export function liveEventCountCopy(count: number, radiusKm: number): string {
+  return `${count} recent lightning ${count === 1 ? "event" : "events"} within ${radiusKm} km · last 5 min`;
 }

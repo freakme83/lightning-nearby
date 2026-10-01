@@ -3,18 +3,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
-import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
+import { MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, type PlaceResult } from "@/lib/geocoding";
 import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
 import LocationMap from "./location-map";
-import LiveObservation from "./live-observation";
+import LiveObservation, { type ForecastContext } from "./live-observation";
 
 const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
 const localTime = formatForecastLocalTime;
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
 function dayLabel(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, weekday: "short", day: "numeric", month: "short" }).format(epoch * 1000); }
 function period(start: number, end: number, timezone: string) { return `${localTime(start, timezone)}–${localTime(end, timezone)}`; }
+function displayLocationCoordinates(selection: LocationSelection): string {
+  return selection.label === "Selected coordinates"
+    ? `${selection.latitude}, ${selection.longitude}`
+    : formatCoordinates(selection.latitude, selection.longitude);
+}
 function locationErrorMessage(code?: number) {
   if (!navigator.geolocation) return "Location isn’t available in this browser. Try again in a browser that supports location.";
   if (code === 1) return "Location access was declined. Allow it in your browser or device settings, then try again.";
@@ -138,6 +143,17 @@ export default function Home() {
 
   const submitPlaceSearch = useCallback((event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const coordinateQuery = parseCoordinateQuery(searchQuery);
+    if (coordinateQuery.kind === "coordinates") {
+      setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
+      setSearchError(""); setSearchResults([]); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      return;
+    }
+    if (coordinateQuery.kind === "invalid") {
+      setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
+      setSearchResults([]); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      return;
+    }
     if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setSearchNotice(""); setHasSearched(false); return; }
     immediateSearchRef.current = true;
     setSearchError(""); setSearchNotice(""); setSearchRevision((revision) => revision + 1);
@@ -146,6 +162,7 @@ export default function Home() {
   useEffect(() => {
     if (!pickerOpen || pickerMode !== "search") return;
     const query = searchQuery.trim();
+    if (parseCoordinateQuery(query).kind !== "not-coordinate") return;
     if (Array.from(query).length < MIN_PLACE_QUERY_LENGTH) return;
     const requestId = ++searchRequestRef.current;
     const controller = new AbortController();
@@ -172,6 +189,13 @@ export default function Home() {
 
   const changeSearchQuery = useCallback((query: string) => {
     setSearchQuery(query); setSearchResults([]); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    const coordinateQuery = parseCoordinateQuery(query);
+    if (coordinateQuery.kind === "coordinates") {
+      setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
+    } else {
+      setCandidate((current) => current?.label === "Selected coordinates" ? null : current);
+      if (coordinateQuery.kind === "invalid") setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
+    }
   }, []);
 
   const switchPickerMode = useCallback((mode: "search" | "map") => {
@@ -222,6 +246,12 @@ export default function Home() {
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
+  const forecastContext: ForecastContext | null = forecast && !loading ? {
+    risk: highestWindow?.risk ?? "low",
+    headline: `${RISK_LABEL[highestWindow?.risk ?? "low"]} signal in next 24h`,
+    summary: summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : ""),
+    strongestWindow: highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : null,
+  } : null;
   const locationPicker = pickerOpen && <section className="location-picker" aria-label="Choose a monitored location">
     <div className="picker-heading"><div><p className="eyebrow">LOCATION</p><h2>Choose a point</h2></div><button className="text-button" type="button" onClick={cancelPicker}>Cancel</button></div>
     <div className="picker-tabs" role="group" aria-label="Location selection method">
@@ -231,7 +261,7 @@ export default function Home() {
     {pickerMode === "search" ? <>
       <form className="place-search" onSubmit={submitPlaceSearch}>
         <label className="visually-hidden" htmlFor="place-search">Search for a place</label>
-        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, or place" autoComplete="off" />
+        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, place, or coordinates" autoComplete="off" />
         <button className="secondary-button" type="submit">{searching ? "Searching…" : "Search"}</button>
       </form>
       {searchError && <p className="inline-error" role="alert">{searchError}</p>}
@@ -246,7 +276,7 @@ export default function Home() {
       <LocationMap candidate={candidate} onPick={pickMapPoint} />
       <p className="picker-note">Map tiles and place labels © OpenStreetMap contributors.</p>
     </>}
-    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{formatCoordinates(candidate.latitude, candidate.longitude)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? "Finding place…" : "Use this location"}</button></div>}
+    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{displayLocationCoordinates(candidate)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? candidate.source === "map" ? "Finding place…" : "Saving location…" : "Use this location"}</button></div>}
     {candidate?.source === "map" && <p className="picker-note">Confirming this point may send its coordinates to OpenStreetMap Nominatim to find a place label.</p>}
   </section>;
 
@@ -269,25 +299,18 @@ export default function Home() {
       <p className="permission-note">Your browser asks before sharing device location. It is not requested until you tap “Use my location”.</p>
       <div className="welcome-rule" /><p className="micro-copy">Forecast guidance only. This is not an official weather warning.</p>
     </section> : <section className="overview" aria-labelledby="overview-title">
-      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{formatCoordinates(location.latitude, location.longitude)}</p>}</div>
+      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
         <div className="location-actions"><button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Update location"}</button><button className="text-button" type="button" onClick={openPicker}>Search / map</button></div></div>
       {locationPicker}
       {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
       {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      {forecast && !loading && <>
-        <div className={`risk-overview ${highestWindow ? `risk-${highestWindow.risk}` : ""}`}>
-          <div className="risk-heading"><span className="risk-orb" aria-hidden="true"><span /></span><div><p className="eyebrow">FORECAST · NEXT 24 HOURS · {forecast.timezone}</p><h1 id="overview-title">{highestWindow ? <>{RISK_LABEL[highestWindow.risk]} <span>signal in next 24h</span></> : "Forecast signal"}</h1></div></div>
-          <p className="summary">{summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : "")}</p>
-          {highestWindow && <div className="peak-line"><span className="peak-spark" aria-hidden="true">✳</span><span>Highest signal <strong>{period(highestWindow.start, highestWindow.end, forecast.timezone)}</strong></span></div>}
-        </div>
-      </>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecastHours={forecast && !loading ? hours : []} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} />
       {forecast && !loading && <>
         <section className="timeline-section" aria-labelledby="timeline-title">
           <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
           <p className="timeline-instruction">Tap an hour to see its forecast values.</p>
-          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook; scroll horizontally"><ol className="timeline">
+          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook. Scroll horizontally to see more hours."><ol className="timeline">
             {hours.map((hour, index) => {
               const previous = hours[index - 1];
               const showDate = index === 0 || !previous || localDateKey(previous.time, forecast.timezone) !== localDateKey(hour.time, forecast.timezone);
