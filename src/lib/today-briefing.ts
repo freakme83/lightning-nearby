@@ -65,11 +65,13 @@ function condition(code?: number): string | undefined {
 }
 
 /** Whole local day, never the rolling hourly window; no lightning-risk inputs. */
-export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: string, nowMs = Date.now()): string | null {
+export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: string, nowMs = Date.now(), currentTemperatureC?: number): string | null {
   const day = days?.find((entry) => entry.date === localCalendarDate(nowMs, timezone));
   if (!day) return null;
   const conditions = condition(day.weatherCode);
   const temperatures = [day.highC != null && Number.isFinite(day.highC) ? `high ${Math.round(day.highC)}°C` : "", day.lowC != null && Number.isFinite(day.lowC) ? `low ${Math.round(day.lowC)}°C` : ""].filter(Boolean).join(", ");
+  const current = currentTemperatureC != null && Number.isFinite(currentTemperatureC)
+    ? `Now ${Math.round(currentTemperatureC)}°C` : "";
   const first = [conditions, temperatures].filter(Boolean).join(" · ");
   const probability = day.precipitationProbability;
   const sum = day.precipitationMm;
@@ -77,6 +79,10 @@ export function buildTodayBriefing(days: DailyWeather[] | undefined, timezone: s
   if (probability != null && probability >= BRIEFING_PRECIPITATION.likelyPercent) precipitation = "Precipitation is likely today.";
   else if ((probability != null && probability >= BRIEFING_PRECIPITATION.possiblePercent) || (sum != null && sum >= BRIEFING_PRECIPITATION.measurableMm)) precipitation = "Precipitation is possible today.";
   else if (!WET_CODES.has(day.weatherCode ?? -1) && probability != null && sum != null) precipitation = "Little or no precipitation is expected today.";
-  const text = [first ? `${first}.` : "", precipitation].filter(Boolean).join(" ");
+  const temperatureLine = current
+    ? [current, temperatures].filter(Boolean).join(" · ")
+    : first;
+  const conditionsLine = current && conditions ? `${conditions}.` : "";
+  const text = [temperatureLine ? `${temperatureLine}.` : "", conditionsLine, precipitation].filter(Boolean).join(" ");
   return text || null;
 }

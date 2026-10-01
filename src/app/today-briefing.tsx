@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { buildTodayBriefing, nextLocalMidnight, type DailyWeather } from "@/lib/today-briefing";
 
-export default function TodayBriefing({ daily, timezone }: { daily?: DailyWeather[]; timezone: string }) {
+export default function TodayBriefing({ daily, timezone, currentTemperatureC }: { daily?: DailyWeather[]; timezone: string; currentTemperatureC?: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -18,7 +18,7 @@ export default function TodayBriefing({ daily, timezone }: { daily?: DailyWeathe
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [timezone]);
-  const text = buildTodayBriefing(daily, timezone, now);
+  const text = buildTodayBriefing(daily, timezone, now, currentTemperatureC);
   if (!text) return null;
   return <section className="today-briefing" aria-labelledby="today-title"><h2 id="today-title" className="eyebrow">TODAY</h2><p>{text}</p></section>;
 }

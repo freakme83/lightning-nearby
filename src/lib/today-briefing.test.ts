@@ -14,6 +14,12 @@ test("whole-degree temperatures and partial/missing daily data", () => {
   assert.equal(buildTodayBriefing(undefined, "UTC", now), null);
   assert.equal(text({ weatherCode: undefined, highC: undefined, lowC: undefined, precipitationProbability: undefined, precipitationMm: undefined }), null);
 });
+test("current temperature is optional and rounds independently from daily high and low", () => {
+  assert.equal(buildTodayBriefing([day], "UTC", now, 12.6), "Now 13°C · high 25°C, low 12°C. Clear skies. Little or no precipitation is expected today.");
+  assert.equal(buildTodayBriefing([day], "UTC", now, -2.6), "Now -3°C · high 25°C, low 12°C. Clear skies. Little or no precipitation is expected today.");
+  assert.equal(buildTodayBriefing([day], "UTC", now), "Clear skies · high 25°C, low 12°C. Little or no precipitation is expected today.");
+  assert.equal(buildTodayBriefing([day], "UTC", now, Number.NaN), "Clear skies · high 25°C, low 12°C. Little or no precipitation is expected today.");
+});
 test("ordinary daily conditions including thunderstorm codes only", () => {
   for (const [code, phrase] of [[1, "Mostly clear"], [2, "Partly cloudy"], [3, "Overcast"], [45, "Fog"], [51, "Drizzle"], [61, "Rain"], [80, "Rain showers"], [71, "Snow"], [95, "Thunderstorms"]] as const) assert.match(text({ weatherCode: code }), new RegExp(phrase));
   assert.doesNotMatch(text({ weatherCode: 61 }), /Thunderstorm|Little or no/);
@@ -49,6 +55,7 @@ test("daily Unix dates use provider offset without shifting hourly epochs", () =
   assert.equal(parseDailyWeather({ time: [now / 1000], weather_code: "bad", temperature_2m_max: [null] }, 0)[0].highC, undefined);
 });
 test("same single no-store forecast request; optional daily cannot break hourly or merges", async () => {
+  for (const current of [{ temperature_2m: 13.4 }, { temperature_2m: -2.6 }, undefined, { temperature_2m: "bad" }, { temperature_2m: Infinity }]) {
   for (const daily of [undefined, { time: "bad" }, { time: [now / 1000], weather_code: [0] }]) {
     let calls = 0;
     const controller = new AbortController();
@@ -58,15 +65,20 @@ test("same single no-store forecast request; optional daily cannot break hourly 
       assert.equal(url.searchParams.get("forecast_hours"), "48");
       assert.equal(url.searchParams.get("timezone"), "auto");
       assert.equal(url.searchParams.get("timeformat"), "unixtime");
+      assert.equal(url.searchParams.get("current"), "temperature_2m");
       assert.equal(url.searchParams.get("daily"), "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum");
       assert.match(url.searchParams.get("hourly")!, /cape,convective_inhibition,thunderstorm_probability/);
       assert.equal(init?.cache, "no-store"); assert.equal(init?.signal, controller.signal);
-      return new Response(JSON.stringify({ timezone: "UTC", utc_offset_seconds: 0, hourly: { time: [now / 1000], weather_code: [0] }, daily }));
+      return new Response(JSON.stringify({ timezone: "UTC", utc_offset_seconds: 0, hourly: { time: [now / 1000], weather_code: [0] }, current, daily }));
     }) as typeof fetch);
     assert.equal(calls, 1); assert.equal(forecast.hours[0].time, now / 1000); assert.equal(forecast.hours[0].risk, "low");
+    const expectedCurrent = typeof current?.temperature_2m === "number" && Number.isFinite(current.temperature_2m) ? current.temperature_2m : undefined;
+    assert.equal(forecast.currentTemperatureC, expectedCurrent);
     const outlook = combineForecasts(forecast, null)!;
     assert.equal(outlook.daily, forecast.daily);
+    assert.equal(outlook.currentTemperatureC, forecast.currentTemperatureC);
     const merged = mergeEnsembleEvidence(outlook, { timezone: "UTC", fetchedAt: 1, hours: [] });
-    assert.equal(merged.daily, forecast.daily); assert.deepEqual(merged.hours, outlook.hours);
+    assert.equal(merged.daily, forecast.daily); assert.equal(merged.currentTemperatureC, forecast.currentTemperatureC); assert.deepEqual(merged.hours, outlook.hours);
+  }
   }
 });

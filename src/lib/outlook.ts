@@ -53,6 +53,7 @@ export interface Outlook {
   timezone: string;
   hours: OutlookHour[];
   daily?: DailyWeather[];
+  currentTemperatureC?: number;
   fetchedAt: number;
   ensembleFetchedAt?: number;
 }
@@ -112,6 +113,7 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
     timezone: deterministic?.timezone ?? ensemble!.timezone,
     hours,
     daily: deterministic?.daily,
+    currentTemperatureC: deterministic?.currentTemperatureC,
     fetchedAt: Math.max(deterministic?.fetchedAt ?? 0, ensemble?.fetchedAt ?? 0),
     ...(ensemble ? { ensembleFetchedAt: ensemble.fetchedAt } : {}),
   };
