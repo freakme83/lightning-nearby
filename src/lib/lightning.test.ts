@@ -271,6 +271,26 @@ test("positive Summary makes exactly two ordered requests and preserves both dia
   }
 });
 
+test("Flash filtering uses the request-start time across a slow response", async () => {
+  let clock = now;
+  const result = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret", now: () => clock,
+    fetcher: async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/lightning/summary/closest") return response(summaryPayload(1));
+      clock += 10_000;
+      return response({ success: true, error: null, response: [xweatherRecord({ timestamp: now / 1000 - 4 * 60 - 59 })] });
+    },
+  });
+
+  assert.equal(result.body.ok, true);
+  if (result.body.ok) {
+    assert.equal(result.body.summary.fetchedAt, now);
+    assert.equal(result.body.summary.current.status, "active");
+    if (result.body.summary.current.status === "active") assert.equal(result.body.summary.current.nearestAgeMinutes, 4 + 59 / 60);
+  }
+});
+
 test("Summary failure makes one request and never calls Flash", async () => {
   const paths: string[] = [];
   const quota = await handleLiveLightningRequest(origin, {

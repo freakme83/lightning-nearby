@@ -50,8 +50,7 @@ export type RecentAreaProviderResult =
   | { ok: true; totalDetections: number; oldestEventAt: number | null; newestEventAt: number | null; diagnostics: ProviderDiagnostics }
   | { ok: false; status: ProviderFailureStatus; message: string; diagnostics: ProviderDiagnostics };
 
-export interface RecentAreaLightning {
-  status: "clear" | "active";
+interface RecentAreaLightningBase {
   windowMinutes: 30;
   radiusKm: 50;
   totalDetections: number;
@@ -59,6 +58,18 @@ export interface RecentAreaLightning {
   newestEventAt: number | null;
   diagnostics: ProviderDiagnostics;
 }
+
+export interface RecentAreaClear extends RecentAreaLightningBase {
+  status: "clear";
+  totalDetections: 0;
+}
+
+export interface RecentAreaActive extends RecentAreaLightningBase {
+  status: "active";
+  totalDetections: number;
+}
+
+export type RecentAreaLightning = RecentAreaClear | RecentAreaActive;
 
 interface CurrentLightningBase {
   windowMinutes: 5;
@@ -91,13 +102,15 @@ export interface CurrentLightningUnavailable extends CurrentLightningBase {
 
 export type CurrentLightning = CurrentLightningNotRequested | CurrentLightningAvailable | CurrentLightningUnavailable;
 
-export interface LiveLightningSummary {
+interface LiveLightningSummaryBase {
   status: "live";
   provider: "xweather";
   fetchedAt: number;
-  recentArea: RecentAreaLightning;
-  current: CurrentLightning;
 }
+
+export type LiveLightningSummary =
+  | (LiveLightningSummaryBase & { recentArea: RecentAreaClear; current: CurrentLightningNotRequested })
+  | (LiveLightningSummaryBase & { recentArea: RecentAreaActive; current: Exclude<CurrentLightning, CurrentLightningNotRequested> });
 
 export type LiveLightningApiResult =
   | { ok: true; summary: LiveLightningSummary }

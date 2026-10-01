@@ -31,7 +31,7 @@ export function isCurrentLiveRequest(requestId: number, latestId: number, reques
 
 export function liveActivityCopy(summary: LiveLightningSummary): string {
   if (summary.recentArea.totalDetections === 0) {
-    return "No lightning activity detected within 50 km in the last 30 minutes.";
+    return "No recent lightning detections reported within 50 km in the last 30 minutes.";
   }
   if (summary.current.status === "unavailable") {
     return "Lightning activity was detected within 50 km in the last 30 minutes, but current nearby activity is unavailable.";

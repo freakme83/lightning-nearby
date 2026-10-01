@@ -22,6 +22,8 @@ There is no polling, background refresh, cache, persistence, or automatic Raw fa
 
 Summary cheaply answers whether lightning activity occurred anywhere in the broader 50 km area during the last 30 minutes. A healthy zero is sufficient to stop the request chain: the application can report a quiet recent-area window without buying a precise event-location request that has no useful work to do.
 
+This gate relies on an expected coverage relationship, not a proven provider guarantee: a 30-minute / 50 km Summary zero is treated as sufficient reason not to ask for a 5-minute / 40 km Flash result. The live validation below confirms the positive direction (`Summary > 0` causes Flash to be requested), but neither the current tests nor documented provider semantics establish the inverse recall property (`Flash > 0` always implies `Summary > 0`) across regions and conditions. Summary and Flash use different aggregate/event representations, so a rare missed Flash-only result remains possible. Quiet UI wording is limited to “No recent lightning detections reported…” rather than claiming that no lightning activity occurred.
+
 Summary is aggregate-only. It supplies a detection count and provider-reported oldest/newest activity timestamps when available. It does not supply event coordinates, nearest distance, or direction.
 
 ## Why Flash is the current precise layer
@@ -55,6 +57,8 @@ Both stage diagnostics are preserved separately when Flash is requested, so debu
 - **Partial unavailable:** Summary is positive but Flash fails. The recent-area result remains visible, while current precise activity is explicitly unavailable rather than being treated as zero.
 - **Fully unavailable:** Summary fails. The live check is unavailable and neither Flash nor Raw is requested.
 
+The five-minute client-side Flash filter uses the timestamp captured immediately before the Flash request. This keeps the local cutoff from moving forward while a slow provider response is in flight; provider-side Flash results are still checked for stale and future timestamps.
+
 Only current Flash data affects live severity: up to 10 km is High, over 10 through 25 km is Elevated, and over 25 through 40 km is Nearby. Summary-only activity is historical regional context and does not raise current live severity.
 
 ## Raw and debug boundary
@@ -69,12 +73,15 @@ Flash cannot provide precise current position information for the existing 40–
 
 Successful technical integration does not resolve Xweather licensing, public redistribution rights, production suitability, abuse protection, access control, server-side rate limiting, long-term reliability, global detection completeness, latency distribution, or long-term quota/pricing behavior. Those remain release gates before public production use.
 
-## Initial Deploy Preview validation
+## Deploy Preview validation
 
 Validated on PR #16 on 1 October 2026:
 
-- **Quiet control — Ankara (`39.91, 32.84`):** Summary returned HTTP 200 with zero detections. Flash was `not-requested`. The Summary request reported `X-Cost-Tokens: 1` and `X-Cost-Multiplier(s): endpoint=1; spatial=1; temporal=1`. The normal product card independently displayed: “No lightning activity detected within 50 km in the last 30 minutes.”
+- **Quiet control — Ankara (`39.91, 32.84`):** Summary returned HTTP 200 with zero detections. Flash was `not-requested`. The Summary request reported `X-Cost-Tokens: 1` and `X-Cost-Multiplier(s): endpoint=1; spatial=1; temporal=1`. The normal product card independently displayed: “No recent lightning detections reported within 50 km in the last 30 minutes.”
 - **Previously active candidate (`42.93, -2.01`):** Summary also returned HTTP 200 with zero detections at validation time. Flash was correctly not requested and the observed cost was one token. The candidate was no longer active, so this is another branching check rather than an active-system validation.
-- **Active and recent-but-currently-clear cases:** not naturally available during this small validation pass. No additional locations were searched, to avoid spending quota to manufacture samples.
+- **Natural active system (`35.35, 26.27`):** The normal product UI displayed “Lightning activity detected nearby,” with nearest detection about 5.3 km south and 4 flashes within 10 km in the last five minutes. It also showed 32 Summary detections within 50 km in the last 30 minutes and Current picture High. A subsequent normal debug **Load / refresh** returned Summary active with 35 detections and Flash active with 6 flashes, nearest about 5.0 km / 3.31 minutes, 3 within 10 km, and zero malformed Flash records skipped.
 
-The active Summary-to-Flash branch and partial-failure states are covered by fixtures and unit tests, but a real positive Deploy Preview comparison remains an explicit pre-merge validation gap.
+  Both requests returned HTTP 200 and each reported `X-Cost-Tokens: 1`, with multiplier `endpoint=1; spatial=1; temporal=1`. This directly validates the real active branch `Summary positive -> Flash requested` at an observed total of 2 tokens for that check. The UI and debug results were a few minutes apart, so their counts and nearest ages are not expected to match exactly.
+- A natural recent-but-currently-clear case was not available during this small pass. No additional locations were searched to manufacture one.
+
+This is a successful live integration sample, not proof of provider equivalence, universal Summary-gate recall, or long-term behavior. Flash consolidates activity while Summary reports aggregate detections; they remain different products and event representations.

@@ -4,20 +4,21 @@ import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./light
 import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveSeverity } from "./live-observation.ts";
 
 function observed(nearestKm: number | null, status: "not-requested" | "clear" | "active" = nearestKm === null ? "clear" : "active"): LiveLightningApiResult {
+  if (status === "not-requested") {
+    return { ok: true, summary: {
+      status: "live", provider: "xweather", fetchedAt: 0,
+      recentArea: { status: "clear", windowMinutes: 30, radiusKm: 50, totalDetections: 0, oldestEventAt: null, newestEventAt: null, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
+      current: { status, windowMinutes: 5, radiusKm: 40 },
+    } };
+  }
   return { ok: true, summary: {
     status: "live", provider: "xweather", fetchedAt: 0,
-    recentArea: {
-      status: status === "not-requested" ? "clear" : "active", windowMinutes: 30, radiusKm: 50,
-      totalDetections: status === "not-requested" ? 0 : 4, oldestEventAt: null, newestEventAt: null,
-      diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
+    recentArea: { status: "active", windowMinutes: 30, radiusKm: 50, totalDetections: 4, oldestEventAt: null, newestEventAt: null, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
+    current: {
+      status, windowMinutes: 5, radiusKm: 40, latestEventAt: null, nearestKm, nearestDirection: null, nearestAgeMinutes: null,
+      counts: { within5Km: 0, within10Km: 0, within25Km: 0, within40Km: status === "active" ? 1 : 0 },
+      totalFlashes: status === "active" ? 1 : 0, rejectedEventCount: 0, mayBeTruncated: false, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
     },
-    current: status === "not-requested"
-      ? { status, windowMinutes: 5, radiusKm: 40 }
-      : {
-        status, windowMinutes: 5, radiusKm: 40, latestEventAt: null, nearestKm, nearestDirection: null, nearestAgeMinutes: null,
-        counts: { within5Km: 0, within10Km: 0, within25Km: 0, within40Km: status === "active" ? 1 : 0 },
-        totalFlashes: status === "active" ? 1 : 0, rejectedEventCount: 0, mayBeTruncated: false, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
-      },
   } };
 }
 
@@ -54,7 +55,7 @@ test("healthy zero copy describes a detected window without claiming safety", ()
   const result = observed(null, "not-requested");
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(liveActivityCopy(result.summary), "No lightning activity detected within 50 km in the last 30 minutes.");
+    assert.equal(liveActivityCopy(result.summary), "No recent lightning detections reported within 50 km in the last 30 minutes.");
     assert.equal(result.summary.recentArea.windowMinutes, 30);
   }
 });

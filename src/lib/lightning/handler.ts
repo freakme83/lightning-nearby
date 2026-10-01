@@ -8,9 +8,10 @@ import {
   LIVE_CURRENT_WINDOW_MINUTES,
   type LiveLightningApiResult,
   type CurrentLightning,
+  type RecentAreaActive,
+  type RecentAreaClear,
   type ProviderDiagnostics,
   type ProviderFailureStatus,
-  type RecentAreaLightning,
 } from "./types.ts";
 import { createXweatherLiveProvider } from "./xweather-live.ts";
 
@@ -50,18 +51,17 @@ export async function handleLiveLightningRequest(body: unknown, options: Lightni
     };
   }
 
-  const recentArea: RecentAreaLightning = {
-    status: recentAreaResult.totalDetections > 0 ? "active" as const : "clear" as const,
-    windowMinutes: LIVE_AREA_WINDOW_MINUTES,
-    radiusKm: LIVE_AREA_RADIUS_KM,
-    totalDetections: recentAreaResult.totalDetections,
-    oldestEventAt: recentAreaResult.oldestEventAt,
-    newestEventAt: recentAreaResult.newestEventAt,
-    diagnostics: recentAreaResult.diagnostics,
-  };
-
   if (recentAreaResult.totalDetections === 0) {
     const fetchedAt = (options.now ?? Date.now)();
+    const recentArea: RecentAreaClear = {
+      status: "clear",
+      windowMinutes: LIVE_AREA_WINDOW_MINUTES,
+      radiusKm: LIVE_AREA_RADIUS_KM,
+      totalDetections: 0,
+      oldestEventAt: recentAreaResult.oldestEventAt,
+      newestEventAt: recentAreaResult.newestEventAt,
+      diagnostics: recentAreaResult.diagnostics,
+    };
     return {
       httpStatus: 200,
       body: {
@@ -77,8 +77,17 @@ export async function handleLiveLightningRequest(body: unknown, options: Lightni
     };
   }
 
-  const currentResult = await provider.fetchCurrentFlashes(latitude, longitude, options.signal);
+  const recentArea: RecentAreaActive = {
+    status: "active",
+    windowMinutes: LIVE_AREA_WINDOW_MINUTES,
+    radiusKm: LIVE_AREA_RADIUS_KM,
+    totalDetections: recentAreaResult.totalDetections,
+    oldestEventAt: recentAreaResult.oldestEventAt,
+    newestEventAt: recentAreaResult.newestEventAt,
+    diagnostics: recentAreaResult.diagnostics,
+  };
   const fetchedAt = (options.now ?? Date.now)();
+  const currentResult = await provider.fetchCurrentFlashes(latitude, longitude, options.signal);
   const current: CurrentLightning = currentResult.ok
     ? summarizeCurrentFlashes(currentResult.events, latitude, longitude, fetchedAt, currentResult.rejectedEventCount, currentResult.diagnostics, currentResult.mayBeTruncated)
     : {
