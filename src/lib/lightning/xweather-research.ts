@@ -1,6 +1,7 @@
 import { isValidCoordinates } from "../location.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type ProviderDiagnostics, type ProviderFailureStatus } from "./types.ts";
 import { classifyProviderError, diagnosticsFromHeaders } from "./xweather.ts";
+import { parseXweatherSummaryPayload } from "./xweather-live.ts";
 
 export const XWEATHER_RESEARCH_MODES = ["summary-default", "summary-15m", "summary-30m", "flash-5m"] as const;
 export type XweatherResearchMode = typeof XWEATHER_RESEARCH_MODES[number];
@@ -124,9 +125,9 @@ export function parseXweatherSummaryResearch(
   const upstreamError = providerError(payload);
   if (upstreamError) return { ok: false, mode, status: upstreamError.status, message: "Xweather rejected the summary request.", providerCode: upstreamError.code, diagnostics };
   if (successfulNoData(payload)) return { ok: true, mode, ...metadata, fetchedAt, returnedCount: 0, oldestEventAt: null, newestEventAt: null, actualRangeFrom: null, actualRangeTo: null, pulseCounts: { total: 0, cloudToGround: 0, intracloud: 0 }, diagnostics };
-  if (!isRecord(payload) || payload.success !== true || payload.error !== null) {
-    return { ok: false, mode, status: "malformed-response", message: "Xweather returned an unexpected summary response.", providerCode: null, diagnostics };
-  }
+  const normalized = parseXweatherSummaryPayload(payload, diagnostics);
+  if (!normalized.ok) return { ok: false, mode, status: normalized.status, message: normalized.message, providerCode: null, diagnostics };
+  if (!isRecord(payload)) return { ok: false, mode, status: "malformed-response", message: "Xweather returned an unexpected summary response.", providerCode: null, diagnostics };
   const response = isRecord(payload.response)
     ? payload.response
     : Array.isArray(payload.response) && payload.response.length === 1 && isRecord(payload.response[0])
@@ -138,20 +139,18 @@ export function parseXweatherSummaryResearch(
   const summary = response.summary;
   const range = isRecord(summary.range) ? summary.range : null;
   const pulse = isRecord(summary.pulse) ? summary.pulse : null;
-  const total = nonNegativeInteger(pulse?.count) ?? nonNegativeInteger(range?.count);
+  const total = normalized.totalDetections;
   const cg = nonNegativeInteger(pulse?.cg);
   const ic = nonNegativeInteger(pulse?.ic);
   if (total === null || cg === null || ic === null) {
     return { ok: false, mode, status: "malformed-response", message: "Xweather returned incomplete summary counts.", providerCode: null, diagnostics };
   }
-  const minTimestamp = finiteNumber(range?.minTimestamp);
-  const maxTimestamp = finiteNumber(range?.maxTimestamp);
   const fromTimestamp = finiteNumber(range?.fromTimestamp);
   const toTimestamp = finiteNumber(range?.toTimestamp);
   return {
     ok: true, mode, ...metadata, fetchedAt, returnedCount: total,
-    oldestEventAt: minTimestamp === null ? null : minTimestamp * 1000,
-    newestEventAt: maxTimestamp === null ? null : maxTimestamp * 1000,
+    oldestEventAt: normalized.oldestEventAt,
+    newestEventAt: normalized.newestEventAt,
     actualRangeFrom: fromTimestamp === null ? null : fromTimestamp * 1000,
     actualRangeTo: toTimestamp === null ? null : toTimestamp * 1000,
     pulseCounts: { total, cloudToGround: cg, intracloud: ic }, diagnostics,

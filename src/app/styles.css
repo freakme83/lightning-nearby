@@ -19,6 +19,7 @@
 .live-content{margin-top:14px;color:#59666f;font-size:13px;line-height:1.55}
 .live-content p{margin:5px 0}
 .live-content .live-message{color:var(--ink);font-weight:650}
+.live-content .live-context{color:#78838a;font-size:11px}
 .current-picture{margin-top:13px!important;padding-top:11px;border-top:1px solid var(--line)}
 .current-picture strong{color:var(--ink)}
 .current-picture span{color:#78838a;font-size:11px}

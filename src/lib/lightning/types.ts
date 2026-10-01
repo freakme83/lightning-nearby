@@ -3,6 +3,10 @@ import type { CompassDirection } from "./bearing.ts";
 export const LIGHTNING_WINDOW_MINUTES = 5;
 export const LIGHTNING_QUERY_RADIUS_KM = 50;
 export const LIGHTNING_QUERY_LIMIT = 1000;
+export const LIVE_AREA_WINDOW_MINUTES = 30;
+export const LIVE_AREA_RADIUS_KM = 50;
+export const LIVE_CURRENT_WINDOW_MINUTES = 5;
+export const LIVE_CURRENT_RADIUS_KM = 40;
 
 export type PulseType = "IC" | "CG" | "unknown";
 
@@ -42,21 +46,71 @@ export type ProviderResult =
   | { ok: true; events: LiveStrike[]; rejectedEventCount: number; mayBeTruncated: boolean; diagnostics: ProviderDiagnostics }
   | { ok: false; status: ProviderFailureStatus; message: string; diagnostics: ProviderDiagnostics };
 
-export interface LiveLightningSummary {
-  status: "live";
-  provider: "xweather";
-  observationWindowMinutes: number;
-  fetchedAt: number;
+export type RecentAreaProviderResult =
+  | { ok: true; totalDetections: number; oldestEventAt: number | null; newestEventAt: number | null; diagnostics: ProviderDiagnostics }
+  | { ok: false; status: ProviderFailureStatus; message: string; diagnostics: ProviderDiagnostics };
+
+interface RecentAreaLightningBase {
+  windowMinutes: 30;
+  radiusKm: 50;
+  totalDetections: number;
+  oldestEventAt: number | null;
+  newestEventAt: number | null;
+  diagnostics: ProviderDiagnostics;
+}
+
+export interface RecentAreaClear extends RecentAreaLightningBase {
+  status: "clear";
+  totalDetections: 0;
+}
+
+export interface RecentAreaActive extends RecentAreaLightningBase {
+  status: "active";
+  totalDetections: number;
+}
+
+export type RecentAreaLightning = RecentAreaClear | RecentAreaActive;
+
+interface CurrentLightningBase {
+  windowMinutes: 5;
+  radiusKm: 40;
+}
+
+export interface CurrentLightningNotRequested extends CurrentLightningBase {
+  status: "not-requested";
+}
+
+export interface CurrentLightningAvailable extends CurrentLightningBase {
+  status: "clear" | "active";
   latestEventAt: number | null;
   nearestKm: number | null;
-  nearestDirection?: CompassDirection | null;
+  nearestDirection: CompassDirection | null;
   nearestAgeMinutes: number | null;
-  counts: { within5Km: number; within10Km: number; within25Km: number; within50Km: number };
-  totalEvents: number;
+  counts: { within5Km: number; within10Km: number; within25Km: number; within40Km: number };
+  totalFlashes: number;
   rejectedEventCount: number;
   mayBeTruncated: boolean;
   diagnostics: ProviderDiagnostics;
 }
+
+export interface CurrentLightningUnavailable extends CurrentLightningBase {
+  status: "unavailable";
+  failureStatus: ProviderFailureStatus;
+  message: string;
+  diagnostics: ProviderDiagnostics;
+}
+
+export type CurrentLightning = CurrentLightningNotRequested | CurrentLightningAvailable | CurrentLightningUnavailable;
+
+interface LiveLightningSummaryBase {
+  status: "live";
+  provider: "xweather";
+  fetchedAt: number;
+}
+
+export type LiveLightningSummary =
+  | (LiveLightningSummaryBase & { recentArea: RecentAreaClear; current: CurrentLightningNotRequested })
+  | (LiveLightningSummaryBase & { recentArea: RecentAreaActive; current: Exclude<CurrentLightning, CurrentLightningNotRequested> });
 
 export type LiveLightningApiResult =
   | { ok: true; summary: LiveLightningSummary }

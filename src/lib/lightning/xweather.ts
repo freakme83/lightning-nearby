@@ -50,10 +50,10 @@ export function parseXweatherLightningPayload(payload: unknown, diagnostics = EM
     if (providerError && typeof providerError.code === "string") return failure(classifyProviderError(providerError.code), "Xweather did not return usable lightning data.", diagnostics);
     return failure("malformed-response", "Xweather returned an unexpected response shape.", diagnostics);
   }
-  if (!Array.isArray(payload.response)) return failure("malformed-response", "Xweather returned an unexpected response shape.", diagnostics);
-  if (providerError?.code === "warn_no_data" && payload.response.length === 0) {
+  if (providerError?.code === "warn_no_data" && (!Array.isArray(payload.response) || payload.response.length === 0)) {
     return { ok: true, events: [], rejectedEventCount: 0, mayBeTruncated: false, diagnostics };
   }
+  if (!Array.isArray(payload.response)) return failure("malformed-response", "Xweather returned an unexpected response shape.", diagnostics);
   if (providerError || payload.error !== null) {
     return failure(providerError && typeof providerError.code === "string" ? classifyProviderError(providerError.code) : "malformed-response", "Xweather returned a warning or error with the response.", diagnostics);
   }
