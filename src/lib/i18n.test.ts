@@ -20,6 +20,19 @@ test("Turkish defaults, English persists, invalid and unavailable storage fall b
   assert.doesNotThrow(() => saveLocale({ setItem: () => { throw Error("blocked"); } }, "en"));
 });
 
+test("welcome copy communicates nearby lightning and keeps the permission note concise and separate", () => {
+  assert.equal(t("tr", "welcomeEyebrow"), "YEREL YILDIRIM GÖRÜNÜMÜ");
+  assert.equal(t("tr", "welcomeTitle"), "Yakınınızda yıldırım ihtimalini görün.");
+  assert.equal(t("tr", "welcomeCopy"), "Bir konum seçin; önümüzdeki 24 saatin fırtına görünümünü ve yakın çevredeki güncel yıldırım aktivitesini kontrol edin.");
+  assert.equal(t("tr", "permissionNote"), "Konumunuza yalnızca siz izin verdiğinizde erişilir. Seçtiğiniz konum bu cihazda saklanır.");
+  assert.equal(t("en", "welcomeEyebrow"), "LOCAL LIGHTNING OUTLOOK");
+  assert.equal(t("en", "welcomeTitle"), "See the chance of lightning near you.");
+  assert.equal(t("en", "welcomeCopy"), "Choose a location to check the next 24 hours of thunderstorm conditions and current lightning activity nearby.");
+  assert.equal(t("en", "permissionNote"), "Your location is accessed only when you allow it. Your selected location is saved on this device.");
+  assert.doesNotMatch(t("tr", "welcomeCopy"), /izin|cihazda saklanır/);
+  assert.doesNotMatch(t("en", "welcomeCopy"), /allow|saved on this device/i);
+});
+
 test("the same forecast and observation decisions have natural text in both languages", () => {
   for (const risk of ["low", "elevated", "high"] as const) {
     assert.notEqual(forecastHeadline("tr", risk), forecastHeadline("en", risk));

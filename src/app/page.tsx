@@ -394,7 +394,7 @@ export default function Home() {
 
     {!location ? <section className="welcome-panel" aria-labelledby="welcome-title">
       <p className="eyebrow">{t(locale, "welcomeEyebrow")}</p>
-      <h1 id="welcome-title">{t(locale, "welcomeTitle")}<br /><em>{t(locale, "welcomeEmphasis")}</em></h1>
+      <h1 id="welcome-title">{t(locale, "welcomeTitle")}</h1>
       <p className="welcome-copy">{t(locale, "welcomeCopy")}</p>
       <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? t(locale, "findingLocation") : t(locale, "useMyLocation")}</button>
       <button className="text-button picker-open-button" type="button" onClick={openPicker}>{t(locale, "openPicker")}</button>
