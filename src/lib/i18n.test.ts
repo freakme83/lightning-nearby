@@ -25,10 +25,14 @@ test("welcome copy communicates nearby lightning and keeps the permission note c
   assert.equal(t("tr", "welcomeTitle"), "Yakınınızda yıldırım ihtimalini görün.");
   assert.equal(t("tr", "welcomeCopy"), "Bir konum seçin; önümüzdeki 24 saatin fırtına görünümünü ve yakın çevredeki güncel yıldırım aktivitesini kontrol edin.");
   assert.equal(t("tr", "permissionNote"), "Konumunuza yalnızca siz izin verdiğinizde erişilir. Seçtiğiniz konum bu cihazda saklanır.");
+  assert.equal(t("tr", "welcomeLiveTitle"), "Canlı yıldırım kontrolü");
+  assert.equal(t("tr", "welcomeLiveCopy"), "Yakın çevredeki güncel yıldırım aktivitesini kontrol edebilirsiniz.");
   assert.equal(t("en", "welcomeEyebrow"), "LOCAL LIGHTNING OUTLOOK");
   assert.equal(t("en", "welcomeTitle"), "See the chance of lightning near you.");
   assert.equal(t("en", "welcomeCopy"), "Choose a location to check the next 24 hours of thunderstorm conditions and current lightning activity nearby.");
   assert.equal(t("en", "permissionNote"), "Your location is accessed only when you allow it. Your selected location is saved on this device.");
+  assert.equal(t("en", "welcomeLiveTitle"), "Live lightning check");
+  assert.equal(t("en", "welcomeLiveCopy"), "Check current lightning activity in the surrounding area.");
   assert.doesNotMatch(t("tr", "welcomeCopy"), /izin|cihazda saklanır/);
   assert.doesNotMatch(t("en", "welcomeCopy"), /allow|saved on this device/i);
 });
