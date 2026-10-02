@@ -1,4 +1,5 @@
 import type { DailyWeather } from "./today-briefing.ts";
+import { summarizeForecastEvidence, type ForecastEvidenceSummary } from "./forecast-evidence.ts";
 import { t, type Locale } from "./i18n.ts";
 import { fetchEnsembleForecast, type EnsembleForecast, type LocalEnsembleThunderstormSupport } from "./ensemble.ts";
 import { explainRiskDecision, fetchForecast, hasRiskEvidence, type Forecast, type ForecastHour, type RiskInputs, type RiskLevel } from "./weather.ts";
@@ -48,6 +49,13 @@ function decisionFromEvidence(evidence: ThunderstormEvidence) {
 export interface OutlookHour extends ForecastHour {
   evidence: ThunderstormEvidence;
   signal: HourSignal;
+  /** Internal observability only; never an input to deriveSignal. */
+  diagnostics?: ForecastEvidenceSummary;
+}
+
+export function describeOutlookEvidence(hour: OutlookHour): ForecastEvidenceSummary {
+  return summarizeForecastEvidence(evidenceRiskInputs(hour.evidence),
+    hour.signal.kind === "qualitative" ? hour.signal.risk : undefined, hour.evidence.ensemble);
 }
 
 export interface Outlook {
@@ -109,6 +117,7 @@ export function combineForecasts(deterministic: Forecast | null, ensemble: Ensem
     byTime.set(support.time, hour);
   }
   const hours = [...byTime.values()].sort((a, b) => a.time - b.time);
+  for (const hour of hours) hour.diagnostics = describeOutlookEvidence(hour);
   if (!hours.length) return null;
   return {
     timezone: deterministic?.timezone ?? ensemble!.timezone,
@@ -129,7 +138,8 @@ export function mergeEnsembleEvidence(outlook: Outlook, ensemble: EnsembleForeca
     const support = supportByTime.get(hour.time);
     if (!support) return hour;
     const evidence: ThunderstormEvidence = { ...hour.evidence, ensemble: support };
-    return { ...hour, evidence, signal: deriveSignal(evidence) };
+    const merged = { ...hour, evidence, signal: deriveSignal(evidence) };
+    return { ...merged, diagnostics: describeOutlookEvidence(merged) };
   });
   return { ...outlook, hours, ensembleFetchedAt: ensemble.fetchedAt };
 }

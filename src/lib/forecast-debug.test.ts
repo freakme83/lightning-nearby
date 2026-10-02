@@ -62,6 +62,13 @@ test("diagnostic snapshot contains coordinates, UTC and local time, evidence, fi
   assert.equal(snapshot.finalOutlook.qualitativeLevel, "low");
   assert.match(snapshot.decision.qualitativeExplanation, /provider thunderstorm probability is 8%/);
   assert.match(snapshot.decision.ensembleExplanation, /secondary evidence/);
+  assert.equal(snapshot.deterministic.evidenceSource, "direct-provider-probability");
+  assert.equal(snapshot.deterministic.evidenceQuality, "direct");
+  assert.deepEqual(snapshot.evidenceSummary.conflictFlags, [
+    "low-direct-probability-vs-strong-fallback", "low-deterministic-vs-positive-ensemble",
+  ]);
+  assert.equal(snapshot.evidenceSummary.exactPointVsEnsembleAgreement, "low-with-positive-ensemble");
+  assert.equal(snapshot.evidenceSummary.ensembleSupportPresent, true);
 });
 
 test("snapshot represents missing deterministic and ensemble data as unavailable, never zero", () => {
@@ -90,4 +97,21 @@ test("snapshot represents missing deterministic and ensemble data as unavailable
   assert.equal(snapshot.ensemble.availableMembers, "unavailable");
   assert.equal(snapshot.finalOutlook.signalKind, "unavailable");
   assert.match(snapshot.decision.qualitativeExplanation, /signal unavailable/);
+  assert.equal(snapshot.evidenceSummary.deterministicEvidenceSource, "insufficient");
+  assert.equal(snapshot.evidenceSummary.exactPointVsEnsembleAgreement, "ensemble-unavailable");
+  assert.equal(snapshot.evidenceSummary.ensembleSupportAbsent, null);
+  assert.equal(snapshot.ensemble.sampleDiagnostics, "unavailable");
+});
+
+test("snapshot includes effective sample counts and returned coordinates without provider credentials", () => {
+  const support = { ...ensemble.hours[0], sampleDiagnostics: {
+    requestedLocations: 5, returnedLocations: 5, usableLocations: 5, locationsWithEffectiveCoordinates: 5,
+    uniqueEffectiveLocations: 4, effectiveCoordinateStatus: "complete" as const, gridCellIdentity: "unconfirmed" as const,
+    samples: [{ responseIndex: 0, effectiveCoordinates: { latitude: 39.875, longitude: 32.875 } }],
+  } };
+  const hour = combineForecasts(forecast, { ...ensemble, hours: [support] })!.hours[0];
+  const text = createForecastDebugSnapshot({ latitude: 39.93, longitude: 32.86, hour, ensembleStatus: "available" });
+  const snapshot = JSON.parse(text);
+  assert.deepEqual(snapshot.ensemble.sampleDiagnostics, support.sampleDiagnostics);
+  assert.doesNotMatch(text, /client_secret|client_id|api_key|token|https:\/\//i);
 });
