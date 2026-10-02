@@ -1,4 +1,5 @@
 import { isValidCoordinates, type LocationSelection } from "./location.ts";
+import { t, type Locale, type MessageKey } from "./i18n.ts";
 
 export interface PlaceResult extends LocationSelection {
   label: string;
@@ -12,9 +13,10 @@ export interface PlaceResult extends LocationSelection {
 export interface PlaceSearchResults {
   results: PlaceResult[];
   fallbackMessage?: string;
+  fallbackMessageKey?: MessageKey;
 }
 
-export type PlaceLookup = (query: string, signal?: AbortSignal) => Promise<PlaceResult[]>;
+export type PlaceLookup = (query: string, signal?: AbortSignal, locale?: Locale) => Promise<PlaceResult[]>;
 export type ResolvedPlaceLabel = Pick<LocationSelection, "label" | "admin1" | "country">;
 export type CoordinateQuery =
   | { kind: "coordinates"; latitude: number; longitude: number }
@@ -66,14 +68,14 @@ export function parsePlaceResults(payload: unknown): PlaceResult[] {
   });
 }
 
-async function searchPlaceQuery(query: string, signal?: AbortSignal): Promise<PlaceResult[]> {
+export async function searchPlaceQuery(query: string, signal?: AbortSignal, locale: Locale = "en", fetcher: typeof fetch = fetch): Promise<PlaceResult[]> {
   const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
   url.searchParams.set("name", query.trim());
   // A few extra rows help find context-matching localities without showing a long list.
   url.searchParams.set("count", "10");
-  url.searchParams.set("language", "en");
+  url.searchParams.set("language", locale);
   url.searchParams.set("format", "json");
-  const response = await fetch(url, { signal });
+  const response = await fetcher(url, { signal });
   if (!response.ok) throw new Error("place-search-failed");
   const payload: unknown = await response.json();
   if (signal?.aborted) throw signal.reason ?? new DOMException("Search superseded", "AbortError");
@@ -107,10 +109,10 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 /** Search the full phrase first, then use comma-separated components as a small fallback. */
-export async function searchPlaces(query: string, signal?: AbortSignal, lookup: PlaceLookup = searchPlaceQuery): Promise<PlaceSearchResults> {
+export async function searchPlaces(query: string, signal?: AbortSignal, lookup: PlaceLookup = searchPlaceQuery, locale: Locale = "en"): Promise<PlaceSearchResults> {
   const fullQuery = query.trim();
   if (Array.from(fullQuery).length < MIN_PLACE_QUERY_LENGTH) return { results: [] };
-  const exact = await lookup(fullQuery, signal);
+  const exact = await lookup(fullQuery, signal, locale);
   throwIfAborted(signal);
   if (exact.length || !fullQuery.includes(",")) return { results: exact };
 
@@ -124,7 +126,7 @@ export async function searchPlaces(query: string, signal?: AbortSignal, lookup: 
     const key = normalized(candidateTerm);
     let candidateResults = lookupCache.get(key);
     if (!candidateResults) {
-      candidateResults = lookup(candidateTerm, signal);
+      candidateResults = lookup(candidateTerm, signal, locale);
       lookupCache.set(key, candidateResults);
     }
     const results = await candidateResults;
@@ -135,12 +137,12 @@ export async function searchPlaces(query: string, signal?: AbortSignal, lookup: 
 
   const matchedPlaces = uniquePlaces(contextualMatches);
   if (matchedPlaces.length) {
-    return { results: matchedPlaces, fallbackMessage: "No exact combined match; showing places that match the supplied location context." };
+    return { results: matchedPlaces, fallbackMessage: t(locale, "contextualMatch"), fallbackMessageKey: "contextualMatch" };
   }
 
   return {
     results: [],
-    fallbackMessage: "No exact combined match found. Try a broader search or choose a point on the map.",
+    fallbackMessage: t(locale, "noContextualMatch"), fallbackMessageKey: "noContextualMatch",
   };
 }
 
@@ -168,6 +170,7 @@ export async function reverseGeocodeLocation(
   longitude: number,
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
+  locale: Locale = "en",
 ): Promise<ResolvedPlaceLabel | null> {
   const url = new URL("https://nominatim.openstreetmap.org/reverse");
   url.searchParams.set("lat", String(latitude));
@@ -175,7 +178,7 @@ export async function reverseGeocodeLocation(
   url.searchParams.set("format", "jsonv2");
   url.searchParams.set("addressdetails", "1");
   url.searchParams.set("zoom", "14");
-  url.searchParams.set("accept-language", "en");
+  url.searchParams.set("accept-language", locale);
   try {
     const response = await fetcher(url, { signal, referrerPolicy: "strict-origin" });
     if (!response.ok) return null;

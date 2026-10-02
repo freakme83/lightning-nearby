@@ -1,4 +1,5 @@
 import type { DailyWeather } from "./today-briefing.ts";
+import { t, type Locale } from "./i18n.ts";
 import { fetchEnsembleForecast, type EnsembleForecast, type LocalEnsembleThunderstormSupport } from "./ensemble.ts";
 import { explainRiskDecision, fetchForecast, hasRiskEvidence, type Forecast, type ForecastHour, type RiskInputs, type RiskLevel } from "./weather.ts";
 
@@ -171,11 +172,11 @@ export function fetchOutlook(
 
 export interface SignalWindow { start: number; end: number; risk: Exclude<RiskLevel, "low"> }
 
-export function summarizeSignal(window: SignalWindow | null, periodText = ""): string {
-  if (!window) return "No elevated thunderstorm signal in the available forecast hours. Local storms remain possible.";
+export function summarizeSignal(window: SignalWindow | null, periodText = "", locale: Locale = "en"): string {
+  if (!window) return t(locale, "noElevatedSignal");
   return window.risk === "high"
-    ? `Thunderstorm conditions are indicated in the forecast. Strongest period: ${periodText}.`
-    : `Thunderstorm activity is plausible near this location around ${periodText}.`;
+    ? t(locale, "highSummary", { period: periodText })
+    : t(locale, "elevatedSummary", { period: periodText });
 }
 
 const SEVERITY: Record<RiskLevel, number> = { low: 0, elevated: 1, high: 2 };

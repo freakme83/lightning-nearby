@@ -78,3 +78,12 @@
 .today-briefing{padding:18px 0;border-bottom:1px solid var(--line)}
 .today-briefing h2{margin:0 0 8px}
 .today-briefing>p{margin:0;font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+
+/* Keep the language choice compact without squeezing the mobile brand. */
+.topbar-tools{display:flex;align-items:center;gap:14px;min-width:0}
+.locale-switch{display:flex;align-items:center;gap:2px;color:#849095;font:600 10px ui-monospace,SFMono-Regular,monospace;white-space:nowrap}
+.locale-switch button{min-width:32px;min-height:40px;padding:0 3px;border:0;background:transparent;color:#718088;cursor:pointer;font:inherit}
+.locale-switch button[aria-pressed="true"]{color:var(--deep);text-decoration:underline;text-decoration-color:var(--teal);text-underline-offset:4px}
+.locale-switch button:focus-visible{outline:3px solid #4b9b92;outline-offset:1px}
+@media(max-width:600px){.topbar-tools{gap:7px}.locale-switch button{min-width:28px}.edition{font-size:8px}}
+@media(max-width:420px){.edition{display:none}}
