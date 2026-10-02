@@ -33,6 +33,17 @@ test("welcome copy communicates nearby lightning and keeps the permission note c
   assert.doesNotMatch(t("en", "welcomeCopy"), /allow|saved on this device/i);
 });
 
+test("hourly section copy identifies lightning risk in both supported languages", () => {
+  assert.equal(t("tr", "hoursAhead"), "YILDIRIM RİSKİ · ÖNÜMÜZDEKİ SAATLER");
+  assert.equal(t("tr", "hourlyOutlook"), "Saatlik yıldırım görünümü");
+  assert.equal(t("tr", "timelineInstruction"), "Her saat için yıldırım ihtimalini görmek için dokunun.");
+  assert.equal(t("tr", "derivedOutlook"), "Yıldırım riski");
+  assert.equal(t("en", "hoursAhead"), "LIGHTNING RISK · HOURS AHEAD");
+  assert.equal(t("en", "hourlyOutlook"), "Hourly lightning outlook");
+  assert.equal(t("en", "timelineInstruction"), "Tap an hour to see the estimated lightning outlook.");
+  assert.equal(t("en", "derivedOutlook"), "Lightning risk");
+});
+
 test("the same forecast and observation decisions have natural text in both languages", () => {
   for (const risk of ["low", "elevated", "high"] as const) {
     assert.notEqual(forecastHeadline("tr", risk), forecastHeadline("en", risk));
