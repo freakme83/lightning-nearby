@@ -118,3 +118,4 @@
   .welcome-panel .permission-note{max-width:none}
   .welcome-panel .welcome-rule{margin-top:30px}
 }
+@media(max-width:350px){.welcome-art{right:-16px}}
