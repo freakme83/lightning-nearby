@@ -5,34 +5,39 @@ import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
 import { INITIAL_VISIBLE_PLACE_RESULTS, MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, visiblePlaceResults, type PlaceResult } from "@/lib/geocoding";
 import { isCurrentGeolocationRequest, resolveGeolocationSelection } from "@/lib/geolocation";
-import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours, type RiskLevel } from "@/lib/weather";
+import { RISK_THRESHOLDS, describeWeatherCode, isThunderstormCode, selectNext24Hours } from "@/lib/weather";
 import { calculateStrongestSignalWindow, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, summarizeSignal, type Outlook, type OutlookHour } from "@/lib/outlook";
 import { nextForecastRefreshRevision } from "@/lib/forecast-refresh";
-import { isGenericFixedOffsetTimezone, resolveDisplayTimezone, formatForecastLocalTime } from "@/lib/timezone";
+import { isGenericFixedOffsetTimezone, resolveDisplayTimezone } from "@/lib/timezone";
+import { DEFAULT_LOCALE, formatClock, formatDayLabel, forecastHeadline, readStoredLocale, riskLabel, saveLocale, t, type Locale, type MessageKey } from "@/lib/i18n";
 import TodayBriefing from "./today-briefing";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
 import { firstLocationAutoCheckKey, isInitialLiveCheckEligible, suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
 
-const RISK_LABEL: Record<RiskLevel, string> = { low: "Low", elevated: "Elevated", high: "High" };
-const localTime = formatForecastLocalTime;
+const localTime = (epoch: number, timezone: string, locale: Locale) => formatClock(epoch * 1000, timezone, locale);
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
-function dayLabel(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-GB", { timeZone: timezone, weekday: "short", day: "numeric", month: "short" }).format(epoch * 1000); }
-function period(start: number, end: number, timezone: string) { return `${localTime(start, timezone)}–${localTime(end, timezone)}`; }
+const dayLabel = formatDayLabel;
+function period(start: number, end: number, timezone: string, locale: Locale) { return `${localTime(start, timezone, locale)}–${localTime(end, timezone, locale)}`; }
 function displayLocationCoordinates(selection: LocationSelection): string {
   return selection.label === "Selected coordinates"
     ? `${selection.latitude}, ${selection.longitude}`
     : formatCoordinates(selection.latitude, selection.longitude);
 }
-function locationErrorMessage(code?: number) {
-  if (!navigator.geolocation) return "Location isn’t available in this browser. Try again in a browser that supports location.";
-  if (code === 1) return "Location access was declined. Allow it in your browser or device settings, then try again.";
-  if (code === 2) return "Your device couldn’t determine a location. Check location services and try again.";
-  if (code === 3) return "The location request took too long. Check your signal and try again.";
-  return "We couldn’t get your location. Check your device settings and try again.";
+function locationErrorMessage(code?: number): MessageKey {
+  if (!navigator.geolocation) return "locationUnsupported";
+  if (code === 1) return "locationDenied";
+  if (code === 2) return "locationUnavailable";
+  if (code === 3) return "locationTimeout";
+  return "locationFailed";
+}
+function visibleLocationLabel(selection: LocationSelection, locale: Locale): string {
+  return selection.label === "Selected coordinates" ? t(locale, "selectedCoordinates") : formatLocationLabel(selection);
 }
 
 export default function Home() {
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  const localeRef = useRef<Locale>(DEFAULT_LOCALE);
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const [initialAutoCheckLocationKey, setInitialAutoCheckLocationKey] = useState<string | null>(null);
@@ -44,7 +49,7 @@ export default function Home() {
   const [forecastRefreshRevision, setForecastRefreshRevision] = useState(0);
   const [forecastError, setForecastError] = useState(false);
   const [locating, setLocating] = useState(false);
-  const [locationMessage, setLocationMessage] = useState("");
+  const [locationMessage, setLocationMessage] = useState<MessageKey | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"search" | "map">("search");
   const [candidate, setCandidate] = useState<LocationSelection | null>(null);
@@ -52,8 +57,8 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [showAllSearchResults, setShowAllSearchResults] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState("");
-  const [searchNotice, setSearchNotice] = useState("");
+  const [searchError, setSearchError] = useState<MessageKey | null>(null);
+  const [searchNotice, setSearchNotice] = useState<MessageKey | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchRevision, setSearchRevision] = useState(0);
   const [resolvingLocation, setResolvingLocation] = useState(false);
@@ -76,13 +81,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    localeRef.current = locale;
+    document.documentElement.lang = locale;
+  }, [locale]);
+  const changeLocale = (next: Locale) => { setLocale(next); saveLocale(localStorage, next); };
+
+  useEffect(() => {
+    // Hydrate browser-only preference after SSR. Its default matches the server's Turkish document.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLocale(readStoredLocale(localStorage));
     try {
       const saved = localStorage.getItem(LOCATION_STORAGE_KEY);
       if (saved) {
         const parsed = parseMonitoredLocation(JSON.parse(saved));
         if (parsed) {
           // Hydrate browser-only storage after SSR to avoid a hydration mismatch.
-          // eslint-disable-next-line react-hooks/set-state-in-effect
           setLocation(parsed);
           setInitialAutoCheckLocationKey(`${parsed.latitude},${parsed.longitude}`);
         }
@@ -170,8 +183,8 @@ export default function Home() {
   }, [forecastRefreshRevision, loading, locating]);
 
   const requestLocation = useCallback(() => {
-    setLocationMessage("");
-    if (!navigator.geolocation) { setLocationMessage("Location isn’t available in this browser. Try again in a browser that supports location."); return; }
+    setLocationMessage(null);
+    if (!navigator.geolocation) { setLocationMessage("locationUnsupported"); return; }
     geolocationControllerRef.current?.abort();
     geolocationControllerRef.current = null;
     const requestId = ++geolocationRequestRef.current;
@@ -180,7 +193,7 @@ export default function Home() {
       if (requestId !== geolocationRequestRef.current) return;
       const controller = new AbortController();
       geolocationControllerRef.current = controller;
-      void resolveGeolocationSelection(coords.latitude, coords.longitude, controller.signal).then((selection) => {
+      void resolveGeolocationSelection(coords.latitude, coords.longitude, controller.signal, (lat, lon, signal) => reverseGeocodeLocation(lat, lon, signal, fetch, locale)).then((selection) => {
         if (!isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) return;
         try {
           const saved = saveMonitoredLocation(localStorage, selection);
@@ -195,11 +208,11 @@ export default function Home() {
             setLocation(saved);
           }
         } catch {
-          setLocationMessage("This browser couldn’t save your location on this device. Check its storage settings and try again.");
+          setLocationMessage("saveLocationFailed");
         }
       }).catch(() => {
         if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
-          setLocationMessage("We couldn’t get your location. Check your device settings and try again.");
+          setLocationMessage("locationFailed");
         }
       }).finally(() => {
         if (isCurrentGeolocationRequest(requestId, geolocationRequestRef.current, controller.signal)) {
@@ -212,13 +225,13 @@ export default function Home() {
       setLocationMessage(locationErrorMessage(error.code)); setLocating(false);
     },
     { enableHighAccuracy: false, maximumAge: 300_000, timeout: 15_000 });
-  }, [initialAutoCheckLocationKey, location, storageReady]);
+  }, [initialAutoCheckLocationKey, location, locale, storageReady]);
 
   const openPicker = useCallback(() => {
     invalidateGeolocationRequest();
     setCandidate(location ? { ...location } : null);
-    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
-    setLocationMessage(""); setPickerOpen(true);
+    setPickerMode("search"); setSearchQuery(""); setSearchResults([]); setShowAllSearchResults(false); setSearchError(null); setSearchNotice(null); setHasSearched(false); setSearching(false);
+    setLocationMessage(null); setPickerOpen(true);
   }, [invalidateGeolocationRequest, location]);
 
   const submitPlaceSearch = useCallback((event: FormEvent<HTMLFormElement>) => {
@@ -226,17 +239,17 @@ export default function Home() {
     const coordinateQuery = parseCoordinateQuery(searchQuery);
     if (coordinateQuery.kind === "coordinates") {
       setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
-      setSearchError(""); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      setSearchError(null); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(null); setHasSearched(false); setSearching(false);
       return;
     }
     if (coordinateQuery.kind === "invalid") {
-      setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
-      setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); setSearching(false);
+      setSearchError("invalidCoordinates");
+      setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(null); setHasSearched(false); setSearching(false);
       return;
     }
-    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError(`Enter at least ${MIN_PLACE_QUERY_LENGTH} characters to search.`); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(false); return; }
+    if (Array.from(searchQuery.trim()).length < MIN_PLACE_QUERY_LENGTH) { setSearchError("queryTooShort"); setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(null); setHasSearched(false); return; }
     immediateSearchRef.current = true;
-    setSearchError(""); setSearchNotice(""); setShowAllSearchResults(false); setSearchRevision((revision) => revision + 1);
+    setSearchError(null); setSearchNotice(null); setShowAllSearchResults(false); setSearchRevision((revision) => revision + 1);
   }, [searchQuery]);
 
   useEffect(() => {
@@ -249,14 +262,14 @@ export default function Home() {
     const delay = immediateSearchRef.current ? 0 : PLACE_SEARCH_DEBOUNCE_MS;
     immediateSearchRef.current = false;
     const timer = window.setTimeout(() => {
-      setSearching(true); setSearchError("");
-      void searchPlaces(query, controller.signal).then(({ results, fallbackMessage }) => {
+      setSearching(true); setSearchError(null);
+      void searchPlaces(query, controller.signal, undefined, localeRef.current).then(({ results, fallbackMessageKey }) => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
-        setSearchResults(results); setShowAllSearchResults(false); setSearchNotice(fallbackMessage ?? ""); setHasSearched(true);
+        setSearchResults(results); setShowAllSearchResults(false); setSearchNotice(fallbackMessageKey ?? null); setHasSearched(true);
       }).catch(() => {
         if (controller.signal.aborted || requestId !== searchRequestRef.current) return;
-        setSearchError("Place search is unavailable right now. Check your connection and try again.");
-        setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(""); setHasSearched(true);
+        setSearchError("searchUnavailable");
+        setSearchResults([]); setShowAllSearchResults(false); setSearchNotice(null); setHasSearched(true);
       }).finally(() => {
         if (!controller.signal.aborted && requestId === searchRequestRef.current) setSearching(false);
       });
@@ -268,13 +281,13 @@ export default function Home() {
   }, [pickerOpen, pickerMode, searchQuery, searchRevision]);
 
   const changeSearchQuery = useCallback((query: string) => {
-    setSearchQuery(query); setSearchResults([]); setShowAllSearchResults(false); setSearchError(""); setSearchNotice(""); setHasSearched(false); setSearching(false);
+    setSearchQuery(query); setSearchResults([]); setShowAllSearchResults(false); setSearchError(null); setSearchNotice(null); setHasSearched(false); setSearching(false);
     const coordinateQuery = parseCoordinateQuery(query);
     if (coordinateQuery.kind === "coordinates") {
       setCandidate({ latitude: coordinateQuery.latitude, longitude: coordinateQuery.longitude, label: "Selected coordinates", source: "search" });
     } else {
       setCandidate((current) => current?.label === "Selected coordinates" ? null : current);
-      if (coordinateQuery.kind === "invalid") setSearchError("Enter valid coordinates: latitude from −90 to 90, longitude from −180 to 180.");
+      if (coordinateQuery.kind === "invalid") setSearchError("invalidCoordinates");
     }
   }, []);
 
@@ -284,7 +297,7 @@ export default function Home() {
 
   const selectPlace = useCallback((place: PlaceResult) => {
     reverseControllerRef.current?.abort(); confirmRequestRef.current += 1; setResolvingLocation(false);
-    setCandidate(place); setPickerMode("map"); setSearchError("");
+    setCandidate(place); setPickerMode("map"); setSearchError(null);
   }, []);
 
   const pickMapPoint = useCallback((latitude: number, longitude: number) => {
@@ -294,7 +307,7 @@ export default function Home() {
 
   const cancelPicker = useCallback(() => {
     searchRequestRef.current += 1; confirmRequestRef.current += 1; reverseControllerRef.current?.abort();
-    setPickerOpen(false); setCandidate(null); setSearchError(""); setSearchNotice(""); setSearchResults([]); setShowAllSearchResults(false); setSearching(false); setResolvingLocation(false);
+    setPickerOpen(false); setCandidate(null); setSearchError(null); setSearchNotice(null); setSearchResults([]); setShowAllSearchResults(false); setSearching(false); setResolvingLocation(false);
   }, []);
 
   const confirmCandidate = useCallback(async () => {
@@ -302,11 +315,11 @@ export default function Home() {
     const requestId = ++confirmRequestRef.current;
     const controller = new AbortController();
     reverseControllerRef.current = controller;
-    setResolvingLocation(true); setLocationMessage("");
+    setResolvingLocation(true); setLocationMessage(null);
     let selection = candidate;
     if (candidate.source === "map") {
       try {
-        const metadata = await reverseGeocodeLocation(candidate.latitude, candidate.longitude, controller.signal);
+        const metadata = await reverseGeocodeLocation(candidate.latitude, candidate.longitude, controller.signal, fetch, locale);
         if (metadata) selection = { ...candidate, ...metadata };
       } catch {
         if (controller.signal.aborted || requestId !== confirmRequestRef.current) return;
@@ -323,118 +336,120 @@ export default function Home() {
         suppressInitialLiveCheckForSession(() => window.sessionStorage);
         setInitialAutoCheckLocationKey(null);
       }
-      setLocation(saved); setLocationMessage(""); setPickerOpen(false); setCandidate(null);
+      setLocation(saved); setLocationMessage(null); setPickerOpen(false); setCandidate(null);
     } catch {
-      setLocationMessage("This browser couldn’t save the selected location on this device. Check its storage settings and try again.");
+      setLocationMessage("saveSelectionFailed");
     } finally {
       if (requestId === confirmRequestRef.current) setResolvingLocation(false);
     }
-  }, [candidate, initialAutoCheckLocationKey, location, resolvingLocation, storageReady]);
+  }, [candidate, initialAutoCheckLocationKey, location, locale, resolvingLocation, storageReady]);
 
   const highestWindow = useMemo(() => calculateStrongestSignalWindow(hours), [hours]);
   const visibleSearchResults = visiblePlaceResults(searchResults, showAllSearchResults);
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
   const forecastContext: ForecastContext | null = forecast && !loading ? {
     risk: highestWindow?.risk ?? "low",
-    headline: `${RISK_LABEL[highestWindow?.risk ?? "low"]} signal in next 24h`,
-    summary: summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : ""),
-    strongestWindow: highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone) : null,
+    headline: forecastHeadline(locale, highestWindow?.risk ?? "low"),
+    summary: summarizeSignal(highestWindow, highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone, locale) : "", locale),
+    strongestWindow: highestWindow ? period(highestWindow.start, highestWindow.end, forecast.timezone, locale) : null,
   } : null;
-  const locationPicker = pickerOpen && <section className="location-picker" aria-label="Choose a monitored location">
-    <div className="picker-heading"><div><p className="eyebrow">LOCATION</p><h2>Choose a point</h2></div><button className="text-button" type="button" onClick={cancelPicker}>Cancel</button></div>
-    <div className="picker-tabs" role="group" aria-label="Location selection method">
-      <button className={`secondary-button ${pickerMode === "search" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "search"} disabled={resolvingLocation} onClick={() => switchPickerMode("search")}>Search place</button>
-      <button className={`secondary-button ${pickerMode === "map" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "map"} disabled={resolvingLocation} onClick={() => switchPickerMode("map")}>Pick on map</button>
+  const locationPicker = pickerOpen && <section className="location-picker" aria-label={t(locale, "choosePoint")}>
+    <div className="picker-heading"><div><p className="eyebrow">{t(locale, "location")}</p><h2>{t(locale, "choosePoint")}</h2></div><button className="text-button" type="button" onClick={cancelPicker}>{t(locale, "cancel")}</button></div>
+    <div className="picker-tabs" role="group" aria-label={t(locale, "choosePoint")}>
+      <button className={`secondary-button ${pickerMode === "search" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "search"} disabled={resolvingLocation} onClick={() => switchPickerMode("search")}>{t(locale, "searchPlace")}</button>
+      <button className={`secondary-button ${pickerMode === "map" ? "is-active" : ""}`} type="button" aria-pressed={pickerMode === "map"} disabled={resolvingLocation} onClick={() => switchPickerMode("map")}>{t(locale, "pickOnMap")}</button>
     </div>
     {pickerMode === "search" ? <>
       <form className="place-search" onSubmit={submitPlaceSearch}>
-        <label className="visually-hidden" htmlFor="place-search">Search for a place</label>
-        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder="City, town, place, or coordinates" autoComplete="off" />
-        <button className="secondary-button" type="submit">{searching ? "Searching…" : "Search"}</button>
+        <label className="visually-hidden" htmlFor="place-search">{t(locale, "searchPlace")}</label>
+        <input id="place-search" type="search" value={searchQuery} onChange={(event) => changeSearchQuery(event.target.value)} placeholder={t(locale, "searchPlaceholder")} autoComplete="off" />
+        <button className="secondary-button" type="submit">{searching ? t(locale, "searching") : t(locale, "search")}</button>
       </form>
-      {searchError && <p className="inline-error" role="alert">{searchError}</p>}
-      {searching && <p className="picker-note" role="status">Searching places…</p>}
-      {searchNotice && <p className="picker-note" role="status">{searchNotice}</p>}
-      {!searching && hasSearched && !searchError && searchResults.length === 0 && <p className="picker-note" role="status">No matching places found. Try a nearby town or a broader search.</p>}
-      {searchResults.length > 0 && <ul className="place-results" aria-label="Search results">{visibleSearchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
+      {searchError && <p className="inline-error" role="alert">{t(locale, searchError, { count: MIN_PLACE_QUERY_LENGTH })}</p>}
+      {searching && <p className="picker-note" role="status">{t(locale, "searchingPlaces")}</p>}
+      {searchNotice && <p className="picker-note" role="status">{t(locale, searchNotice)}</p>}
+      {!searching && hasSearched && !searchError && searchResults.length === 0 && <p className="picker-note" role="status">{t(locale, "noPlaces")}</p>}
+      {searchResults.length > 0 && <ul className="place-results" aria-label={t(locale, "search")}>{visibleSearchResults.map((place, index) => <li key={`${place.latitude}:${place.longitude}:${index}`}>
         <button type="button" onClick={() => selectPlace(place)}><strong>{place.label}</strong><span>{[place.admin1, place.country].filter(Boolean).join(", ") || formatCoordinates(place.latitude, place.longitude)}</span></button>
       </li>)}</ul>}
-      {searchResults.length > INITIAL_VISIBLE_PLACE_RESULTS && !showAllSearchResults && <button className="text-button" type="button" onClick={() => setShowAllSearchResults(true)}>Show more</button>}
+      {searchResults.length > INITIAL_VISIBLE_PLACE_RESULTS && !showAllSearchResults && <button className="text-button" type="button" onClick={() => setShowAllSearchResults(true)}>{t(locale, "showMore")}</button>}
     </> : <>
-      <p className="picker-note">Tap the map to place one marker. Pan and zoom to refine the point.</p>
-      <LocationMap candidate={candidate} onPick={pickMapPoint} />
-      <p className="picker-note">Map tiles and place labels © OpenStreetMap contributors.</p>
+      <p className="picker-note">{t(locale, "mapInstruction")}</p>
+      <LocationMap candidate={candidate} onPick={pickMapPoint} locale={locale} />
+      <p className="picker-note">{t(locale, "mapAttribution")}</p>
     </>}
-    {candidate && <div className="candidate-row"><p><strong>{formatLocationLabel(candidate)}</strong><span>{displayLocationCoordinates(candidate)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? candidate.source === "map" ? "Finding place…" : "Saving location…" : "Use this location"}</button></div>}
-    {candidate?.source === "map" && <p className="picker-note">Confirming this point may send its coordinates to OpenStreetMap Nominatim to find a place label.</p>}
+    {candidate && <div className="candidate-row"><p><strong>{visibleLocationLabel(candidate, locale)}</strong><span>{displayLocationCoordinates(candidate)}</span></p><button className="primary-button" type="button" onClick={() => void confirmCandidate()} disabled={resolvingLocation}>{resolvingLocation ? candidate.source === "map" ? t(locale, "findingPlace") : t(locale, "savingLocation") : t(locale, "useThisLocation")}</button></div>}
+    {candidate?.source === "map" && <p className="picker-note">{t(locale, "mapPrivacy")}</p>}
   </section>;
 
-  if (!storageReady) return <main className="page-shell"><div className="loading-state" role="status">Opening your local forecast…</div></main>;
+  if (!storageReady) return <main className="page-shell"><div className="loading-state" role="status">{t(locale, "openingForecast")}</div></main>;
 
   return <main className="page-shell">
     <header className="topbar">
-      <Link className="brand" href="/" aria-label="Lightning Nearby home"><span className="brand-mark" aria-hidden="true">↯</span><span>LIGHTNING <b>NEARBY</b></span></Link>
-      <span className="edition">LOCAL OUTLOOK <span aria-hidden="true">·</span> 24H</span>
+      <Link className="brand" href="/" aria-label={t(locale, "brandHome")}><span className="brand-mark" aria-hidden="true">↯</span><span>LIGHTNING <b>NEARBY</b></span></Link>
+      <div className="topbar-tools"><div className="locale-switch" role="group" aria-label="Language / Dil">
+        <button type="button" lang="tr" aria-pressed={locale === "tr"} onClick={() => changeLocale("tr")}>TR</button><span aria-hidden="true">/</span><button type="button" lang="en" aria-pressed={locale === "en"} onClick={() => changeLocale("en")}>EN</button>
+      </div><span className="edition">{t(locale, "edition")} <span aria-hidden="true">·</span> {t(locale, "editionPeriod")}</span></div>
     </header>
 
     {!location ? <section className="welcome-panel" aria-labelledby="welcome-title">
-      <p className="eyebrow">A clearer view of the hours ahead</p>
-      <h1 id="welcome-title">Thunderstorm outlook,<br /><em>where you are.</em></h1>
-      <p className="welcome-copy">Choose a point to see the next 24 hours of forecast conditions. Device location is requested only after a tap; place searches are sent to Open‑Meteo. Your selected location stays on this device.</p>
-      <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? "Finding location…" : "Use my location"}</button>
-      <button className="text-button picker-open-button" type="button" onClick={openPicker}>Search for a place or choose on map</button>
+      <p className="eyebrow">{t(locale, "welcomeEyebrow")}</p>
+      <h1 id="welcome-title">{t(locale, "welcomeTitle")}</h1>
+      <p className="welcome-copy">{t(locale, "welcomeCopy")}</p>
+      <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? t(locale, "findingLocation") : t(locale, "useMyLocation")}</button>
+      <button className="text-button picker-open-button" type="button" onClick={openPicker}>{t(locale, "openPicker")}</button>
       {locationPicker}
-      {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
-      <p className="permission-note">Your browser asks before sharing device location. It is not requested until you tap “Use my location”.</p>
-      <div className="welcome-rule" /><p className="micro-copy">Forecast guidance only. This is not an official weather warning.</p>
+      {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
+      <p className="permission-note">{t(locale, "permissionNote")}</p>
+      <div className="welcome-rule" /><p className="micro-copy">{t(locale, "disclaimerShort")}</p>
     </section> : <section className="overview" aria-labelledby="overview-title">
-      <div className="location-line"><div><p className="eyebrow">MONITORED LOCATION</p><p className="coordinates">{location.label || location.country ? formatLocationLabel(location) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
+      <div className="location-line"><div><p className="eyebrow">{t(locale, "monitoredLocation")}</p><p className="coordinates">{location.label || location.country ? visibleLocationLabel(location, locale) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
         <div className="location-actions">
-          <button className="text-button" type="button" onClick={refreshForecast} disabled={loading || locating || refreshingForecast}>{refreshingForecast ? "Refreshing…" : "Refresh forecast"}</button>
-          <button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? "Locating…" : "Use current location"}</button>
-          <button className="text-button" type="button" onClick={openPicker}>Search / map</button>
+          <button className="text-button" type="button" onClick={refreshForecast} disabled={loading || locating || refreshingForecast}>{refreshingForecast ? t(locale, "refreshing") : t(locale, "refreshForecast")}</button>
+          <button className="text-button" type="button" onClick={requestLocation} disabled={locating}>{locating ? t(locale, "locating") : t(locale, "useCurrentLocation")}</button>
+          <button className="text-button" type="button" onClick={openPicker}>{t(locale, "searchMap")}</button>
         </div></div>
       {locationPicker}
-      {locationMessage && <p className="inline-error" role="alert">{locationMessage}</p>}
-      {loading && <div className="loading-state" role="status">Getting the latest forecast…</div>}
-      {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>Forecast unavailable</strong><p>Open‑Meteo could not provide enough current forecast data. Check your connection and try again. No old forecast is shown as current.</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>Try again</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} />
+      {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
+      {loading && <div className="loading-state" role="status">{t(locale, "gettingForecast")}</div>}
+      {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>{t(locale, "forecastUnavailable")}</strong><p>{t(locale, "forecastError")}</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>{t(locale, "tryAgain")}</button></div>}
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} />
       {forecast && !loading && <>
-        <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} />
+        <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} locale={locale} />
         <section className="timeline-section" aria-labelledby="timeline-title">
-          <div className="section-heading"><div><p className="eyebrow">THE HOURS AHEAD</p><h2 id="timeline-title">Hourly outlook</h2></div><span className="timezone-label">Local time</span></div>
-          <p className="timeline-instruction">Tap an hour to see its forecast values.</p>
-          <div className="timeline-scroll" role="group" aria-label="Hourly thunderstorm outlook. Scroll horizontally to see more hours."><ol className="timeline">
+          <div className="section-heading"><div><p className="eyebrow">{t(locale, "hoursAhead")}</p><h2 id="timeline-title">{t(locale, "hourlyOutlook")}</h2></div><span className="timezone-label">{t(locale, "localTime")}</span></div>
+          <p className="timeline-instruction">{t(locale, "timelineInstruction")}</p>
+          <div className="timeline-scroll" role="group" aria-label={t(locale, "timelineScroll")}><ol className="timeline">
             {hours.map((hour, index) => {
               const previous = hours[index - 1];
               const showDate = index === 0 || !previous || localDateKey(previous.time, forecast.timezone) !== localDateKey(hour.time, forecast.timezone);
               const isSelected = selectedTime === hour.time;
               return <li key={hour.time} className={`hour-slot ${isSelected ? "is-selected" : ""}`}>
-                {showDate && <span className="day-label">{dayLabel(hour.time, forecast.timezone)}</span>}
-                <button type="button" className={`hour-button ${hour.signal.kind === "qualitative" ? `risk-${hour.signal.risk}` : ""}`} aria-pressed={isSelected} aria-label={`${localTime(hour.time, forecast.timezone)}, ${hour.signal.kind === "qualitative" ? `${RISK_LABEL[hour.signal.risk]} thunderstorm signal` : "signal unavailable"}`} onClick={() => setSelectedTime(hour.time)}>
-                  <span className="hour-time">{localTime(hour.time, forecast.timezone).slice(0, 2)}</span><span className="risk-bar" aria-hidden="true"><span /></span><span className="hour-risk">{hour.signal.kind === "qualitative" ? RISK_LABEL[hour.signal.risk] : "—"}</span>
+                {showDate && <span className="day-label">{dayLabel(hour.time, forecast.timezone, locale)}</span>}
+                <button type="button" className={`hour-button ${hour.signal.kind === "qualitative" ? `risk-${hour.signal.risk}` : ""}`} aria-pressed={isSelected} aria-label={`${localTime(hour.time, forecast.timezone, locale)}, ${hour.signal.kind === "qualitative" ? t(locale, "hourRisk", { risk: riskLabel(locale, hour.signal.risk) }) : t(locale, "signalUnavailable")}`} onClick={() => setSelectedTime(hour.time)}>
+                  <span className="hour-time">{localTime(hour.time, forecast.timezone, locale).slice(0, 2)}</span><span className="risk-bar" aria-hidden="true"><span /></span><span className="hour-risk">{hour.signal.kind === "qualitative" ? riskLabel(locale, hour.signal.risk) : "—"}</span>
                 </button>
               </li>;
             })}
           </ol></div>
-          <div className="legend" aria-label="Risk level legend"><span><i className="legend-dot low" />Low</span><span><i className="legend-dot elevated" />Elevated</span><span><i className="legend-dot high" />High</span><span className="derived-label">Derived outlook</span></div>
+          <div className="legend" aria-label={t(locale, "riskLegend")}><span><i className="legend-dot low" />{t(locale, "low")}</span><span><i className="legend-dot elevated" />{t(locale, "elevated")}</span><span><i className="legend-dot high" />{t(locale, "high")}</span><span className="derived-label">{t(locale, "derivedOutlook")}</span></div>
         </section>
         {selected && <section className="details-section" aria-live="polite" aria-labelledby="details-title">
-          <div className="details-top"><div><p className="eyebrow">SELECTED HOUR</p><h2 id="details-title">{dayLabel(selected.time, forecast.timezone)} · {localTime(selected.time, forecast.timezone)}</h2></div>{selected.signal.kind === "qualitative" && <span className={`small-risk risk-${selected.signal.risk}`}>{RISK_LABEL[selected.signal.risk]}</span>}</div>
-          <p className="details-note">Open‑Meteo forecast values</p>
+          <div className="details-top"><div><p className="eyebrow">{t(locale, "selectedHour")}</p><h2 id="details-title">{dayLabel(selected.time, forecast.timezone, locale)} · {localTime(selected.time, forecast.timezone, locale)}</h2></div>{selected.signal.kind === "qualitative" && <span className={`small-risk risk-${selected.signal.risk}`}>{riskLabel(locale, selected.signal.risk)}</span>}</div>
+          <p className="details-note">{t(locale, "forecastValues")}</p>
           <dl className="forecast-values">
-            {selected.weatherCode != null && <div><dt>Weather</dt><dd>{describeWeatherCode(selected.weatherCode)}</dd></div>}
-            {selected.evidence.providerProbability != null && <div><dt>Thunderstorm probability</dt><dd>{Math.round(selected.evidence.providerProbability)}% · provider value</dd></div>}
-            {selected.evidence.ensemble && selected.evidence.ensemble.supportingMembers > 0 && <div><dt>Nearby model support</dt><dd>Present</dd></div>}
-            {selected.precipitationProbability != null && <div><dt>Precipitation chance</dt><dd>{Math.round(selected.precipitationProbability)}%</dd></div>}
+            {selected.weatherCode != null && <div><dt>{t(locale, "weather")}</dt><dd>{describeWeatherCode(selected.weatherCode, locale)}</dd></div>}
+            {selected.evidence.providerProbability != null && <div><dt>{t(locale, "thunderstormProbability")}</dt><dd>{Math.round(selected.evidence.providerProbability)}% · {t(locale, "providerValue")}</dd></div>}
+            {selected.evidence.ensemble && selected.evidence.ensemble.supportingMembers > 0 && <div><dt>{t(locale, "nearbyModelSupport")}</dt><dd>{t(locale, "present")}</dd></div>}
+            {selected.precipitationProbability != null && <div><dt>{t(locale, "precipitationChance")}</dt><dd>{Math.round(selected.precipitationProbability)}%</dd></div>}
           </dl>
-          <p className="classification-note">{selected.signal.kind === "unavailable" ? "There is not enough forecast data to assess this hour." : isThunderstormCode(selected.weatherCode) && selected.evidence.providerProbability != null && selected.evidence.providerProbability < RISK_THRESHOLDS.directThunderstormProbabilityElevated ? "The weather forecast indicates a thunderstorm here, while the provider's separate probability is low. Forecast indicators can differ." : "Low / Elevated / High is a qualitative forecast signal, not a probability or official warning. Only the provider value above, when shown, is a thunderstorm probability."}</p>
+          <p className="classification-note">{selected.signal.kind === "unavailable" ? t(locale, "insufficientHour") : isThunderstormCode(selected.weatherCode) && selected.evidence.providerProbability != null && selected.evidence.providerProbability < RISK_THRESHOLDS.directThunderstormProbabilityElevated ? t(locale, "contradictoryForecast") : t(locale, "classificationNote")}</p>
         </section>}
-        <div className="update-line">Forecast updated {new Intl.DateTimeFormat("en-GB", { timeZone: forecast.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(forecast.fetchedAt)} local time</div>
+        <div className="update-line">{t(locale, "forecastUpdated", { time: formatClock(forecast.fetchedAt, forecast.timezone, locale) })}</div>
       </>}
     </section>}
 
-    <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>Forecast guidance, not an official warning.</strong> Forecasts can change and may miss local conditions. Follow your local meteorological and emergency authorities for safety advice.</p></footer>
-    <div className="footer-meta"><span>Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · Powered by <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>Saved here · device/map coordinates sent to OpenStreetMap for place labels</span><nav className="footer-debug-links" aria-label="Developer pages"><a href="/debug/forecast">Forecast debug</a><a href="/debug/lightning">Lightning debug</a></nav></div>
+    <footer className="disclaimer"><span className="disclaimer-mark" aria-hidden="true">i</span><p><strong>{t(locale, "disclaimerLead")}</strong> {t(locale, "disclaimerBody")}</p></footer>
+    <div className="footer-meta"><span>{t(locale, "weatherBy")} <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open‑Meteo</a>{location && <> · {t(locale, "poweredBy")} <a href="https://www.xweather.com/" target="_blank" rel="noreferrer">Vaisala Xweather</a></>}</span><span>{t(locale, "privacyFooter")}</span><nav className="footer-debug-links" aria-label={t(locale, "developerPages")}><a href="/debug/forecast">{t(locale, "forecastDebug")}</a><a href="/debug/lightning">{t(locale, "lightningDebug")}</a></nav></div>
   </main>;
 }

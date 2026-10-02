@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { buildTodayBriefing, nextLocalMidnight, type DailyWeather } from "@/lib/today-briefing";
+import { t, type Locale } from "@/lib/i18n";
 
-export default function TodayBriefing({ daily, timezone, currentTemperatureC }: { daily?: DailyWeather[]; timezone: string; currentTemperatureC?: number }) {
+export default function TodayBriefing({ daily, timezone, currentTemperatureC, locale }: { daily?: DailyWeather[]; timezone: string; currentTemperatureC?: number; locale: Locale }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -18,7 +19,7 @@ export default function TodayBriefing({ daily, timezone, currentTemperatureC }: 
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [timezone]);
-  const text = buildTodayBriefing(daily, timezone, now, currentTemperatureC);
+  const text = buildTodayBriefing(daily, timezone, now, currentTemperatureC, locale);
   if (!text) return null;
-  return <section className="today-briefing" aria-labelledby="today-title"><h2 id="today-title" className="eyebrow">TODAY</h2><p>{text}</p></section>;
+  return <section className="today-briefing" aria-labelledby="today-title"><h2 id="today-title" className="eyebrow">{t(locale, "today")}</h2><p>{text}</p></section>;
 }

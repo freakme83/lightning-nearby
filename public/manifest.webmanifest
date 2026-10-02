@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Lightning Nearby",
   "short_name": "Lightning",
-  "description": "A calm, local 24-hour thunderstorm outlook.",
+  "description": "Yakındaki yıldırımları ve önümüzdeki 24 saatin tahminini görün.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
