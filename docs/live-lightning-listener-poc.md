@@ -63,9 +63,9 @@ The **15-minute unforced** run (06:28:50–06:43:50 UTC) used the same expanded 
 
 No Ankara-box event occurred in these samples. The 323-event count includes eastern Mediterranean detections outside the request box, and must not be used as an Ankara activity estimate. Some subscribed coordinates were several degrees outside `p`; the cause (server region selection, viewport semantics, or other opaque fields) remains unresolved. The exact sample runs had no natural reconnect, so natural reconnect behavior remains unobserved; only the intentional two-close comparison above tests recovery.
 
-## Decision and unresolved questions
+## Decision snapshot after the first geographic comparison
 
-**GO WITH CAVEATS for further research, beginning with latency and replay cursor semantics and then local geographic clustering; not GO for a public live feature.** The plain Node client can connect and decode structured events, and the concurrent MacBook comparison demonstrates that `p` influences the delivered event stream and that client-side strict box filtering is necessary. However, the new comparison produced no 0–30-second low-lag events: observed minimum latency was about 89 seconds, with medians around 90–98 seconds. The earlier 2–6-second low-lag sample remains valid for that run, but low latency is not consistently reproduced. The cause of this discrepancy is unknown. Do not claim lossless coverage, strict server-side filtering, or real-time delivery. Investigate latency/replay behavior before clustering. Public use still requires a separate provider permission decision; the earlier [permission-boundary spike](blitzortung-integration-spike.md) remains relevant.
+At that stage, the recommendation was **GO WITH CAVEATS for further research, beginning with latency and replay cursor semantics and then local geographic clustering; not GO for a public live feature.** The plain Node client can connect and decode structured events, and the concurrent MacBook comparison demonstrated that `p` influenced the delivered event stream and that client-side strict box filtering was necessary. That comparison produced no 0–30-second low-lag events: observed minimum latency was about 89 seconds, with medians around 90–98 seconds. The earlier 2–6-second low-lag sample remains valid for that run, but low latency was not consistently reproduced. The cause was unknown. Later latency/replay findings and the current research-stage decision are recorded below. Do not claim lossless coverage, strict server-side filtering, or real-time delivery. Public use still requires a separate provider permission decision; the earlier [permission-boundary spike](blitzortung-integration-spike.md) remains relevant.
 
 ## Active Extremadura geographic comparison — 4 October 2026
 
@@ -120,11 +120,11 @@ The Extremadura stream contained 247 events inside its requested broad box and 3
 
 The earlier run's low-lag subset with p50 around 2.1 seconds and p95 around 5.7 seconds remains a valid observation for that run. Together, the runs show that few-second latency is **not consistently reproduced**. Do not infer CG/IC type, lossless completeness, or current-event delivery from these results.
 
-### Next research stage
+### Decision at the geographic comparison stage
 
-**GO WITH CAVEATS** for further research into **latency / replay cursor semantics first, then local geographic clustering**. Before clustering, run a focused latency experiment that asks whether latency falls as initial replay drains, whether a persistent roughly 90-second offset remains, whether reconnecting with resume IDs changes lag, whether subscription parameters affect replay depth/delay, and whether recent events consistently return to the earlier 2–6-second low-lag range. Do not infer the cause before measuring it. The 0% full-stream overlap is useful for the two subscriptions in this exact concurrent window, not a global completeness result. **Do not recommend public production use:** delivery latency, event completeness, lossless resume, and provider permission remain unresolved.
+At the time of the geographic comparison, the recommendation was **GO WITH CAVEATS** to investigate latency / replay semantics before clustering. The subsequent experiments and updated decision are recorded below. The 0% full-stream overlap is useful only for the two subscriptions in that concurrent window, not as a global completeness result. **Public production use was not recommended:** latency, event completeness, lossless resume, and provider permission remained unresolved.
 
-No production app imports, forecast rules, Xweather live logic, UI, production dependency, or persistence changed. No bulk live-event dataset is committed; the comparison keeps at most 50,000 stable IDs per stream in memory for a run and prints only bounded samples. PR #29 remains a Draft.
+No production app imports, forecast rules, Xweather live logic, UI, production dependency, or persistence changed. No bulk live-event dataset is committed; the comparison keeps at most 50,000 stable IDs per stream in memory for a run and prints only bounded samples.
 
 ## Latency and replay-cursor follow-up — 4 October 2026
 
@@ -156,7 +156,7 @@ npm run research:lightning-latency -- --duration=15 --summary-every=30 --box=39.
 npm run research:lightning-latency -- --duration=8 --summary-every=15 --box=39.8,-5.8,38.3,-7.6 --reconnect-after=300 --reconnect-downtime=10 --resume=true
 ```
 
-Optional short no-resume control, intended only to compare lag/replay depth after one reconnect:
+Completed manual short no-resume control, intended to compare lag/replay depth after one reconnect:
 
 ```sh
 npm run research:lightning-latency -- --duration=4 --summary-every=15 --box=39.8,-5.8,38.3,-7.6 --reconnect-after=120 --reconnect-downtime=10 --resume=false
@@ -212,12 +212,41 @@ The first event's 413-second latency and the first connection-age bucket's high 
 
 The post-startup p50 values are about **89.1–89.2 seconds**, and p95 values about **89.35–89.45 seconds**. The reported freshest-event lag stayed around **89–90 seconds**; its final value was 89,537 ms. No event in the session had latency at or below 60 seconds. This is direct evidence of a persistent delayed feed during this run after startup replay. It does not identify the cause, establish an intentional server delay, or show that other sessions or regions behave the same way.
 
+### Manual `resume=false` reconnect control — 4 October 2026
+
+The documented no-resume command was run in the same active-region box, with `--duration=4 --reconnect-after=120 --reconnect-downtime=10 --resume=false`. The run started at **2026-10-04T16:18:42.998Z**, first connected at **16:18:43.352Z**, reconnected at **16:20:53.749Z** after approximately **10.299 seconds** of downtime, and ended at **16:22:43.093Z**. Total duration was **240.095 seconds**; there were two successful connections and one reconnect. The second subscription sent an empty resume map: `resumeIdsSent: {}`.
+
+| Metric | Observed |
+| --- | ---: |
+| Messages | 146 |
+| Decoded events | 1,772 |
+| Unique / duplicate events | 1,012 / 760 |
+| Malformed | 0 |
+| Inside / outside requested box | 188 / 824 |
+| First-event latency | 753,995 ms |
+| All-session min / p50 / p95 / max latency | 88,865 / 302,193 / 714,138 / 753,995 ms |
+| Final freshest-event lag | 93,019 ms |
+| Events at or below 10 / 30 / 60 seconds | 0 / 0 / 0 |
+| Events at or below 90 / 120 seconds | 246 / 287 |
+
+All-session percentiles include startup and reconnect replay, so the high p50/p95/max should not be read as post-reconnect steady-state latency. Before reconnect, the 30–60-second connection-age bucket returned to approximately 89.1-second p50 and 89.4-second p95 (22 events in an earlier periodic report, 45 by the run's end); the 60–120-second bucket was in the same approximate band.
+
+After reconnect without resume IDs, unique-event latency was:
+
+| Reconnect phase | Events | Min (ms) | p50 (ms) | p95 (ms) | Max (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0–30 s | 30 | 88,973 | 89,332 | 99,653 | 99,657 |
+| 30–60 s | 23 | 88,946 | 89,186 | 89,401 | 89,404 |
+| 60 s+ | 60 | 88,920 | 89,153 | 89,412 | 89,483 |
+
+The first post-reconnect phase briefly reached about 100 seconds at p95/max; the following phases returned to the same narrow approximately 89-second band. Compared with the earlier `resume=true` reconnect test, which had no duplicates and a similar ~89-second steady-state lag, this control did **not** reduce latency. It did produce substantial replay/duplicate traffic: 760 of 1,772 decoded events were duplicates. This supports the limited conclusion that resume IDs help suppress replay in these observed tests but do not make delivery more recent. Empty-cursor reconnect can repeat already-seen records, so deduplication remains useful. These runs do not prove lossless continuity or completeness through downtime, and they do not establish the server's buffering or cursor implementation.
+
 ### Interpretation and next step
 
 **Run-specific latency classification: B. Persistent delayed feed.** The first 0–30-second connection-age bucket shows the startup replay/backlog, but subsequent buckets stay around an 89-second latency floor. The 15-minute northeastern Spain run did not approach the earlier few-second low-lag range and had no events at or below 60 seconds. This run's steady band is clear; its cause is unknown. Do not infer that the server deliberately imposes an exact 89-second delay or that every session and region will behave this way.
 
-**Broader cross-run latency classification: C. Mixed / variable.** The earlier run's conditional low-lag p50/p95 of about **2.14 / 5.71 seconds** remains valid for that run, while the manual geographic comparison and this 15-minute active-region run show substantially higher delays. Thus the earlier low-lag behavior is not consistently reproduced. The short workspace attempt contributes no latency evidence.
+**Broader cross-run latency classification: C. Mixed / variable.** The earlier run's conditional low-lag p50/p95 of about **2.14 / 5.71 seconds** remains valid for that run, while the recent longer active-region runs show a persistent ~89-second steady-state lag. The empty-cursor reconnect returned to approximately the same lag as the baseline and the earlier resume-enabled reconnect test. This strengthens the conclusion that the observed ~89-second offset does not appear to be caused by resume cursor use, without establishing its root cause or generalizing to all sessions and regions. The short workspace attempt contributes no latency evidence.
 
-The next narrow experiment should focus on **reconnect / resume latency behavior**, using this same box only if it is still active at test time. Measure before disconnect and after reconnect with resume IDs, separating startup replay from later connection-age samples. Determine whether reconnect triggers a fresh historical replay, returns to the same cursor depth and ~89-second lag, or ever restores the earlier few-second low-lag behavior. Do not treat downtime as zero activity or claim lossless recovery. The optional empty-`i` control may help compare replay depth, but should remain bounded.
+The latency/replay investigation is sufficient to proceed to the next research stage: **local spatiotemporal clustering of observed lightning activity**. That stage should turn raw point events into user-meaningful summaries of recent observed activity while keeping forecast logic and production behavior unchanged. It is research-only; this update does not implement clustering.
 
-**GO WITH CAVEATS for local geographic filtering/clustering research as a separate research stage.** It may proceed independently of real-time claims if event-time, receipt-time, replay, and downtime remain clearly distinguished. **Real-time/public production use remains blocked** pending stronger latency and replay-cursor understanding. Do not claim complete or lossless coverage, strict server-side geographic filtering, or CG/IC classification. The cause of the observed delay remains unknown.
+**GO WITH CAVEATS for clustering research.** Raw ingestion has been demonstrated; geographic filtering has been demonstrated, with strict client-side filtering still required; and resume IDs were useful for replay suppression in the observed reconnect tests. Recent longer active-region runs show approximately 89 seconds of steady-state lag after startup replay. Real-time or safety-grade claims are not supported. Public production use remains blocked by the provider permission/redistribution constraints. Do not claim lossless recovery, coverage completeness, strict server-side geographic filtering, or CG/IC classification. The cause of the delay remains unknown.
