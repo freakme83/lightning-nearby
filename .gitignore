@@ -4,6 +4,7 @@ out/
 dist/
 coverage/
 *.tsbuildinfo
+scripts/live-lightning-listener/logs/
 .DS_Store
 .env*
 !.env.example

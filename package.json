@@ -10,7 +10,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test src/lib/*.test.ts"
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts",
+    "research:lightning-listener": "node --experimental-strip-types scripts/live-lightning-listener/listener.ts",
+    "test:research:lightning-listener": "node --experimental-strip-types --test scripts/live-lightning-listener/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
