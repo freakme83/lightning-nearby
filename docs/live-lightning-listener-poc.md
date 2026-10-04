@@ -65,7 +65,7 @@ No Ankara-box event occurred in these samples. The 323-event count includes east
 
 ## Decision and unresolved questions
 
-**GO with caveats for the next research-stage local geographic filtering and clustering experiment; not GO for a public live feature.** Plain-client connection, JSON decoding, milliseconds-to-UTC conversion, conditional receipt latency, 15-minute continuity, and reconnect/replay handling have direct evidence. Strict server-side geographic scoping, lossless resume, 24-hour behavior, silent-period interpretation, Ankara event coverage in active weather, and potential rate limits remain empirical questions. A subsequent experiment should locally filter the received stream, run through Ankara activity, compare source IDs across a planned disconnect, and retain only aggregate metrics. Geographic filtering and clustering should stay out of production until a longer run establishes usable coverage and a separate provider permission decision is made. The earlier [permission-boundary spike](blitzortung-integration-spike.md) remains relevant for any public feature; technical reachability is not authorization.
+**GO WITH CAVEATS for further research, beginning with latency and replay cursor semantics and then local geographic clustering; not GO for a public live feature.** The plain Node client can connect and decode structured events, and the concurrent MacBook comparison demonstrates that `p` influences the delivered event stream and that client-side strict box filtering is necessary. However, the new comparison produced no 0–30-second low-lag events: observed minimum latency was about 89 seconds, with medians around 90–98 seconds. The earlier 2–6-second low-lag sample remains valid for that run, but low latency is not consistently reproduced. The cause of this discrepancy is unknown. Do not claim lossless coverage, strict server-side filtering, or real-time delivery. Investigate latency/replay behavior before clustering. Public use still requires a separate provider permission decision; the earlier [permission-boundary spike](blitzortung-integration-spike.md) remains relevant.
 
 ## Active Extremadura geographic comparison — 4 October 2026
 
@@ -73,9 +73,9 @@ At request time, the public map visibly showed dense activity east/southeast of 
 
 The research-only `research:lightning-compare` command opens two concurrent plain Node WebSockets. The v24 subscription objects differ **only in `p`**. Each connection has its own resume IDs, bounded dedupe, metrics, and in-memory `src/id` sets. The output compares all stable IDs and separately the 0–30-second **low-lag subset** by shared, left-only, right-only, and Jaccard overlap (shared / union). It also compares IDs whose coordinates fall inside the active box, including the low-lag subset. An eight-event sample per connection and eight inside-box events at most appear in console output; no raw frames or event dataset are written to disk. An optional tighter local box was not added before observing coordinates.
 
-The comparison must not be interpreted as global completeness. Sessions can start several seconds apart; the first replay batches and a quieting storm can skew overlap. An empty result caused by failed connections cannot establish geographic filtering or lack of activity. The measured run results and next-stage decision follow below.
+The comparison must not be interpreted as global completeness. Sessions can start several seconds apart; replay and changing activity can skew overlap. An empty result caused by failed connections cannot establish geographic filtering or lack of activity. The initial workspace attempt and the later successful manual MacBook run are reported separately below.
 
-### Attempted live run: no handshake
+### Workspace attempt: network path prevented handshake
 
 The concurrent run started **08:32:08.641 UTC** and ended **08:39:25.289 UTC**, an actual duration of **436.648 seconds** (planned 7 minutes; the first runner version finished after its last reconnect wait). Neither WebSocket reached `open`. The Extremadura connection logged **23 failed reconnect attempts** and the Ankara control **24**, all closing with code **1006** before a subscription was sent. Independently, a single Node WebSocket probe failed the same way; `curl` could not connect to this workspace's configured `browser-proxy:8889` (exit 7), and a direct attempt without the proxy could not resolve `live2.lightningmaps.org` (exit 6). The first PoC's successful connection was earlier on the same day; this failure is **not evidence of a provider-side outage, box rejection, or rate limit**.
 
@@ -84,14 +84,44 @@ The concurrent run started **08:32:08.641 UTC** and ended **08:39:25.289 UTC**, 
 | Extremadura active box | 0 | 0 | 0 / 0 / 0 / 0 | 0 / 0 | 0 | Unavailable |
 | Ankara control | 0 | 0 | 0 / 0 / 0 / 0 | 0 / 0 | 0 | Unavailable |
 
-**Cross-stream overlap:** shared, Extremadura-only, and Ankara-only observed ID counts were all zero because no events were received; overlap percentage and low-lag overlap percentage are **undefined**, not 0%. No inside-box coordinate/timestamp/latency sample exists. A tighter local box cannot be selected from observed coordinates. **Active-region completeness could not be evaluated because no connection succeeded; current target-region activity was not observed through this listener.** This is a network-path failure before the geographic experiment, rather than evidence the storm ended.
+**Cross-stream overlap:** shared, Extremadura-only, and Ankara-only observed ID counts were all zero because no events were received; overlap percentage and low-lag overlap percentage are **undefined**, not 0%. No inside-box coordinate/timestamp/latency sample exists. This was a workspace network-path failure before the geographic experiment, not evidence the storm ended or the listener failed at the provider.
 
-### Interpretation and next-stage decision
+### Successful manual MacBook comparison — 4 October 2026
 
-1. **Strict server-side filtering:** still unproven; the earlier Ankara-only run received many out-of-box events, and this comparison delivered none.
-2. **Any observable effect of `p`:** cannot be assessed because both handshakes failed. The runner holds every subscription field except `p` identical and is ready to repeat.
-3. **Events from the visibly active target:** not demonstrated by this follow-up; no source events arrived.
-4. **Local filtering:** the pure coordinate/box calculation and tests are usable, but active-region completeness and feed coverage are unmeasured here.
-5. **Clustering research:** **NO-GO on the basis of this comparison run.** This is an evidence gate, not a finding that the earlier plain-client PoC stopped working. Rerun `npm run research:lightning-compare -- --duration=7` when outbound WebSocket access is restored and the target region has useful activity. Report the bounded samples, full and low-lag overlap, and connection health before deciding to proceed.
+The existing runner was executed from a MacBook with `npm run research:lightning-compare -- --duration=7`. The run was concurrent, lasted **420.1 seconds**, and both subscriptions differed only in `p`.
+
+| Metric | Extremadura active subscription | Ankara control subscription |
+| --- | ---: | ---: |
+| Requested box (N, E, S, W) | 39.80, −5.80, 38.30, −7.60 | 40.35, 33.45, 39.45, 31.95 |
+| Connection / handshake | Connected / 8,083 ms | Connected / 510 ms |
+| Messages | 156 | 77 |
+| Decoded / unique events | 559 / 559 | 214 / 214 |
+| Duplicates / malformed / reconnects | 0 / 0 / 0 | 0 / 0 / 0 |
+| Inside requested box | 247 | 0 |
+| Outside requested box | 312 | 214 |
+| Missing stable IDs | 0 | 0 |
+| Latency min / p50 / p95 / max | 88,791 / 97,857 / 425,721 / 456,022 ms | 88,808 / 89,294 / 400,995 / 445,107 ms |
+| Low-lag subset (0–30 s) | 0 | 0 |
+| Last event timestamp | 2026-10-04T11:02:02.101Z | 2026-10-04T11:01:55.143Z |
+
+Run window: **2026-10-04T10:56:32.400Z to 2026-10-04T11:03:32.500Z**. The run had no reconnects, duplicates, or malformed records. Both endpoints accepted their subscriptions and delivered stable-ID events.
+
+**Cross-stream comparison:** all stable IDs shared **0**, Extremadura-only **559**, Ankara-only **214**, union **773**, Jaccard overlap **0%**. In the active box, Extremadura had **247** stable IDs and Ankara had **0**, so shared **0**, Extremadura-only **247**, Ankara-only **0**. Low-lag overlap is **undefined**, because neither connection received an event with latency in the 0–30-second range; do not report this as 0% overlap.
+
+The Extremadura stream contained 247 events inside its requested broad box and 312 outside it. A small sample of inside-box event coordinates (latitude, longitude) was: `38.719981, -6.700635`; `39.008443, -6.418184`; `38.353499, -6.492440`; `38.428205, -6.912800`; `38.613726, -7.142602`; `39.418639, -7.411804`. They are detected location records in the area that was visibly active east/southeast of Portalegre; this does not establish one-to-one matching with map symbols or classify discharge type. The Ankara subscription received events in other regions, including sample coordinates `35.936366, 31.327713`; `36.711056, 35.274874`; `36.371606, 35.767117`; `36.924153, 35.096476`; `37.375204, 34.609130`; `35.920079, 27.539651`.
+
+#### Interpretation
+
+1. **Does `p` appear to be a strict server-side bounding-box filter? No.** Extremadura received 312 events outside its box, and Ankara received 214 events, all outside its box.
+2. **Does changing `p` influence delivery? Yes, in this sample.** The concurrent subscriptions received completely disjoint `(src,id)` sets; only the Extremadura subscription received records inside the Extremadura box. This demonstrates an observable geographic effect, not complete coverage or a stable global contract.
+3. **Were active-region events ingested? Yes.** The Extremadura connection decoded 247 records locally inside the requested area. The connection proves ingestion of located records in that box; matching the visible map event-for-event was not tested.
+4. **Is client-side geographic filtering viable? Yes.** The coordinates supported deterministic in-box/out-of-box classification, and this run shows why local filtering remains necessary. It does not verify a province boundary or positional completeness.
+5. **Was delivery real-time in this run? No evidence supports that claim.** All events had latency above 88 seconds; p50 was about 90–98 seconds and there were no low-lag events. p95/max may include initial replay, but the high minimum and median and the last event timestamps roughly 90 seconds before run end show a substantial delay during this sample too. Its cause is unknown.
+
+The earlier run's low-lag subset with p50 around 2.1 seconds and p95 around 5.7 seconds remains a valid observation for that run. Together, the runs show that few-second latency is **not consistently reproduced**. Do not infer CG/IC type, lossless completeness, or current-event delivery from these results.
+
+### Next research stage
+
+**GO WITH CAVEATS** for further research into **latency / replay cursor semantics first, then local geographic clustering**. Before clustering, run a focused latency experiment that asks whether latency falls as initial replay drains, whether a persistent roughly 90-second offset remains, whether reconnecting with resume IDs changes lag, whether subscription parameters affect replay depth/delay, and whether recent events consistently return to the earlier 2–6-second low-lag range. Do not infer the cause before measuring it. The 0% full-stream overlap is useful for the two subscriptions in this exact concurrent window, not a global completeness result. **Do not recommend public production use:** delivery latency, event completeness, lossless resume, and provider permission remain unresolved.
 
 No production app imports, forecast rules, Xweather live logic, UI, production dependency, or persistence changed. No bulk live-event dataset is committed; the comparison keeps at most 50,000 stable IDs per stream in memory for a run and prints only bounded samples. PR #29 remains a Draft.
