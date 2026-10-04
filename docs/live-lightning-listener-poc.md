@@ -180,10 +180,44 @@ A 30-second runner check was attempted from the coding workspace on the Extremad
 
 This is consistent with the earlier workspace network-path failure documented above, and does not contradict the successful prior MacBook comparisons.
 
+### Successful manual MacBook latency run — 4 October 2026
+
+The runner was executed with `npm run research:lightning-latency -- --duration=15 --summary-every=30 --box=42.33,4.24,40.83,2.44`. The box covered an active region around **41.58, 3.34** in northeastern Spain. It opened one connection and had no reconnects.
+
+Run window: **2026-10-04T11:35:42.614Z to 2026-10-04T11:50:42.706Z** (900.093 seconds). The WebSocket connected at **2026-10-04T11:35:44.419Z**.
+
+| Metric | Observed |
+| --- | ---: |
+| Successful connections / reconnects | 1 / 0 |
+| Messages | 1,220 |
+| Decoded / unique events | 4,374 / 4,374 |
+| Duplicates / malformed | 0 / 0 |
+| Inside / outside requested box | 4,227 / 147 |
+| First-event latency | 413,217 ms |
+| Min / p50 / p95 / max latency | 88,755 / 89,197 / 363,296 / 413,217 ms |
+| Final freshest-event lag | 89,537 ms |
+| Events at or below 10 / 30 / 60 seconds | 0 / 0 / 0 |
+| Events at or below 90 / 120 seconds | 3,545 / 3,652 |
+
+The first event's 413-second latency and the first connection-age bucket's high p50/p95/max show the startup replay/backlog effect. Latency did not keep falling toward the earlier few-second subset after startup. Instead, all later connection-age buckets remained in a narrow band around 89 seconds:
+
+| Connection age | Events | Min (ms) | p50 (ms) | p95 (ms) | Max (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0–30 s | 949 | 88,853 | 304,977 | 401,830 | 413,217 |
+| 30–60 s | 103 | 88,821 | 89,178 | 89,446 | 89,501 |
+| 60–120 s | 217 | 88,832 | 89,144 | 89,353 | 89,511 |
+| 120–180 s | 238 | 88,840 | 89,175 | 89,411 | 89,900 |
+| 180–300 s | 473 | 88,813 | 89,156 | 89,371 | 89,669 |
+| >300 s | 2,394 | 88,755 | 89,136 | 89,383 | 89,720 |
+
+The post-startup p50 values are about **89.1–89.2 seconds**, and p95 values about **89.35–89.45 seconds**. The reported freshest-event lag stayed around **89–90 seconds**; its final value was 89,537 ms. No event in the session had latency at or below 60 seconds. This is direct evidence of a persistent delayed feed during this run after startup replay. It does not identify the cause, establish an intentional server delay, or show that other sessions or regions behave the same way.
+
 ### Interpretation and next step
 
-**Observed latency classification: C. Mixed / variable.** Earlier successful runs showed a conditional few-second subset, while the manual MacBook comparison showed a roughly 90–98-second median and no event within 30 seconds. The present workspace attempt adds no latency evidence. It therefore does not establish whether the later delay is a replay backlog that drains, a persistent cursor/feed offset, reconnect behavior, a subscription effect, or another transport behavior. No cause is inferred.
+**Run-specific latency classification: B. Persistent delayed feed.** The first 0–30-second connection-age bucket shows the startup replay/backlog, but subsequent buckets stay around an 89-second latency floor. The 15-minute northeastern Spain run did not approach the earlier few-second low-lag range and had no events at or below 60 seconds. This run's steady band is clear; its cause is unknown. Do not infer that the server deliberately imposes an exact 89-second delay or that every session and region will behave this way.
 
-Before drawing stronger conclusions, run A and B on a MacBook with a synchronized clock and an active region. Compare initial replay separately from later connection-age buckets; inspect whether freshest-event lag falls, stabilizes, or varies; and compare pre/post-resume phases. The optional empty-`i` run can indicate whether that cursor choice changes observed replay depth, while duplicate records remain excluded from unique-event latency summaries.
+**Broader cross-run latency classification: C. Mixed / variable.** The earlier run's conditional low-lag p50/p95 of about **2.14 / 5.71 seconds** remains valid for that run, while the manual geographic comparison and this 15-minute active-region run show substantially higher delays. Thus the earlier low-lag behavior is not consistently reproduced. The short workspace attempt contributes no latency evidence.
 
-**GO WITH CAVEATS for local clustering research as a separate research stage, but not for real-time or production claims.** Spatial/temporal aggregation can be explored independently of whether feed receipt is delayed by seconds or roughly 90 seconds, provided the experiment labels receipt-time and event-time behavior clearly and treats downtime/replay as unknown coverage. The current evidence does not justify calling the feed real-time, complete, or lossless, and it does not justify public production use. No CG/IC type is inferred.
+The next narrow experiment should focus on **reconnect / resume latency behavior**, using this same box only if it is still active at test time. Measure before disconnect and after reconnect with resume IDs, separating startup replay from later connection-age samples. Determine whether reconnect triggers a fresh historical replay, returns to the same cursor depth and ~89-second lag, or ever restores the earlier few-second low-lag behavior. Do not treat downtime as zero activity or claim lossless recovery. The optional empty-`i` control may help compare replay depth, but should remain bounded.
+
+**GO WITH CAVEATS for local geographic filtering/clustering research as a separate research stage.** It may proceed independently of real-time claims if event-time, receipt-time, replay, and downtime remain clearly distinguished. **Real-time/public production use remains blocked** pending stronger latency and replay-cursor understanding. Do not claim complete or lossless coverage, strict server-side geographic filtering, or CG/IC classification. The cause of the observed delay remains unknown.
