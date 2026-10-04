@@ -125,3 +125,65 @@ The earlier run's low-lag subset with p50 around 2.1 seconds and p95 around 5.7 
 **GO WITH CAVEATS** for further research into **latency / replay cursor semantics first, then local geographic clustering**. Before clustering, run a focused latency experiment that asks whether latency falls as initial replay drains, whether a persistent roughly 90-second offset remains, whether reconnecting with resume IDs changes lag, whether subscription parameters affect replay depth/delay, and whether recent events consistently return to the earlier 2–6-second low-lag range. Do not infer the cause before measuring it. The 0% full-stream overlap is useful for the two subscriptions in this exact concurrent window, not a global completeness result. **Do not recommend public production use:** delivery latency, event completeness, lossless resume, and provider permission remain unresolved.
 
 No production app imports, forecast rules, Xweather live logic, UI, production dependency, or persistence changed. No bulk live-event dataset is committed; the comparison keeps at most 50,000 stable IDs per stream in memory for a run and prints only bounded samples. PR #29 remains a Draft.
+
+## Latency and replay-cursor follow-up — 4 October 2026
+
+### Known prior evidence
+
+The earlier 3-minute run contained a conditional 0–30-second low-lag subset with p50/p95 receipt latency of **2.14 / 5.71 seconds** (56 events). Its all-event distribution included historical replay and was much older. In the manual MacBook geographic comparison, p50 was **97.857 seconds** for Extremadura and **89.294 seconds** for Ankara, with no events at or below 30 seconds. These observations differ materially; the cause has not been established.
+
+### Instrumentation and experiment design
+
+The research-only `research:lightning-latency` runner uses the same Node WebSocket, subscription object, JSON decoder, local box check, stable `src/id` keys, and resume-ID behavior as the existing PoC. It accepts an arbitrary `--box=north,east,south,west`; the example commands below use the Extremadura box because that was the previously observed active region, but select a box around activity visible at the time of a future run.
+
+For each unique accepted event it retains event and receipt timestamps, calculated latency, `src/id` when present, connection age, and local in-box status. The in-memory ring is capped at **100,000 observations**; bucket counts and quantiles describe retained observations if a run exceeds that capacity. It prints connection-age buckets (`0–30`, `30–60`, `60–120`, `120–180`, `180–300`, and `>300` seconds), each with count, min/p50/p95/max latency and counts at or below 10/30/60/90/120 seconds. Session summary latency percentiles use the same retained unique-event sample; duplicates are counted separately and do not enter those distributions.
+
+Every 30 seconds by default, it reports current wall-clock time, newest event timestamp seen, `freshestEventLagMs = now - newestEventTimeSeen`, current connection age, and total unique events. If no event has arrived, newest timestamp and lag are `null`; zero activity is not reported as zero lag. The controlled reconnect option closes the first connection once, waits a fixed downtime, then reconnects. By default, the reconnect subscription carries the source IDs seen before disconnect; `--resume=false` provides an optional short empty-`i` control. The summary separates unique-event latency before reconnect, 0–30 seconds after reconnect, 30–60 seconds after reconnect, and later. The reconnect comparison does not prove lossless recovery; the intentional downtime is an unknown coverage interval.
+
+### Manual MacBook commands
+
+Use a currently active map region for the `--box` values. The Extremadura example is not assumed to remain active.
+
+**A. Fifteen-minute single-stream latency run:**
+
+```sh
+npm run research:lightning-latency -- --duration=15 --summary-every=30 --box=39.8,-5.8,38.3,-7.6
+```
+
+**B. Reconnect/resume run:** collect five minutes before one intentional reconnect, wait ten seconds, then keep measuring for at least three minutes after reconnect so the early and 30–60-second phases have time to fill:
+
+```sh
+npm run research:lightning-latency -- --duration=8 --summary-every=15 --box=39.8,-5.8,38.3,-7.6 --reconnect-after=300 --reconnect-downtime=10 --resume=true
+```
+
+Optional short no-resume control, intended only to compare lag/replay depth after one reconnect:
+
+```sh
+npm run research:lightning-latency -- --duration=4 --summary-every=15 --box=39.8,-5.8,38.3,-7.6 --reconnect-after=120 --reconnect-downtime=10 --resume=false
+```
+
+No event-level output is written to disk by the runner. Save only aggregate summaries needed for the research report and delete local console captures that contain precise coordinates after analysis.
+
+### Workspace attempt and results
+
+A 30-second runner check was attempted from the coding workspace on the Extremadura box (2026-10-04T11:22:43Z–11:23:13Z). The client had **zero successful WebSocket opens, zero messages, and zero parsed/unique events**; connection attempts closed with code `1006`, and the 20-second open-timeout fired. No subscription could be sent. Consequently, first-event latency, age-bucket summaries, freshest-event lag, reconnect/resume behavior, and no-resume behavior are **unavailable** in this attempt. The empty latency summaries are a consequence of the failed network path and must not be read as evidence about feed lag or current storm activity. No new active-region run was completed in this workspace.
+
+| Metric | Workspace attempt |
+| --- | ---: |
+| Attempt duration | 30 seconds |
+| Successful connections / messages | 0 / 0 |
+| Decoded / unique / duplicate / malformed events | 0 / 0 / 0 / 0 |
+| First-event latency / latency percentiles | Unavailable |
+| Freshest-event lag samples | Unavailable (`null`, because no event arrived) |
+| Age buckets / reconnect phase samples | Empty; no connection opened |
+| Planned reconnects completed | 0 |
+
+This is consistent with the earlier workspace network-path failure documented above, and does not contradict the successful prior MacBook comparisons.
+
+### Interpretation and next step
+
+**Observed latency classification: C. Mixed / variable.** Earlier successful runs showed a conditional few-second subset, while the manual MacBook comparison showed a roughly 90–98-second median and no event within 30 seconds. The present workspace attempt adds no latency evidence. It therefore does not establish whether the later delay is a replay backlog that drains, a persistent cursor/feed offset, reconnect behavior, a subscription effect, or another transport behavior. No cause is inferred.
+
+Before drawing stronger conclusions, run A and B on a MacBook with a synchronized clock and an active region. Compare initial replay separately from later connection-age buckets; inspect whether freshest-event lag falls, stabilizes, or varies; and compare pre/post-resume phases. The optional empty-`i` run can indicate whether that cursor choice changes observed replay depth, while duplicate records remain excluded from unique-event latency summaries.
+
+**GO WITH CAVEATS for local clustering research as a separate research stage, but not for real-time or production claims.** Spatial/temporal aggregation can be explored independently of whether feed receipt is delayed by seconds or roughly 90 seconds, provided the experiment labels receipt-time and event-time behavior clearly and treats downtime/replay as unknown coverage. The current evidence does not justify calling the feed real-time, complete, or lossless, and it does not justify public production use. No CG/IC type is inferred.
