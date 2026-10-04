@@ -2,7 +2,7 @@
 
 A privacy-conscious progressive web app for local lightning awareness and short-term thunderstorm risk.
 
-Milestone 1 combines a user-approved location, a local 24-hour thunderstorm outlook, and a qualitative hourly risk display. Live lightning detection and notifications are future milestones.
+The app combines a user-approved location, a local 24-hour thunderstorm outlook, a qualitative hourly risk display, and Xweather live lightning observations. Notifications remain future work.
 
 The project is intended for informational and hobby use only. It is not an official severe-weather warning system.
 
@@ -15,14 +15,14 @@ Lightning Nearby should answer two simple questions:
 1. **Is there a meaningful lightning / thunderstorm risk near my location in the next 24 hours?**
 2. **Is lightning activity currently occurring near my monitored location?**
 
-The long-term goal is to combine forecast data with live lightning observations in a simple mobile-first interface.
+Forecast data and live lightning observations are presented in a simple mobile-first interface.
 
 Example:
 
 > Thunderstorm risk increases tomorrow between 16:00 and 20:00.  
 > Highest risk around 18:00.
 
-Later, when live strike data is integrated:
+Live observations are separate from the forecast:
 
 > ⚡ Lightning activity detected nearby  
 > 7 strikes were detected within 20 km during the last 10 minutes.  
@@ -47,6 +47,7 @@ The first version should remain deliberately small.
 - Basic installability on iOS and Android
 - Graceful handling of denied location permission
 - Informational disclaimer
+- Xweather live lightning checks through the app backend
 
 ### Not included yet
 
@@ -54,7 +55,6 @@ The first version should remain deliberately small.
 - Cloud-synced locations
 - Background location tracking
 - Web Push notifications
-- Blitzortung live lightning integration
 - Native iOS / Android apps
 - Paid features
 - Advertising
@@ -85,6 +85,8 @@ Each hour retains provider-supplied `thunderstorm_probability`, deterministic fi
 
 The app fetches the five-point neighborhood once per saved-location load/refresh and derives all hourly windows locally. A failed regional batch can retry the regional center, then the global batch; the requests fail independently of the deterministic forecast. The normalized result records how many locations actually returned usable data; center-only fallback has a zero spatial window. There is no polling, per-interaction refetch, backend, or persistent forecast cache. A 27-hour five-point Barcelona probe returned about 28 KB of JSON (3.4 KB compressed) in one request; size and latency vary. Open-Meteo weights usage by factors including the number of locations, so this costs more than one exact-point query even though it is one HTTP request. A small neighborhood and ±1 hour can still miss, or shift the apparent timing of, local convection; it is a qualitative aid rather than a measured event probability. [Lightning-density verification](./docs/lightning-density-verification.md) records why the ECMWF field was deferred.
 
+Internal evidence quality, conflict flags, and returned ensemble sample coordinates are available only on `/debug/forecast` and in its copied snapshot. These diagnostics do not alter qualitative levels. See [forecast evidence hardening](./docs/forecast-evidence-hardening.md).
+
 The risk classifier is intentionally simple and conservative:
 
 - WMO thunderstorm codes 95, 96, 97, or 99 → **High**.
@@ -104,25 +106,9 @@ Known limits: Open-Meteo provides gridded model forecasts rather than street-lev
 
 ## Live Lightning Data
 
-Live lightning detection is planned for a later milestone.
+Live lightning checks use **Xweather**, accessed through `/api/lightning/live` with server-side credentials. A Summary request checks the preceding **30 minutes within 50 km**. When activity is present, a Flash request supplies individual observations, locally filtered to the preceding **5 minutes within 40 km**, including nearest distance/direction and counts within 5/10/25/40 km. A successful empty Summary skips Flash; provider failure remains unavailable rather than zero activity.
 
-**Blitzortung** is currently being evaluated as a possible data source.
-
-Important constraints:
-
-- Blitzortung data must not be treated as an official warning service.
-- Usage must comply with Blitzortung project rules.
-- Public or project-specific permission may be required before using live data.
-- The app should remain informational rather than presenting itself as a safety-critical warning system.
-- Live strike data should eventually be consumed by the backend rather than by every client directly.
-
-Potential future logic:
-
-- first strike within 25 km → nearby activity state
-- strike within 10 km → elevated nearby activity
-- no new nearby strikes for 30–45 minutes → activity ending
-
-Exact thresholds are not final.
+These observations are informational and separate from the forecast classifier. There is no polling or push notification system. The earlier Blitzortung evaluation is retained as historical research in [the integration spike](./docs/blitzortung-integration-spike.md); it is not the current live provider. See [Summary → Flash architecture](./docs/live-lightning-summary-flash-architecture.md) for the implemented flow.
 
 ---
 
@@ -153,7 +139,7 @@ For Milestone 1:
 - when the user confirms a map-selected point, its coordinates may be sent to the public OpenStreetMap Nominatim reverse-geocoding service to find a display label; this is one bounded lookup per confirmation, not per map movement
 - confirmed coordinates are rounded to four decimal places and stored in local browser storage; optional place label, country, administrative context, and selection source are display metadata
 - the same rounded coordinates are sent to Open-Meteo for the forecast
-- no location or forecast is sent to an app backend; confirmed location metadata stays in local browser storage, no location history is created, and forecast responses are not cached
+- forecast requests go directly to Open-Meteo; live lightning checks send the monitored coordinates to the app backend, which queries Xweather with server-side credentials; confirmed location metadata stays in local browser storage, no location history is created, and forecast responses are not cached
 
 Search and map choices remain candidates until confirmed; cancelling preserves the previously monitored point. Coordinates remain the authority for forecasts, while place labels are optional display metadata. Device location is requested only after a user tap. Search queries go to Open-Meteo Geocoding. Confirming a map point can send those coordinates to Nominatim; reverse lookup failure does not prevent saving. Search fallback may try comma-separated place components and show the broader context when the exact combined query has no result. Map tiles and reverse-geocoded place labels use OpenStreetMap data, attributed to [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). These providers receive requests directly from the browser; neither is an app backend.
 
@@ -223,8 +209,6 @@ Do not overwhelm users during highly active thunderstorms.
 ## Possible Future Features
 
 - live lightning map
-- nearest detected strike
-- strike count within 5 / 10 / 25 / 50 km
 - activity trend
 - storm approach / retreat detection
 - multiple saved locations
@@ -259,12 +243,7 @@ Add:
 
 ### Milestone 3
 
-Add:
-
-- approved live lightning data source
-- strike-distance calculations
-- live activity states
-- notification triggering
+Xweather live data, strike-distance calculations, and live activity states are implemented. Notification triggering remains future work.
 
 ### Milestone 4
 

@@ -103,3 +103,49 @@ test("partial batch is usable; a failed batch tries regional center then global 
   await assert.rejects(fetchEnsembleForecast(25.79, -80.13, undefined,
     async () => new Response("down", { status: 503 })), /ensemble-unavailable/);
 });
+
+test("duplicate returned effective coordinates count once without changing support or sampledLocations", () => {
+  const center = { ...point({ weather_code: clear }), latitude: 39.875, longitude: 32.875 };
+  const duplicate = { ...point({ weather_code: [0, 0, 95, 0, 0] }), latitude: 39.875, longitude: 32.875 };
+  const north = { ...center, latitude: 40 };
+  const hour = atTarget([center, north, duplicate, { ...center, longitude: 33 }, { ...center, longitude: 32.75 }]);
+  assert.equal(hour.sampledLocations, 5);
+  assert.equal(hour.supportingMembers, 1);
+  assert.equal(hour.availableMembers, 1);
+  assert.equal(hour.sampleDiagnostics?.requestedLocations, 5);
+  assert.equal(hour.sampleDiagnostics?.returnedLocations, 5);
+  assert.equal(hour.sampleDiagnostics?.usableLocations, 5);
+  assert.equal(hour.sampleDiagnostics?.uniqueEffectiveLocations, 4);
+  assert.equal(hour.sampleDiagnostics?.effectiveCoordinateStatus, "complete");
+  assert.equal(hour.sampleDiagnostics?.gridCellIdentity, "unconfirmed");
+  assert.deepEqual(hour.sampleDiagnostics?.samples[2], { responseIndex: 2, effectiveCoordinates: { latitude: 39.875, longitude: 32.875 } });
+});
+
+test("malformed or absent effective coordinates retain usable weather but cannot establish full uniqueness", () => {
+  const valid = { ...point({ weather_code: clear }), latitude: 0, longitude: 0 };
+  for (const coords of [{ latitude: "0", longitude: 0 }, { latitude: NaN, longitude: 0 },
+    { latitude: Infinity, longitude: 0 }, { latitude: 91, longitude: 0 }, { latitude: 0, longitude: -181 },
+    { latitude: 0 }, { latitude: 0, longitude: null }, {}]) {
+    const hour = atTarget([valid, { ...point({ weather_code: clear }), ...coords }]);
+    assert.equal(hour.sampledLocations, 2);
+    assert.equal(hour.sampleDiagnostics?.locationsWithEffectiveCoordinates, 1);
+    assert.equal(hour.sampleDiagnostics?.uniqueEffectiveLocations, undefined);
+    assert.equal(hour.sampleDiagnostics?.effectiveCoordinateStatus, "partial");
+    assert.equal(hour.sampleDiagnostics?.samples[1].effectiveCoordinates, undefined);
+  }
+  assert.equal(atTarget([point({ weather_code: clear })]).sampleDiagnostics?.effectiveCoordinateStatus, "unavailable");
+});
+
+test("response counts exclude unusable locations from effective uniqueness and record center-only requests", () => {
+  const valid = { ...point({ weather_code: clear }), latitude: 39.875, longitude: 32.875 };
+  const hour = atTarget([null, valid, { latitude: 40, longitude: 33 }]);
+  assert.equal(hour.sampleDiagnostics?.returnedLocations, 3);
+  assert.equal(hour.sampleDiagnostics?.usableLocations, 1);
+  assert.equal(hour.sampleDiagnostics?.uniqueEffectiveLocations, 1);
+  assert.equal(hour.sampleDiagnostics?.samples[0].responseIndex, 1);
+  const center = parseEnsembleForecast(valid, "icon_eu_eps", 123, 1)!.hours[0];
+  assert.equal(center.sampleDiagnostics?.requestedLocations, 1);
+  assert.equal(center.sampleDiagnostics?.returnedLocations, 1);
+  assert.equal(center.sampleDiagnostics?.uniqueEffectiveLocations, 1);
+  assert.equal(center.spatialWindowKm, 0);
+});

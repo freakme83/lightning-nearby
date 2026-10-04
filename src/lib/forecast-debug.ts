@@ -1,4 +1,4 @@
-import { explainSignalDecision, type OutlookHour } from "./outlook.ts";
+import { describeOutlookEvidence, explainSignalDecision, type OutlookHour } from "./outlook.ts";
 import { formatForecastLocalTime } from "./timezone.ts";
 import { describeWeatherCode } from "./weather.ts";
 
@@ -33,6 +33,7 @@ export function createForecastDebugSnapshot(input: ForecastDebugSnapshotInput): 
   const ensemble = hour?.evidence.ensemble;
   const decision = hour ? explainSignalDecision(hour.evidence) : null;
   const signal = hour?.signal;
+  const diagnostics = hour ? describeOutlookEvidence(hour) : null;
   const displayTimezone = input.displayTimezone;
 
   return JSON.stringify({
@@ -54,6 +55,8 @@ export function createForecastDebugSnapshot(input: ForecastDebugSnapshotInput): 
       capeJPerKg: available(hour?.cape),
       convectiveInhibitionJPerKg: available(hour?.convectiveInhibition),
       qualitativeRisk: hour?.signal.kind === "qualitative" ? hour.signal.risk : "unavailable",
+      evidenceSource: available(diagnostics?.deterministicEvidenceSource),
+      evidenceQuality: available(diagnostics?.deterministicEvidenceQuality),
     },
     ensemble: {
       fetchStatus: input.ensembleStatus,
@@ -62,6 +65,7 @@ export function createForecastDebugSnapshot(input: ForecastDebugSnapshotInput): 
       supportingMembers: available(ensemble?.supportingMembers),
       availableMembers: available(ensemble?.availableMembers),
       sampledLocations: available(ensemble?.sampledLocations),
+      sampleDiagnostics: available(ensemble?.sampleDiagnostics),
       spatialWindowKm: available(ensemble?.spatialWindowKm),
       temporalWindowPlusMinusHours: available(ensemble?.temporalWindowHours),
       fetchedAtUnixMs: available(input.ensembleFetchedAt),
@@ -76,5 +80,6 @@ export function createForecastDebugSnapshot(input: ForecastDebugSnapshotInput): 
       qualitativeExplanation: decision?.qualitative ?? "Qualitative signal unavailable because no hour is selected.",
       ensembleExplanation: decision?.ensemble ?? "Ensemble evidence unavailable because no hour is selected.",
     },
+    evidenceSummary: diagnostics ?? "unavailable",
   }, null, 2);
 }
