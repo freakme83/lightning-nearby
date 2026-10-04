@@ -54,8 +54,10 @@ function outputSummary(kind: string) {
   const state = pipeline.summary(now);
   emit(kind, { endpoint, box: config.box, parameters: config.parameters, durationSeconds: Math.round((now - startedAt) / 1000),
     messages, connections, reconnects, malformed: state.malformed, decoded: state.decoded, unique: state.unique, duplicates: state.duplicates,
-    insideBox: state.insideBox, outsideBox: state.outsideBox, fresh: state.fresh, staleReplayRejected: state.stale,
-    futureRejected: state.future, comparisonEventsRetained: state.retainedComparisonEvents,
+    insideBox: state.insideBox, outsideBox: state.outsideBox,
+    insideBoxFresh: state.insideBoxFresh, insideBoxStale: state.insideBoxStale, insideBoxFuture: state.insideBoxFuture,
+    allUniqueFresh: state.allUniqueFresh, allUniqueStale: state.allUniqueStale, allUniqueFuture: state.allUniqueFuture,
+    comparisonEventsRetained: state.retainedComparisonEvents,
     comparisonEventsDropped: state.comparisonEventsDropped, clusterMetrics: clusterShapeMetrics(state.clusters),
     freshnessNote: "Freshness is processing wall clock minus estimated event timestamp; it is not a guarantee of live delivery." });
 }

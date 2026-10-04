@@ -9,9 +9,12 @@ export type PipelineCounters = {
   malformed: number;
   insideBox: number;
   outsideBox: number;
-  fresh: number;
-  stale: number;
-  future: number;
+  allUniqueFresh: number;
+  allUniqueStale: number;
+  allUniqueFuture: number;
+  insideBoxFresh: number;
+  insideBoxStale: number;
+  insideBoxFuture: number;
   retainedComparisonEvents: number;
   comparisonEventsDropped: number;
 };
@@ -19,7 +22,8 @@ export type PipelineCounters = {
 export class LightningClusteringPipeline {
   readonly clusterer: OnlineLightningClusterer;
   readonly counters: PipelineCounters = { decoded: 0, unique: 0, duplicates: 0, malformed: 0,
-    insideBox: 0, outsideBox: 0, fresh: 0, stale: 0, future: 0,
+    insideBox: 0, outsideBox: 0, allUniqueFresh: 0, allUniqueStale: 0, allUniqueFuture: 0,
+    insideBoxFresh: 0, insideBoxStale: 0, insideBoxFuture: 0,
     retainedComparisonEvents: 0, comparisonEventsDropped: 0 };
   private readonly dedupe: BoundedDedupe;
   private readonly box: Box;
@@ -43,6 +47,10 @@ export class LightningClusteringPipeline {
     this.counters.decoded++;
     if (this.dedupe.seen(eventKey(event))) { this.counters.duplicates++; return { unique: false, insideBox: false }; }
     this.counters.unique++;
+    const state = freshnessState(event, processingTimeMs, this.clusterer.parameters.freshnessWindowMinutes);
+    if (state === "fresh") this.counters.allUniqueFresh++;
+    else if (state === "stale") this.counters.allUniqueStale++;
+    else this.counters.allUniqueFuture++;
     const insideBox = inBox(event, this.box);
     if (insideBox) {
       this.counters.insideBox++;
@@ -52,11 +60,16 @@ export class LightningClusteringPipeline {
       }
       else this.counters.comparisonEventsDropped++;
     } else this.counters.outsideBox++;
-    const state = freshnessState(event, processingTimeMs, this.clusterer.parameters.freshnessWindowMinutes);
-    if (state === "stale") { this.counters.stale++; return { unique: true, insideBox, freshness: state }; }
-    if (state === "future") { this.counters.future++; return { unique: true, insideBox, freshness: state }; }
+    if (state === "stale") {
+      if (insideBox) this.counters.insideBoxStale++;
+      return { unique: true, insideBox, freshness: state };
+    }
+    if (state === "future") {
+      if (insideBox) this.counters.insideBoxFuture++;
+      return { unique: true, insideBox, freshness: state };
+    }
     if (!insideBox) return { unique: true, insideBox, freshness: state };
-    this.counters.fresh++;
+    this.counters.insideBoxFresh++;
     return { unique: true, insideBox: true, freshness: state, clusterId: this.clusterer.ingest(event, processingTimeMs) };
   }
 

@@ -4,7 +4,7 @@ import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import { greatCircleDistanceKm, OnlineLightningClusterer, DEFAULT_CLUSTER_PARAMETERS, freshnessState,
   evaluateParameterProfiles } from "./clusterer.ts";
 import { LightningClusteringPipeline } from "./pipeline.ts";
-import { ANKARA_BOX } from "../live-lightning-listener/core.ts";
+import { ANKARA_BOX, type Box } from "../live-lightning-listener/core.ts";
 
 const minute = 60_000;
 function event(id: string, time: number, latitude = 40, longitude = 33, receivedAtMs = time + 1000): LightningEvent {
@@ -51,16 +51,43 @@ test("moving chain matches recent events rather than only the centroid", () => {
 test("pipeline deduplicates stable replay IDs before clustering", () => {
   const p = new LightningClusteringPipeline(ANKARA_BOX, DEFAULT_CLUSTER_PARAMETERS);
   p.accept(event("same", 10_000), 11_000); p.accept(event("same", 10_000), 12_000);
-  assert.equal(p.counters.fresh, 1); assert.equal(p.counters.duplicates, 1);
+  assert.equal(p.counters.insideBoxFresh, 1); assert.equal(p.counters.duplicates, 1);
   assert.equal(p.clusterer.clusters[0].eventCount, 1);
 });
 
 test("stale replay is counted but cannot create an active cluster", () => {
   const p = new LightningClusteringPipeline(ANKARA_BOX, DEFAULT_CLUSTER_PARAMETERS);
   const result = p.accept(event("old", 0, 40, 33, 20 * minute), 20 * minute);
-  assert.equal(result.freshness, "stale"); assert.equal(p.counters.stale, 1);
+  assert.equal(result.freshness, "stale"); assert.equal(p.counters.allUniqueStale, 1);
   assert.equal(p.clusterer.clusters.length, 0);
   assert.equal(freshnessState(event("future", 20_000), 10_000, 10), "future");
+});
+
+test("freshness counters distinguish local-box and all-unique scopes", () => {
+  const box: Box = { north: 40, east: 33, south: 39, west: 32 };
+  const p = new LightningClusteringPipeline(box, DEFAULT_CLUSTER_PARAMETERS);
+  const now = 100 * minute;
+  const cases = [
+    [event("inside-fresh", now - minute, 39.5, 32.5), "fresh", true],
+    [event("inside-stale", now - 12 * minute, 39.5, 32.5), "stale", true],
+    [event("outside-fresh", now - minute, 41, 34), "fresh", false],
+    [event("outside-stale", now - 12 * minute, 41, 34), "stale", false],
+    [event("inside-future", now + minute, 39.5, 32.5), "future", true],
+  ] as const;
+  for (const [item, expectedState] of cases) {
+    const result = p.accept(item, now);
+    assert.equal(result.freshness, expectedState);
+  }
+  assert.equal(p.counters.insideBox, 3);
+  assert.equal(p.counters.insideBoxFresh + p.counters.insideBoxStale + p.counters.insideBoxFuture, p.counters.insideBox);
+  assert.equal(p.counters.insideBoxFresh, 1);
+  assert.equal(p.counters.insideBoxStale, 1);
+  assert.equal(p.counters.insideBoxFuture, 1);
+  assert.equal(p.counters.allUniqueFresh, 2);
+  assert.equal(p.counters.allUniqueStale, 2);
+  assert.equal(p.counters.allUniqueFuture, 1);
+  assert.equal(p.clusterer.clusters.length, 1);
+  assert.equal(p.clusterer.clusters[0].eventCount, 1);
 });
 
 test("cluster closes once reference time reaches the configured interval", () => {
