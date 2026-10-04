@@ -12,6 +12,7 @@ export type LightningEvent = {
 };
 
 export const ANKARA_BOX: Box = { north: 40.35, east: 33.45, south: 39.45, west: 31.95 };
+export const EXTREMADURA_ACTIVE_BOX: Box = { north: 39.80, east: -5.80, south: 38.30, west: -7.60 };
 
 export function inBox(event: LightningEvent, box: Box): boolean {
   return event.latitude <= box.north && event.latitude >= box.south &&
