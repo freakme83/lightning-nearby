@@ -40,6 +40,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: research-lightning-location-naming-nominatim
+  cancel-in-progress: false
+
 jobs:
   reverse-geocode:
     name: One manual Nominatim lookup
