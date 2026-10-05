@@ -18,7 +18,7 @@ npm run research:lightning-incidents -- \
   --incident-profile=B
 ```
 
-`--incident-profile` accepts `A`, `B`, or `C`; the selected profile is used for the live dry-run view, while all profiles are compared against the same retained incident-signal sequence at the end. `--box=north,east,south,west` accepts any strict local rectangle. `--format=jsonl` emits structured output. The default cluster parameters remain those from the clustering research: 8 km maximum recent-point match, 10-minute event-time gap, 10-minute freshness, and 15-minute cluster close. The live listener uses the existing plain Node WebSocket, subscription, resume IDs, and bounded dedupe.
+`--incident-profile` accepts `A`, `B`, or `C`; the selected profile is used for the live dry-run view, while all profiles are compared against the same retained incident-signal sequence at the end. `--box=north,east,south,west` accepts any custom rectangle. `--area=ankara` selects the reusable operational monitoring polygon and derives its subscription box; supplying both flags is rejected. `--format=jsonl` emits structured output. The default cluster parameters remain those from the clustering research: 8 km maximum recent-point match, 10-minute event-time gap, 10-minute freshness, and 15-minute cluster close. The live listener uses the existing plain Node WebSocket, subscription, resume IDs, and bounded dedupe.
 
 Only bounded in-memory signals are retained (100,000). Nothing is written to disk. If the cap is reached, the comparison reports dropped signals and describes only the retained prefix. `WOULD_PUBLISH` is synthetic; the runner creates no message or social text and sends nothing.
 
@@ -26,12 +26,18 @@ Only bounded in-memory signals are retained (100,000). Nothing is written to dis
 
 The experimental flow is:
 
-1. Listener decodes and deduplicates events; the existing clustering pipeline applies the 10-minute freshness rule and strict local box.
-2. Fresh, unique, in-box events update the unchanged default clustering model.
+1. Listener decodes and deduplicates events; the pipeline applies the coarse subscription-box check and, for `--area=ankara`, a strict local point-in-polygon acceptance check.
+2. Fresh, unique, locally accepted events update the unchanged default clustering model.
 3. The incident layer consumes cluster-ID-tagged activity observations and cluster-close transitions. It does not modify the clusterer.
 4. A separate dry-run policy consumes incident promotions, repeated active activity, and close transitions to produce synthetic decisions.
 
 The data concepts remain distinct: `LightningEvent`, `LightningCluster`, `ClusterObservation`, `LightningIncident`, and `PublishDecision`.
+
+## Ankara-centered operational monitoring area
+
+Use `npm run research:lightning-incidents -- --duration=15 --area=ankara --incident-profile=B` to select `ANKARA_MONITORING_AREA`. This is an operational monitoring region, not an official administrative boundary. The WebSocket subscribes to the polygon's derived enclosing box, then the local pipeline applies the strict polygon before clustering. The runner reports separate subscription-box and monitoring-area counts; see [the monitoring-area note](ankara-monitoring-area.md) for exact coordinates and limitations. Manual `--box` runs remain available for other regions.
+
+A process that starts during already-dense activity may produce an initial burst of publish candidates. This is a low-frequency operational edge case to revisit before production deployment; this research change adds no startup suppression behavior.
 
 ## Incident state and experimental profiles
 

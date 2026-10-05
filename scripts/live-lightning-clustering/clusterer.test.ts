@@ -51,7 +51,7 @@ test("moving chain matches recent events rather than only the centroid", () => {
 test("pipeline deduplicates stable replay IDs before clustering", () => {
   const p = new LightningClusteringPipeline(ANKARA_BOX, DEFAULT_CLUSTER_PARAMETERS);
   p.accept(event("same", 10_000), 11_000); p.accept(event("same", 10_000), 12_000);
-  assert.equal(p.counters.insideBoxFresh, 1); assert.equal(p.counters.duplicates, 1);
+  assert.equal(p.counters.insideSubscriptionBoxFresh, 1); assert.equal(p.counters.duplicates, 1);
   assert.equal(p.clusterer.clusters[0].eventCount, 1);
 });
 
@@ -78,11 +78,13 @@ test("freshness counters distinguish local-box and all-unique scopes", () => {
     const result = p.accept(item, now);
     assert.equal(result.freshness, expectedState);
   }
-  assert.equal(p.counters.insideBox, 3);
-  assert.equal(p.counters.insideBoxFresh + p.counters.insideBoxStale + p.counters.insideBoxFuture, p.counters.insideBox);
-  assert.equal(p.counters.insideBoxFresh, 1);
-  assert.equal(p.counters.insideBoxStale, 1);
-  assert.equal(p.counters.insideBoxFuture, 1);
+  assert.equal(p.counters.insideSubscriptionBox, 3);
+  assert.equal(p.counters.insideSubscriptionBoxFresh + p.counters.insideSubscriptionBoxStale + p.counters.insideSubscriptionBoxFuture, p.counters.insideSubscriptionBox);
+  assert.equal(p.counters.insideMonitoringArea, 3);
+  assert.equal(p.counters.insideMonitoringAreaFresh + p.counters.insideMonitoringAreaStale + p.counters.insideMonitoringAreaFuture, p.counters.insideMonitoringArea);
+  assert.equal(p.counters.insideSubscriptionBoxFresh, 1);
+  assert.equal(p.counters.insideSubscriptionBoxStale, 1);
+  assert.equal(p.counters.insideSubscriptionBoxFuture, 1);
   assert.equal(p.counters.allUniqueFresh, 2);
   assert.equal(p.counters.allUniqueStale, 2);
   assert.equal(p.counters.allUniqueFuture, 1);
