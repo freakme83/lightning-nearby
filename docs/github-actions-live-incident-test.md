@@ -6,7 +6,7 @@ This manual-only workflow tests whether a GitHub-hosted Ubuntu runner can use th
 
 The repository's default branch is `main`. GitHub requires the workflow file to be present on the default branch before `workflow_dispatch` can be run. This PR targets `merge-ready`, so it does not by itself make the workflow dispatchable. Once the workflow is present on `main`, open **Actions → Research Lightning Incident Live Test → Run workflow**, select `merge-ready` (or the desired branch containing the workflow), enter or retain the inputs, and start the run. The workflow is triggered only by `workflow_dispatch`; it does not run on pushes, pull requests, schedules, or other workflows.
 
-Inputs are north/east/south/west coordinates, duration in minutes, summary interval in seconds, and incident profile A/B/C. The defaults use a previously documented Spain research box, but prior activity there does not mean it is active during a later run. Input validation allows durations from 1–45 minutes (default 15) and checks coordinate bounds and box ordering. The job uses `ubuntu-latest`, Node 22, and a bounded 55-minute timeout. A 35-minute run provides enough wall-clock time to observe the 20-minute quiet-close windows in Profiles A/B and the 30-minute window in Profile C, along with candidate expiry and possible nearby renewed activity. These transitions are not guaranteed: continuous lightning activity may keep incidents active throughout the run.
+Inputs include a monitoring area (`custom` or `ankara`), north/east/south/west coordinates, duration, summary interval, and incident profile A/B/C. Coordinates are used only for `area=custom`; the `ankara` option selects the research operational polygon and its derived subscription box. The default area remains `custom`, with the previously documented Spain research box; prior activity there does not mean it is active during a later run. Duration validation allows 1–45 minutes (default 15). The job uses `ubuntu-latest`, Node 22, and a bounded 55-minute timeout. Summary metrics distinguish the subscription bounding box from the strict local monitoring polygon.
 
 ## Logs and interpretation
 
@@ -16,7 +16,7 @@ The workflow summary reports whether setup and `npm ci` succeeded, whether the c
 
 - Setup or dependency failure is an infrastructure/setup failure, not a live-data result.
 - No successful connection or no source frame means the feed was not observed by this runner; it does not mean there was no lightning.
-- A completed run with zero fresh events inside the box means no fresh local observations were ingested in that window. It does not establish regional inactivity or feed completeness.
+- A completed run with zero fresh events inside the selected monitoring area means no fresh local observations were ingested in that window. It does not establish regional inactivity or feed completeness.
 - A successful connection, frame, final summary, and policy comparison demonstrate that the hosted runner reached the feed and executed the experiment. This is not evidence of lossless or real-time coverage.
 
 GitHub-hosted runner IP/network policy may block or reject the LightningMaps WebSocket. If that happens, inspect the artifact and job log first; do not alter the incident model based on a network failure. A later experiment could compare a self-hosted runner or a small research VPS, but neither is introduced here.

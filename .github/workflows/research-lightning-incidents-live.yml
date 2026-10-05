@@ -5,25 +5,33 @@ on:
   workflow_dispatch:
     inputs:
       north:
-        description: North latitude
+        description: North latitude (used when area is custom)
         required: true
         type: string
         default: "40.05"
       east:
-        description: East longitude
+        description: East longitude (used when area is custom)
         required: true
         type: string
         default: "-2.05"
       south:
-        description: South latitude
+        description: South latitude (used when area is custom)
         required: true
         type: string
         default: "38.55"
       west:
-        description: West longitude
+        description: West longitude (used when area is custom)
         required: true
         type: string
         default: "-3.85"
+      area:
+        description: Monitoring area (coordinates apply only to custom)
+        required: true
+        type: choice
+        options:
+          - custom
+          - ankara
+        default: custom
       durationMinutes:
         description: Live run duration (1-45 minutes)
         required: true
@@ -75,6 +83,7 @@ jobs:
           EAST: ${{ inputs.east }}
           SOUTH: ${{ inputs.south }}
           WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
           DURATION_MINUTES: ${{ inputs.durationMinutes }}
           SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
           INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
@@ -87,12 +96,16 @@ jobs:
             if (!Number.isFinite(value)) throw new Error(`${name} must be finite`);
             return value;
           };
-          const north = number("NORTH");
-          const east = number("EAST");
-          const south = number("SOUTH");
-          const west = number("WEST");
-          if (north > 90 || north <= south || south < -90) throw new Error("Invalid latitude bounds: require 90 >= north > south >= -90");
-          if (east > 180 || east <= west || west < -180) throw new Error("Invalid longitude bounds: require 180 >= east > west >= -180");
+          const area = process.env.AREA ?? "";
+          if (!["custom", "ankara"].includes(area)) throw new Error("AREA must be custom or ankara");
+          if (area === "custom") {
+            const north = number("NORTH");
+            const east = number("EAST");
+            const south = number("SOUTH");
+            const west = number("WEST");
+            if (north > 90 || north <= south || south < -90) throw new Error("Invalid latitude bounds: require 90 >= north > south >= -90");
+            if (east > 180 || east <= west || west < -180) throw new Error("Invalid longitude bounds: require 180 >= east > west >= -180");
+          }
           const integer = (name, min, max) => {
             const raw = process.env[name] ?? "";
             if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer`);
@@ -124,17 +137,20 @@ jobs:
           EAST: ${{ inputs.east }}
           SOUTH: ${{ inputs.south }}
           WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
           DURATION_MINUTES: ${{ inputs.durationMinutes }}
           SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
           INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
         run: |
           set +e
-          npm run research:lightning-incidents -- \
-            --duration="$DURATION_MINUTES" \
-            --summary-every="$SUMMARY_EVERY_SECONDS" \
-            --box="$NORTH,$EAST,$SOUTH,$WEST" \
-            --incident-profile="$INCIDENT_PROFILE" \
-            --format=jsonl 2>&1 | tee artifacts/lightning-incident-live-run.jsonl
+          run_args=(--duration="$DURATION_MINUTES" --summary-every="$SUMMARY_EVERY_SECONDS")
+          if [ "$AREA" = ankara ]; then
+            run_args+=(--area=ankara)
+          else
+            run_args+=(--box="$NORTH,$EAST,$SOUTH,$WEST")
+          fi
+          npm run research:lightning-incidents -- "${run_args[@]}" \
+            --incident-profile="$INCIDENT_PROFILE" --format=jsonl 2>&1 | tee artifacts/lightning-incident-live-run.jsonl
           command_status=${PIPESTATUS[0]}
           echo "exit_code=$command_status" >> "$GITHUB_OUTPUT"
           exit "$command_status"
@@ -156,6 +172,7 @@ jobs:
           EAST: ${{ inputs.east }}
           SOUTH: ${{ inputs.south }}
           WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
           DURATION_MINUTES: ${{ inputs.durationMinutes }}
           SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
           INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
@@ -185,6 +202,7 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Inputs (N/E/S/W) | $NORTH, $EAST, $SOUTH, $WEST |"
+            echo "| Monitoring area | $AREA |"
             echo "| Duration / summary interval | $DURATION_MINUTES min / $SUMMARY_EVERY_SECONDS sec |"
             echo "| Incident profile | $INCIDENT_PROFILE |"
             echo "| Node setup | $NODE_SETUP_OUTCOME |"
@@ -234,7 +252,7 @@ jobs:
           if [ -n "$summary_row" ] && command -v node >/dev/null 2>&1; then
             SUMMARY_ROW="$summary_row" node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
           const row = JSON.parse(process.env.SUMMARY_ROW ?? "{}");
-          const keys = ["messages", "connections", "reconnects", "malformed", "decoded", "unique", "insideBox", "insideBoxFresh", "insideBoxStale", "clustersObserved", "candidatesCreated", "candidatesExpired", "promoted", "wouldPublish", "suppressions", "suppressionsByReason", "nearbyRepeatSuppressions", "reopenedOrRecreated", "activeIncidents", "closedIncidents", "sourceHealthInterruptions"];
+          const keys = ["messages", "connections", "reconnects", "malformed", "decoded", "unique", "insideSubscriptionBox", "insideSubscriptionBoxOutsideMonitoringArea", "insideMonitoringArea", "insideMonitoringAreaFresh", "insideMonitoringAreaStale", "insideMonitoringAreaFuture", "clustersObserved", "candidatesCreated", "candidatesExpired", "promoted", "wouldPublish", "suppressions", "suppressionsByReason", "nearbyRepeatSuppressions", "reopenedOrRecreated", "activeIncidents", "closedIncidents", "sourceHealthInterruptions"];
           console.log("\n### Final run metrics\n");
           console.log("| Metric | Value |\n|---|---|");
           for (const key of keys) console.log(`| ${key} | ${JSON.stringify(row[key] ?? null)} |`);

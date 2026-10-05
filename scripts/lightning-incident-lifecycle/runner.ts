@@ -1,6 +1,5 @@
 // Research-only incident lifecycle dry-run. No application import or real publisher.
-import { EXTREMADURA_ACTIVE_BOX, backoffMs, parseFrame, subscription, type Box } from "../live-lightning-listener/core.ts";
-import { DEFAULT_CLUSTER_PARAMETERS } from "../live-lightning-clustering/clusterer.ts";
+import { backoffMs, parseFrame, subscription, type LightningEvent } from "../live-lightning-listener/core.ts";
 import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeline.ts";
 import { IncidentLifecycleEngine } from "./incident-engine.ts";
 import { compareIncidentProfiles, applyTransitions } from "./experiment.ts";
@@ -8,42 +7,23 @@ import { DryRunPublishPolicy } from "./publish-policy.ts";
 import { median } from "./stats.ts";
 import { SourceHealthTracker } from "./source-health.ts";
 import { INCIDENT_POLICY_PROFILES, type IncidentPolicyProfile, type IncidentReplaySignal, type IncidentTransition, type PublishDecision } from "./types.ts";
+import { pointInMonitoringArea } from "./monitoring-area.ts";
+import { readIncidentRunnerOptions } from "./options.ts";
 
-function positive(value: string | undefined, name: string): number {
-  const result = Number(value);
-  if (!Number.isFinite(result) || result <= 0) throw new Error(`Invalid ${name}`);
-  return result;
-}
-function readOptions(argv: string[]) {
-  const args = new Map<string, string>();
-  const allowed = new Set(["duration", "box", "incident-profile", "summary-every", "format"]);
-  for (const arg of argv) {
-    if (!arg.startsWith("--") || !arg.includes("=")) throw new Error(`Expected --name=value: ${arg}`);
-    const [name, ...rest] = arg.slice(2).split("=");
-    if (!allowed.has(name)) throw new Error(`Unknown flag: ${name}`);
-    args.set(name, rest.join("="));
-  }
-  const values = args.get("box")?.split(",").map(Number);
-  if (values && (values.length !== 4 || values.some(n => !Number.isFinite(n)))) throw new Error("--box=north,east,south,west");
-  const box: Box = values ? { north: values[0], east: values[1], south: values[2], west: values[3] } : EXTREMADURA_ACTIVE_BOX;
-  if (box.north > 90 || box.south < -90 || box.north <= box.south || box.east > 180 || box.west < -180 || box.east <= box.west) {
-    throw new Error("Invalid box bounds");
-  }
-  const selected = (args.get("incident-profile") ?? "B").toUpperCase();
-  const profile = INCIDENT_POLICY_PROFILES.find(item => item.id === selected);
-  if (!profile) throw new Error("--incident-profile=A|B|C");
-  const format = args.get("format") ?? "human";
-  if (format !== "human" && format !== "jsonl") throw new Error("--format=human|jsonl");
-  return { box, profile, format, durationMs: positive(args.get("duration") ?? "15", "duration") * 60_000,
-    summaryMs: positive(args.get("summary-every") ?? "60", "summary-every") * 1000 };
-}
-
-const config = readOptions(process.argv.slice(2));
+const config = readIncidentRunnerOptions(process.argv.slice(2));
+const profile = INCIDENT_POLICY_PROFILES.find(item => item.id === config.profileId)!;
 const endpoint = "wss://live2.lightningmaps.org/";
 const startedAtMs = Date.now();
-const pipeline = new LightningClusteringPipeline(config.box, DEFAULT_CLUSTER_PARAMETERS);
-const lifecycle = new IncidentLifecycleEngine(config.profile, startedAtMs);
-const publishPolicy = new DryRunPublishPolicy(config.profile);
+const monitoringAcceptance = config.monitoringArea ? {
+  id: config.monitoringArea.id,
+  bounds: config.monitoringArea.bounds,
+  contains: (event: LightningEvent) =>
+    pointInMonitoringArea([event.longitude, event.latitude], config.monitoringArea!),
+} : undefined;
+const pipeline = new LightningClusteringPipeline(config.box, config.parameters,
+  monitoringAcceptance ? { monitoringArea: monitoringAcceptance } : {});
+const lifecycle = new IncidentLifecycleEngine(profile, startedAtMs);
+const publishPolicy = new DryRunPublishPolicy(profile);
 const sourceHealth = new SourceHealthTracker(startedAtMs);
 const resumeIds: Record<string, number> = {};
 const replaySignals: IncidentReplaySignal[] = [];
@@ -121,11 +101,22 @@ function summary(nowMs: number, kind: string) {
   const incident = lifecycle.snapshot();
   const publish = publishPolicy.summary();
   const eventsAtPromotion = incident.metrics.eventsAtPromotion;
-  emit(kind, { endpoint, box: config.box, clusterParameters: DEFAULT_CLUSTER_PARAMETERS, incidentProfile: config.profile,
+  emit(kind, { endpoint, box: config.box, areaSelection: config.areaSelection,
+    monitoringArea: config.monitoringArea?.id ?? null,
+    clusterParameters: config.parameters, incidentProfile: profile,
     durationSeconds: Math.round((nowMs - startedAtMs) / 1000), messages, connections, reconnects,
     malformed: state.malformed, decoded: state.decoded, unique: state.unique, duplicates: state.duplicates,
-    insideBox: state.insideBox, insideBoxFresh: state.insideBoxFresh, insideBoxStale: state.insideBoxStale,
-    insideBoxFuture: state.insideBoxFuture, allUniqueFresh: state.allUniqueFresh,
+    insideSubscriptionBox: state.insideSubscriptionBox,
+    insideSubscriptionBoxOutsideMonitoringArea: state.insideSubscriptionBoxOutsideMonitoringArea,
+    insideSubscriptionBoxFresh: state.insideSubscriptionBoxFresh,
+    insideSubscriptionBoxStale: state.insideSubscriptionBoxStale,
+    insideSubscriptionBoxFuture: state.insideSubscriptionBoxFuture,
+    insideMonitoringArea: state.insideMonitoringArea,
+    insideMonitoringAreaFresh: state.insideMonitoringAreaFresh,
+    insideMonitoringAreaStale: state.insideMonitoringAreaStale,
+    insideMonitoringAreaFuture: state.insideMonitoringAreaFuture,
+    outsideSubscriptionBox: state.outsideSubscriptionBox,
+    allUniqueFresh: state.allUniqueFresh,
     allUniqueStale: state.allUniqueStale, allUniqueFuture: state.allUniqueFuture,
     clustersObserved: incident.metrics.clustersObserved, candidatesCreated: incident.metrics.incidentCandidatesCreated,
     candidatesExpired: incident.metrics.candidatesExpired, singletonClustersIgnored: incident.metrics.singletonClustersIgnored,
@@ -159,8 +150,9 @@ process.once("SIGTERM", () => stop("SIGTERM"));
 const durationTimer = setTimeout(() => stop("duration"), config.durationMs);
 const summaryTimer = setInterval(() => summary(Date.now(), "periodic_summary"), config.summaryMs);
 summaryTimer.unref();
-emit("run_start", { endpoint, box: config.box, clusterParameters: DEFAULT_CLUSTER_PARAMETERS,
-  incidentProfile: config.profile, comparisonProfiles: INCIDENT_POLICY_PROFILES.map(item => item.id),
+emit("run_start", { endpoint, box: config.box, areaSelection: config.areaSelection,
+  monitoringArea: config.monitoringArea?.id ?? null, clusterParameters: config.parameters,
+  incidentProfile: profile, comparisonProfiles: INCIDENT_POLICY_PROFILES.map(item => item.id),
   durationMinutes: config.durationMs / 60_000, cookies: false, customOrigin: false,
   maxRetainedReplaySignals: maxSignals, persistence: false });
 
