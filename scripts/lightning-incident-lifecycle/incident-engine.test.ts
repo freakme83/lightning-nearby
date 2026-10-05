@@ -140,6 +140,7 @@ test("a geographically distant renewal does not increment reopenedOrRecreated", 
   promotion(engine,"c-old",start,3);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   engine.observe(observation("c-far",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,42,33));
+  engine.observe(observation("c-far-later",first.closedAtMs!+25*minute,first.closedAtMs!+25*minute+1000,42,33));
   assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
 });
 
