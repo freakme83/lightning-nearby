@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createForecastDebugSnapshot, type DebugEnsembleStatus } from "@/lib/forecast-debug";
+import { ENSEMBLE_AGREEMENT_LABELS } from "@/lib/forecast-evidence";
 import { isValidCoordinates, LOCATION_STORAGE_KEY, parseMonitoredLocation } from "@/lib/location";
-import { combineForecasts, explainSignalDecision, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, type Outlook } from "@/lib/outlook";
+import { combineForecasts, describeOutlookEvidence, explainSignalDecision, fetchOutlook, isCurrentForecastRequest, mergeEnsembleEvidence, retainSelectedHour, type Outlook } from "@/lib/outlook";
 import { describeWeatherCode, isThunderstormCode, selectNext24Hours } from "@/lib/weather";
 import { formatForecastLocalTime, isGenericFixedOffsetTimezone, resolveDisplayTimezone } from "@/lib/timezone";
 import styles from "./debug.module.css";
@@ -154,6 +155,8 @@ export default function ForecastDebugPage() {
   const selected = hours.find((hour) => hour.time === selectedTime) ?? hours[0];
   const timezone = displayTimezone ?? providerTimezone ?? outlook?.timezone ?? "UTC";
   const selectedDecision = selected ? explainSignalDecision(selected.evidence) : null;
+  const selectedDiagnostics = selected ? describeOutlookEvidence(selected) : null;
+  const samples = selected?.evidence.ensemble?.sampleDiagnostics;
   const snapshot = loadedCoordinates ? createForecastDebugSnapshot({
     ...loadedCoordinates,
     hour: selected,
@@ -243,7 +246,20 @@ export default function ForecastDebugPage() {
             <div><dt>CAPE</dt><dd>{showValue(selected.cape, selected.cape == null ? "" : " J/kg")}</dd></div>
             <div><dt>CIN</dt><dd>{showValue(selected.convectiveInhibition, selected.convectiveInhibition == null ? "" : " J/kg")}</dd></div>
             <div><dt>Deterministic qualitative result</dt><dd>{selected.signal.kind === "qualitative" ? selected.signal.risk : "unavailable"}</dd></div>
+            <div><dt>Evidence source</dt><dd>{selectedDiagnostics?.deterministicEvidenceSource}</dd></div>
+            <div><dt>Evidence quality</dt><dd>{selectedDiagnostics?.deterministicEvidenceQuality}</dd></div>
           </dl>
+          <p className={styles.note}>Quality describes input coverage, not calibrated confidence. A weather-code-only Low is weak evidence; CIN is informational only.</p>
+        </section>
+
+        <section className={styles.panel} aria-labelledby="conflicts-title">
+          <h2 id="conflicts-title">Research conflicts</h2>
+          {selectedDiagnostics?.conflictFlags.length
+            ? <ul>{selectedDiagnostics.conflictFlags.map((flag) => <li key={flag}>{flag}</li>)}</ul>
+            : <p>None detected</p>}
+          <h3>Cross-source diagnostic</h3>
+          <p className={styles.explanation}>{selectedDiagnostics && ENSEMBLE_AGREEMENT_LABELS[selectedDiagnostics.exactPointVsEnsembleAgreement]}</p>
+          <p className={styles.note}>These diagnostics do not change the qualitative classifier result.</p>
         </section>
 
         <section className={styles.panel} aria-labelledby="ensemble-title">
@@ -254,10 +270,22 @@ export default function ForecastDebugPage() {
             <div><dt>Model</dt><dd>{showValue(selected.evidence.ensemble?.model)}</dd></div>
             <div><dt>Supporting / available members</dt><dd>{selected.evidence.ensemble ? `${selected.evidence.ensemble.supportingMembers} / ${selected.evidence.ensemble.availableMembers}` : "unavailable"}</dd></div>
             <div><dt>Sampled locations</dt><dd>{showValue(selected.evidence.ensemble?.sampledLocations)}</dd></div>
+            <div><dt>Requested / returned locations</dt><dd>{samples ? `${samples.requestedLocations} / ${samples.returnedLocations}` : "unavailable"}</dd></div>
+            <div><dt>Usable response locations</dt><dd>{showValue(samples?.usableLocations)}</dd></div>
+            <div><dt>Locations with effective coordinates</dt><dd>{showValue(samples?.locationsWithEffectiveCoordinates)}</dd></div>
+            <div><dt>Unique effective locations</dt><dd>{showValue(samples?.uniqueEffectiveLocations)}</dd></div>
+            <div><dt>Effective coordinate metadata</dt><dd>{showValue(samples?.effectiveCoordinateStatus)}</dd></div>
             <div><dt>Spatial window</dt><dd>{showValue(selected.evidence.ensemble?.spatialWindowKm, selected.evidence.ensemble ? " km" : "")}</dd></div>
             <div><dt>Temporal window</dt><dd>{showValue(selected.evidence.ensemble?.temporalWindowHours, selected.evidence.ensemble ? " hour(s) either side" : "")}</dd></div>
             <div><dt>Ensemble fetched at (Unix ms)</dt><dd>{showValue(outlook?.ensembleFetchedAt)}</dd></div>
           </dl>
+          {samples && <>
+            <p className={styles.note}>Counts describe this response batch; sampled locations retain their existing meaning. Native grid-cell identity is unconfirmed. Missing coordinates cannot establish uniqueness.</p>
+            <details><summary>Returned effective coordinates</summary>
+              <ul>{samples.samples.map((sample) => <li key={sample.responseIndex}>Response {sample.responseIndex + 1}: {sample.effectiveCoordinates
+                ? `${sample.effectiveCoordinates.latitude}, ${sample.effectiveCoordinates.longitude}` : "unavailable"}</li>)}</ul>
+            </details>
+          </>}
         </section>
 
         <section className={styles.panel} aria-labelledby="decision-title">

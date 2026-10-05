@@ -2,6 +2,19 @@ import { isThunderstormCode } from "./weather.ts";
 
 export type EnsembleModel = "icon_eu_eps" | "icon_global_eps";
 
+export interface EnsembleSampleDiagnostics {
+  requestedLocations: number;
+  returnedLocations: number;
+  usableLocations: number;
+  locationsWithEffectiveCoordinates: number;
+  /** Only known when every usable response has valid returned coordinates. */
+  uniqueEffectiveLocations?: number;
+  effectiveCoordinateStatus: "complete" | "partial" | "unavailable";
+  /** Returned coordinate equality is observable; native model cell IDs are not provided. */
+  gridCellIdentity: "unconfirmed";
+  samples: Array<{ responseIndex: number; effectiveCoordinates?: { latitude: number; longitude: number } }>;
+}
+
 export interface LocalEnsembleThunderstormSupport {
   time: number;
   supportingMembers: number;
@@ -10,6 +23,7 @@ export interface LocalEnsembleThunderstormSupport {
   spatialWindowKm: number;
   temporalWindowHours: 1;
   sampledLocations: number;
+  sampleDiagnostics?: EnsembleSampleDiagnostics;
 }
 
 export interface EnsembleForecast {
@@ -43,7 +57,14 @@ export function localSamplePoints(latitude: number, longitude: number, model: En
   ];
 }
 
-function readLocation(payload: unknown): { timezone: string; members: Map<string, Map<number, number>> } | null {
+function readEffectiveCoordinates(data: Record<string, unknown>): { latitude: number; longitude: number } | undefined {
+  const { latitude, longitude } = data;
+  if (typeof latitude !== "number" || !Number.isFinite(latitude) || latitude < -90 || latitude > 90
+    || typeof longitude !== "number" || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return undefined;
+  return { latitude, longitude };
+}
+
+function readLocation(payload: unknown, responseIndex: number) {
   if (typeof payload !== "object" || payload === null) return null;
   const data = payload as Record<string, unknown>;
   if (typeof data.timezone !== "string" || !data.timezone || typeof data.hourly !== "object" || data.hourly === null) return null;
@@ -61,7 +82,7 @@ function readLocation(payload: unknown): { timezone: string; members: Map<string
     }
     if (times.size) members.set(member, times);
   }
-  return members.size ? { timezone: data.timezone, members } : null;
+  return members.size ? { timezone: data.timezone, members, responseIndex, effectiveCoordinates: readEffectiveCoordinates(data) } : null;
 }
 
 /** The API returns one object per requested point. Member names identify the same member at every point. */
@@ -71,9 +92,28 @@ export function parseEnsembleForecast(
   fetchedAt = Date.now(),
   expectedLocations = 5,
 ): EnsembleForecast | null {
-  const locations = (Array.isArray(payload) ? payload.slice(0, expectedLocations) : [payload])
+  const responses = Array.isArray(payload) ? payload : [payload];
+  const locations = responses.slice(0, expectedLocations)
     .map(readLocation).filter((location): location is NonNullable<typeof location> => location !== null);
   if (!locations.length) return null;
+  const coordinateCount = locations.filter((location) => location.effectiveCoordinates).length;
+  const sampleDiagnostics: EnsembleSampleDiagnostics = {
+    requestedLocations: expectedLocations,
+    returnedLocations: responses.length,
+    usableLocations: locations.length,
+    locationsWithEffectiveCoordinates: coordinateCount,
+    ...(coordinateCount === locations.length ? {
+      uniqueEffectiveLocations: new Set(locations.map((location) => {
+        const { latitude, longitude } = location.effectiveCoordinates!;
+        return `${latitude},${longitude}`;
+      })).size,
+    } : {}),
+    effectiveCoordinateStatus: coordinateCount === locations.length ? "complete" : coordinateCount ? "partial" : "unavailable",
+    gridCellIdentity: "unconfirmed",
+    samples: locations.map(({ responseIndex, effectiveCoordinates }) => ({
+      responseIndex, ...(effectiveCoordinates ? { effectiveCoordinates } : {}),
+    })),
+  };
   const timezone = locations[0].timezone;
   const memberNames = new Set(locations.flatMap((location) => [...location.members.keys()]));
   const times = new Set(locations.flatMap((location) => [...location.members.values()].flatMap((series) => [...series.keys()])));
@@ -102,6 +142,7 @@ export function parseEnsembleForecast(
       spatialWindowKm: locations.length > 1 ? MODEL_INFO[model].gridKm : 0,
       temporalWindowHours: 1,
       sampledLocations: locations.length,
+      sampleDiagnostics,
     });
   }
   return hours.length ? { timezone, hours, fetchedAt } : null;

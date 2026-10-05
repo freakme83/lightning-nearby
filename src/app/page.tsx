@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { LOCATION_STORAGE_KEY, formatCoordinates, formatLocationLabel, parseMonitoredLocation, reduceLocationPrecision, saveMonitoredLocation, type LocationSelection, type MonitoredLocation } from "@/lib/location";
 import { INITIAL_VISIBLE_PLACE_RESULTS, MIN_PLACE_QUERY_LENGTH, PLACE_SEARCH_DEBOUNCE_MS, parseCoordinateQuery, reverseGeocodeLocation, searchPlaces, visiblePlaceResults, type PlaceResult } from "@/lib/geocoding";
@@ -393,15 +394,21 @@ export default function Home() {
     </header>
 
     {!location ? <section className="welcome-panel" aria-labelledby="welcome-title">
-      <p className="eyebrow">{t(locale, "welcomeEyebrow")}</p>
-      <h1 id="welcome-title">{t(locale, "welcomeTitle")}</h1>
-      <p className="welcome-copy">{t(locale, "welcomeCopy")}</p>
-      <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? t(locale, "findingLocation") : t(locale, "useMyLocation")}</button>
-      <button className="text-button picker-open-button" type="button" onClick={openPicker}>{t(locale, "openPicker")}</button>
-      {locationPicker}
-      {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
-      <p className="permission-note">{t(locale, "permissionNote")}</p>
-      <div className="welcome-rule" /><p className="micro-copy">{t(locale, "disclaimerShort")}</p>
+      <div className="welcome-art" aria-hidden="true"><Image src="/illustrations/landing-lightning.png" alt="" fill sizes="(max-width: 600px) 100vw, 720px" /></div>
+      <div className="welcome-content">
+        <p className="eyebrow">{t(locale, "welcomeEyebrow")}</p>
+        <h1 id="welcome-title">{t(locale, "welcomeTitle")}</h1>
+        <p className="welcome-copy">{t(locale, "welcomeCopy")}</p>
+        <div className="welcome-actions">
+          <button className="primary-button" type="button" onClick={requestLocation} disabled={locating}><span aria-hidden="true">⌖</span>{locating ? t(locale, "findingLocation") : t(locale, "useMyLocation")}</button>
+          <button className="secondary-button picker-open-button" type="button" onClick={openPicker}>{t(locale, "openPicker")}</button>
+        </div>
+        {locationPicker}
+        {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
+        <p className="permission-note">{t(locale, "permissionNote")}</p>
+        <aside className="welcome-live-note"><span aria-hidden="true">↯</span><div><strong>{t(locale, "welcomeLiveTitle")}</strong><p>{t(locale, "welcomeLiveCopy")}</p></div></aside>
+        <div className="welcome-rule" /><p className="micro-copy">{t(locale, "disclaimerShort")}</p>
+      </div>
     </section> : <section className="overview" aria-labelledby="overview-title">
       <div className="location-line"><div><p className="eyebrow">{t(locale, "monitoredLocation")}</p><p className="coordinates">{location.label || location.country ? visibleLocationLabel(location, locale) : formatCoordinates(location.latitude, location.longitude)}</p>{(location.label || location.country) && <p className="location-coordinates">{displayLocationCoordinates(location)}</p>}</div>
         <div className="location-actions">
