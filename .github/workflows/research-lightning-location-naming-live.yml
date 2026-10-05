@@ -1,0 +1,173 @@
+name: Research Lightning Location Naming Live Lookup
+run-name: Location naming lookup (${{ inputs.mode }} / ${{ inputs.preset }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Choose one preset sample or a custom coordinate
+        required: true
+        type: choice
+        options:
+          - preset
+          - custom
+        default: preset
+      preset:
+        description: Representative research point (used only when mode is preset)
+        required: true
+        type: choice
+        options:
+          - ankara-center
+          - ayranci
+          - bahcelievler
+          - eryaman
+          - polatli
+          - haymana
+          - sereflikochisar
+          - kirikkale
+          - keskin
+          - rural-ankara
+        default: ayranci
+      latitude:
+        description: Latitude (used only when mode is custom)
+        required: false
+        type: string
+      longitude:
+        description: Longitude (used only when mode is custom)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reverse-geocode:
+    name: One manual Nominatim lookup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate and resolve one sample coordinate
+        id: resolve
+        env:
+          MODE: ${{ inputs.mode }}
+          PRESET: ${{ inputs.preset }}
+          LATITUDE: ${{ inputs.latitude }}
+          LONGITUDE: ${{ inputs.longitude }}
+        run: |
+          node --experimental-strip-types --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { getLocationResearchPreset } from "./scripts/lightning-location-naming/presets.ts";
+          import { validateCoordinates } from "./scripts/lightning-location-naming/normalize.ts";
+
+          let latitude;
+          let longitude;
+          let sample;
+          if (process.env.MODE === "preset") {
+            const preset = getLocationResearchPreset(process.env.PRESET ?? "");
+            ({ latitude, longitude, name: sample } = preset);
+          } else if (process.env.MODE === "custom") {
+            const parse = (name, raw) => {
+              if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw ?? "")) throw new Error(`${name} must be a decimal coordinate`);
+              return Number(raw);
+            };
+            latitude = parse("latitude", process.env.LATITUDE);
+            longitude = parse("longitude", process.env.LONGITUDE);
+            sample = "Custom coordinate";
+          } else {
+            throw new Error("mode must be preset or custom");
+          }
+          validateCoordinates(latitude, longitude);
+          appendFileSync(process.env.GITHUB_OUTPUT, `latitude=${latitude}\nlongitude=${longitude}\nsample=${sample}\n`);
+          console.log(`Resolved exactly one sample: ${sample} (${latitude}, ${longitude})`);
+          NODE
+
+      - name: Run one reverse-geocoding lookup
+        id: lookup
+        continue-on-error: true
+        env:
+          LATITUDE: ${{ steps.resolve.outputs.latitude }}
+          LONGITUDE: ${{ steps.resolve.outputs.longitude }}
+          SAMPLE: ${{ steps.resolve.outputs.sample }}
+        run: |
+          mkdir -p artifacts
+          set +e
+          npm run research:reverse-geocode -- \
+            --lat="$LATITUDE" \
+            --lon="$LONGITUDE" \
+            --sample="$SAMPLE" \
+            --provider=nominatim \
+            --format=json \
+            --include-provider-hierarchy=true \
+            > artifacts/lightning-location-naming-result.json \
+            2> artifacts/lightning-location-naming-stderr.txt
+          lookup_status=$?
+          set -e
+          echo "exit_code=$lookup_status" >> "$GITHUB_OUTPUT"
+          if ! node --input-type=module -e 'import { readFileSync } from "node:fs"; JSON.parse(readFileSync(process.argv[1], "utf8"))' artifacts/lightning-location-naming-result.json 2>/dev/null; then
+            LOOKUP_EXIT_CODE="$lookup_status" node --input-type=module <<'NODE' > artifacts/lightning-location-naming-result.json
+          const { LATITUDE, LONGITUDE, SAMPLE, LOOKUP_EXIT_CODE } = process.env;
+          console.log(JSON.stringify({
+            status: "lookup_failed",
+            errorType: "runner_failure",
+            message: `CLI exited ${LOOKUP_EXIT_CODE} without a structured JSON result`,
+            sample: SAMPLE,
+            requested: { latitude: Number(LATITUDE), longitude: Number(LONGITUDE) },
+            provider: "nominatim",
+          }, null, 2));
+          NODE
+          fi
+          cat artifacts/lightning-location-naming-result.json
+          exit "$lookup_status"
+
+      - name: Upload compact lookup result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-location-naming-result-${{ github.run_id }}
+          path: artifacts/lightning-location-naming-result.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize lookup
+        if: always()
+        env:
+          RESULT_PATH: artifacts/lightning-location-naming-result.json
+        run: |
+          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const fields = ["neighbourhood", "quarter", "suburb", "city", "town", "village", "hamlet", "municipality", "city_district", "district", "county", "state_district", "province", "state", "region", "country"];
+          const localFields = ["neighborhood", "locality", "localityKind", "district", "province", "country", "rawType", "displayLabel"];
+          const cell = (value) => String(value ?? "not returned").replaceAll("|", "\\|").replaceAll("\n", " ");
+          let result;
+          try { result = JSON.parse(readFileSync(process.env.RESULT_PATH, "utf8")); }
+          catch { result = { status: "lookup_failed", errorType: "missing_or_invalid_result", message: "No valid result artifact was created" }; }
+          console.log("## Lightning location naming research\n");
+          console.log(`Sample: ${cell(result.sample)}\n`);
+          if (result.requested) console.log(`Coordinate: \`${result.requested.latitude}, ${result.requested.longitude}\`\n`);
+          console.log(`Provider: ${cell(result.provider)}\n`);
+          if (result.status === "lookup_failed") {
+            console.log(`**Lookup failed — ${cell(result.errorType)}.** ${cell(result.message)}\n`);
+          } else {
+            console.log("### Provider hierarchy\n\n| Field | Value |\n|---|---|");
+            for (const field of fields) console.log(`| ${field} | ${cell(result.providerAddress?.[field])} |`);
+            console.log("\n### Normalized result\n\n| Field | Value |\n|---|---|");
+            for (const field of localFields) console.log(`| ${field} | ${cell(result.normalized?.[field])} |`);
+            console.log(`| attribution | ${cell(result.attribution)} |`);
+            console.log(result.status === "unresolved"
+              ? "\n**Lookup completed — no usable place label was returned.**\n"
+              : "\n**Lookup succeeded — manual hierarchy review required.**\n");
+          }
+          console.log("One lookup was requested. This result is not an automatic quality PASS; review hierarchy and label manually.");
+          NODE

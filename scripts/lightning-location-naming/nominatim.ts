@@ -1,4 +1,4 @@
-import { normalizeNominatimAddress, makeDisplayLabel, validateCoordinates } from "./normalize.ts";
+import { normalizeNominatimAddress, extractProviderAddressHierarchy, makeDisplayLabel, validateCoordinates } from "./normalize.ts";
 import type { ReverseGeocodeResult, ReverseGeocoder } from "./types.ts";
 
 export class ReverseGeocodeError extends Error {
@@ -47,7 +47,7 @@ export class NominatimReverseGeocoder implements ReverseGeocoder {
     this.#userAgent = options.userAgent ?? "LightningNearbyLocationNamingResearch/1.0 (https://github.com/freakme83/lightning-nearby)";
   }
 
-  async reverse(latitude: number, longitude: number): Promise<ReverseGeocodeResult> {
+  async reverse(latitude: number, longitude: number, options: { includeProviderHierarchy?: boolean } = {}): Promise<ReverseGeocodeResult> {
     validateCoordinates(latitude, longitude);
     await waitForPublicRateLimit();
     const url = new URL(this.#baseUrl);
@@ -97,6 +97,7 @@ export class NominatimReverseGeocoder implements ReverseGeocoder {
       displayLabel: makeDisplayLabel(place),
       provider: "nominatim",
       attribution: "© OpenStreetMap contributors",
+      ...(options.includeProviderHierarchy ? { providerAddress: extractProviderAddressHierarchy(payload) } : {}),
     };
   }
 }

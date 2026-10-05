@@ -68,6 +68,37 @@ The monitoring polygon only determines whether an incident is relevant. It never
 
 The intended small sample set covers Ankara center, Ayrancı, another central neighborhood, Eryaman/Batıkent, Polatlı, Haymana/Bala, Şereflikoçhisar-side, Kırıkkale, Keskin, and one rural point within the operational area. On 5 October 2026 the research environment could not reach Nominatim: the direct provider URL was inaccessible through the available research fetch path, and the workspace has no outbound GitHub/provider network route. No live place result is reported or inferred from that failure. The fixture mappings above are synthetic contract tests, not real lookup evidence. Run individual CLI lookups manually from an allowed network before comparing actual Turkish hierarchy quality; keep calls serial and below the public server's rate cap.
 
+## Manual GitHub Actions live verification
+
+Normalization is deterministic **after** a provider hierarchy is available:
+
+```text
+provider hierarchy → normalization → displayLabel
+```
+
+But our code cannot determine which OSM object/address hierarchy Nominatim will associate with a given coordinate. Real-provider sampling is needed to assess whether neighborhood-level labels are actually useful for Ankara coordinates.
+
+The manual-only workflow is `.github/workflows/research-lightning-location-naming-live.yml` (`workflow_dispatch`; no push, pull-request, or scheduled runs). One dispatch performs one Nominatim reverse lookup. Choose `preset` and one sample, or `custom` and enter one latitude/longitude pair. The default preset is Ayrancı. The result artifact and Actions Step Summary separate the whitelisted provider hierarchy from the normalized fields and final `displayLabel`; absent values appear as “not returned”. Success means only that a lookup returned a structured result—manual hierarchy review is still required. Provider, rate-limit, timeout, malformed-response, and unresolved outcomes are reported without substituting a place name.
+
+Preset coordinates are representative points, not official centroids or administrative boundaries. They were checked against gazetteer/map entries; the rural Aşıkoğlu point is tested against the research Ankara operational polygon. Keskin is included as a real Kırıkkale naming case even though it lies outside that operational polygon; this naming workflow does not apply incident acceptance filtering.
+
+| Preset | Latitude | Longitude | Coordinate reference |
+|---|---:|---:|---|
+| Ankara center | 39.919874 | 32.854271 | [GeoNames Ankara search](https://www.geonames.org/search.html?q=Ankara) |
+| Ayrancı | 39.902861 | 32.849819 | [Wikidata Ayrancı](https://www.wikidata.org/wiki/Q20471152) |
+| Bahçelievler (Çankaya) | 39.927810 | 32.826490 | [Mapcarta Bahçelievler](https://mapcarta.com/12990336) |
+| Eryaman | 39.972300 | 32.621280 | [Mapcarta Eryaman](https://mapcarta.com/25719398) |
+| Polatlı | 39.577155 | 32.141317 | [GeoNames Ankara search](https://www.geonames.org/search.html?q=Ankara) |
+| Haymana | 39.434140 | 32.498790 | [Mapcarta Haymana](https://mapcarta.com/12970256) |
+| Şereflikoçhisar | 38.939250 | 33.538599 | [GeoNames Ankara search](https://www.geonames.org/search.html?q=Ankara) |
+| Kırıkkale center | 39.845278 | 33.506389 | [GeoNames Türkiye search](https://www.geonames.org/search.html?country=TR) |
+| Keskin | 39.673056 | 33.613611 | [GeoNames Keskin](https://www.geonames.org/8631946/keskin-il-esi.html) |
+| Aşıkoğlu, Bala (rural) | 39.583333 | 33.150000 | [GeoNames Ankara search](https://www.geonames.org/search.html?q=Ankara) |
+
+Coordinates for Ayrancı, Bahçelievler, and Eryaman were also checked against the map records identifying those places and their administrative context. The listed references are coordinate aids only; they do not make points official centroids. Nominatim's public 1 request/second cap and fair-use restrictions still apply. The workflow has no secrets, loops over no sample list, and does not persist results beyond a seven-day Actions artifact.
+
+GitHub documents that a `workflow_dispatch` workflow must exist on the repository's default branch for a run to be triggered. Because this workflow is only in the PR branch, a hosted lookup cannot be started until it is present on the default branch. Do not merge solely to enable a lookup; retain the implementation and report the hosted validation as unavailable for this draft PR.
+
 Additional limitations: reverse geocoding returns the nearest suitable indexed object/hierarchy for a coordinate, not an exact event address or definitive boundary membership. Neighborhood coverage varies within Turkey; a `suburb` or `city_district` may not correspond neatly to a Turkish mahalle. Human review is needed before deciding that a granular field is meaningful. Labels should be framed as approximate place references.
 
 ## CLI and operational guardrails

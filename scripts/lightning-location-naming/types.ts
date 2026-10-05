@@ -16,7 +16,15 @@ export type ReverseGeocodeResult = NormalizedPlace & {
   displayLabel: string | null;
   provider: string;
   attribution?: string;
+  providerAddress?: ProviderAddressHierarchy;
 };
+
+export const PROVIDER_ADDRESS_FIELDS = [
+  "neighbourhood", "quarter", "suburb", "city", "town", "village", "hamlet", "municipality",
+  "city_district", "district", "county", "state_district", "province", "state", "region", "country",
+] as const;
+
+export type ProviderAddressHierarchy = Record<typeof PROVIDER_ADDRESS_FIELDS[number], string | null>;
 
 export interface ReverseGeocoder {
   reverse(latitude: number, longitude: number): Promise<ReverseGeocodeResult>;

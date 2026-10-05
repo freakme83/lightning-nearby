@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { makeDisplayLabel, normalizeAndLabel, normalizeNominatimAddress, validateCoordinates } from "./normalize.ts";
+import { extractProviderAddressHierarchy, makeDisplayLabel, normalizeAndLabel, normalizeNominatimAddress, validateCoordinates } from "./normalize.ts";
 
 const payload = (address: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ address, display_name: "ignored raw full provider string", ...extra });
 
@@ -67,3 +67,18 @@ test("meaningful neighborhood wins over raw granular street and building fields"
   assert.equal(result.displayLabel, "Bahçelievler, Çankaya");
 });
 
+test("optional provider hierarchy contains only the geographic whitelist and leaves labeling unchanged", () => {
+  const response = payload({ neighbourhood: "Ayrancı", county: "Çankaya", state: "Ankara", country: "Türkiye", road: "Hoşdere Caddesi", house_number: "12", postcode: "06540" });
+  const withoutDiagnostics = normalizeAndLabel(response);
+  const hierarchy = extractProviderAddressHierarchy(response);
+  const withDiagnostics = { ...withoutDiagnostics, providerAddress: hierarchy };
+  assert.equal(withDiagnostics.displayLabel, withoutDiagnostics.displayLabel);
+  assert.equal(hierarchy.neighbourhood, "Ayrancı");
+  assert.equal(hierarchy.county, "Çankaya");
+  assert.equal(hierarchy.state, "Ankara");
+  assert.equal(hierarchy.city, null);
+  assert.equal("road" in hierarchy, false);
+  assert.equal("house_number" in hierarchy, false);
+  assert.equal("postcode" in hierarchy, false);
+  assert.equal("display_name" in hierarchy, false);
+});

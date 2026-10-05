@@ -18,6 +18,11 @@ test("sends one structured Turkish reverse request with an identifying User-Agen
   assert.equal(result.displayLabel, "Ayrancı, Çankaya");
   assert.equal(result.latitude, 39.9);
   assert.equal(result.provider, "nominatim");
+  assert.equal("providerAddress" in result, false, "normal output stays compact by default");
+  const diagnostic = await geocoder.reverse(39.9, 32.8, { includeProviderHierarchy: true });
+  assert.equal(diagnostic.displayLabel, result.displayLabel);
+  assert.equal(diagnostic.providerAddress?.neighbourhood, "Ayrancı");
+  assert.equal("road" in (diagnostic.providerAddress ?? {}), false);
 });
 
 test("reports provider HTTP status and malformed JSON distinctly", async () => {
@@ -38,4 +43,3 @@ test("rejects invalid coordinates before making a request", async () => {
   await assert.rejects(geocoder.reverse(91, 32), RangeError);
   assert.equal(calls, 0);
 });
-

@@ -1,4 +1,4 @@
-import type { LocalityKind, NormalizedPlace, NominatimPayload } from "./types.ts";
+import { PROVIDER_ADDRESS_FIELDS, type LocalityKind, type NormalizedPlace, type NominatimPayload, type ProviderAddressHierarchy } from "./types.ts";
 
 export function validateCoordinates(latitude: number, longitude: number): void {
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) throw new RangeError("latitude must be finite and between -90 and 90");
@@ -46,6 +46,18 @@ export function normalizeNominatimAddress(payload: unknown): NormalizedPlace {
     ...(country ? { country } : {}),
     ...(rawType ? { rawType } : {}),
   };
+}
+
+/** Whitelist address hierarchy only; deliberately excludes street, number, postcode and display_name. */
+export function extractProviderAddressHierarchy(payload: unknown): ProviderAddressHierarchy {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new TypeError("Nominatim response must be an object");
+  const row = payload as NominatimPayload;
+  if (!row.address || typeof row.address !== "object" || Array.isArray(row.address)) throw new TypeError("Nominatim response has no structured address object");
+  const address = row.address;
+  return Object.fromEntries(PROVIDER_ADDRESS_FIELDS.map((key) => {
+    const value = address[key];
+    return [key, typeof value === "string" && value.trim() ? value.trim() : null];
+  })) as ProviderAddressHierarchy;
 }
 
 /**
