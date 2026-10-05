@@ -16,7 +16,9 @@
     "research:lightning-latency": "node --experimental-strip-types scripts/live-lightning-listener/latency-run.ts",
     "test:research:lightning-listener": "node --experimental-strip-types --test scripts/live-lightning-listener/*.test.ts",
     "research:lightning-clustering": "node --experimental-strip-types scripts/live-lightning-clustering/runner.ts",
-    "test:research:lightning-clustering": "node --experimental-strip-types --test scripts/live-lightning-clustering/*.test.ts"
+    "test:research:lightning-clustering": "node --experimental-strip-types --test scripts/live-lightning-clustering/*.test.ts",
+    "research:lightning-incidents": "node --experimental-strip-types scripts/lightning-incident-lifecycle/runner.ts",
+    "test:research:lightning-incidents": "node --experimental-strip-types --test scripts/lightning-incident-lifecycle/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
