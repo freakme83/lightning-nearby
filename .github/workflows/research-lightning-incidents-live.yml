@@ -1,0 +1,256 @@
+name: Research Lightning Incident Live Test
+run-name: Lightning incident live test (${{ inputs.incidentProfile }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      north:
+        description: North latitude
+        required: true
+        type: string
+        default: "40.05"
+      east:
+        description: East longitude
+        required: true
+        type: string
+        default: "-2.05"
+      south:
+        description: South latitude
+        required: true
+        type: string
+        default: "38.55"
+      west:
+        description: West longitude
+        required: true
+        type: string
+        default: "-3.85"
+      durationMinutes:
+        description: Live run duration (1-20 minutes)
+        required: true
+        type: string
+        default: "15"
+      summaryEverySeconds:
+        description: Periodic summary interval (5-3600 seconds)
+        required: true
+        type: string
+        default: "60"
+      incidentProfile:
+        description: Research incident policy profile
+        required: true
+        type: choice
+        options:
+          - A
+          - B
+          - C
+        default: B
+
+permissions:
+  contents: read
+
+jobs:
+  live-test:
+    name: Connect and collect research metrics
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare research log
+        run: |
+          mkdir -p artifacts
+          : > artifacts/lightning-incident-live-run.jsonl
+
+      - name: Set up Node.js
+        id: setup_node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate manual inputs
+        id: validate
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+        run: |
+          node --input-type=module <<'NODE'
+          const number = (name) => {
+            const raw = process.env[name] ?? "";
+            if (!/^-?\d+(?:\.\d+)?$/.test(raw)) throw new Error(`${name} must be a decimal number`);
+            const value = Number(raw);
+            if (!Number.isFinite(value)) throw new Error(`${name} must be finite`);
+            return value;
+          };
+          const north = number("NORTH");
+          const east = number("EAST");
+          const south = number("SOUTH");
+          const west = number("WEST");
+          if (north > 90 || north <= south || south < -90) throw new Error("Invalid latitude bounds: require 90 >= north > south >= -90");
+          if (east > 180 || east <= west || west < -180) throw new Error("Invalid longitude bounds: require 180 >= east > west >= -180");
+          const integer = (name, min, max) => {
+            const raw = process.env[name] ?? "";
+            if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer`);
+            const value = Number(raw);
+            if (value < min || value > max) throw new Error(`${name} must be between ${min} and ${max}`);
+            return value;
+          };
+          integer("DURATION_MINUTES", 1, 20);
+          integer("SUMMARY_EVERY_SECONDS", 5, 3600);
+          if (!["A", "B", "C"].includes(process.env.INCIDENT_PROFILE ?? "")) throw new Error("INCIDENT_PROFILE must be A, B, or C");
+          console.log("Manual inputs are valid.");
+          NODE
+
+      - name: Install dependencies
+        id: install_deps
+        run: npm ci
+
+      - name: Print runtime diagnostics
+        run: |
+          node --version
+          npm --version
+          node -e 'console.log(`Built-in WebSocket available: ${typeof WebSocket === "function"}`)'
+
+      - name: Run live incident research
+        id: live_run
+        continue-on-error: true
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+        run: |
+          set +e
+          npm run research:lightning-incidents -- \
+            --duration="$DURATION_MINUTES" \
+            --summary-every="$SUMMARY_EVERY_SECONDS" \
+            --box="$NORTH,$EAST,$SOUTH,$WEST" \
+            --incident-profile="$INCIDENT_PROFILE" \
+            --format=jsonl 2>&1 | tee artifacts/lightning-incident-live-run.jsonl
+          command_status=${PIPESTATUS[0]}
+          echo "exit_code=$command_status" >> "$GITHUB_OUTPUT"
+          exit "$command_status"
+
+      - name: Upload research log
+        id: upload_artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-incident-live-run-${{ github.run_id }}
+          path: artifacts/lightning-incident-live-run.jsonl
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize result
+        if: always()
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          SUMMARY_EVERY_SECONDS: ${{ inputs.summaryEverySeconds }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+          NODE_SETUP_OUTCOME: ${{ steps.setup_node.outcome }}
+          INPUT_VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          DEPENDENCY_INSTALL_OUTCOME: ${{ steps.install_deps.outcome }}
+          LIVE_RUN_OUTCOME: ${{ steps.live_run.outcome }}
+          LIVE_EXIT_CODE: ${{ steps.live_run.outputs.exit_code || 'not-started' }}
+          ARTIFACT_UPLOAD_OUTCOME: ${{ steps.upload_artifact.outcome }}
+          ARTIFACT_NAME: lightning-incident-live-run-${{ github.run_id }}
+        run: |
+          set -eu
+          log=artifacts/lightning-incident-live-run.jsonl
+          connected=no
+          first_frame=no
+          final_summary=no
+          policy_comparison=no
+          if [ -f "$log" ]; then
+            grep -Fq '"kind":"connected"' "$log" && connected=yes || true
+            grep -Fq '"kind":"source_health"' "$log" && grep -Fq '"to":"live"' "$log" && first_frame=yes || true
+            grep -Fq '"kind":"run_summary"' "$log" && final_summary=yes || true
+            grep -Fq '"kind":"same_sequence_policy_comparison"' "$log" && policy_comparison=yes || true
+          fi
+          {
+            echo "## Research Lightning Incident Live Test"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Inputs (N/E/S/W) | $NORTH, $EAST, $SOUTH, $WEST |"
+            echo "| Duration / summary interval | $DURATION_MINUTES min / $SUMMARY_EVERY_SECONDS sec |"
+            echo "| Incident profile | $INCIDENT_PROFILE |"
+            echo "| Node setup | $NODE_SETUP_OUTCOME |"
+            echo "| Input validation | $INPUT_VALIDATION_OUTCOME |"
+            echo "| npm ci | $DEPENDENCY_INSTALL_OUTCOME |"
+            echo "| Live command started | $LIVE_RUN_OUTCOME |"
+            echo "| Live command exit code | $LIVE_EXIT_CODE |"
+            echo "| Successful WebSocket connection observed | $connected |"
+            echo "| At least one source frame observed | $first_frame |"
+            echo "| Final run summary present | $final_summary |"
+            echo "| Same-sequence policy comparison present | $policy_comparison |"
+            echo "| Artifact upload step | $ARTIFACT_UPLOAD_OUTCOME |"
+            echo "| Log artifact | $ARTIFACT_NAME (7-day retention) |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=no
+          if [ "$NODE_SETUP_OUTCOME" != success ]; then
+            echo "Workflow setup failed before the live test; this is not a lightning-activity result." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$INPUT_VALIDATION_OUTCOME" != success ]; then
+            echo "Manual inputs were rejected; the live test did not start." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$DEPENDENCY_INSTALL_OUTCOME" != success ]; then
+            echo "npm setup failed before the live test; inspect the job log and uploaded artifact." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$LIVE_RUN_OUTCOME" = skipped ]; then
+            echo "The live command was skipped; this is not a lightning-activity result." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$LIVE_EXIT_CODE" != 0 ]; then
+            echo "The live command returned nonzero; inspect the artifact for connection or runner errors." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$connected" != yes ]; then
+            echo "No successful WebSocket connection was observed. This does not indicate no lightning activity." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$first_frame" != yes ]; then
+            echo "A connection opened but no source frame was observed. This is not a zero-activity result." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          elif [ "$final_summary" != yes ] || [ "$policy_comparison" != yes ]; then
+            echo "The run did not produce all final research summaries; inspect the artifact for an incomplete run." >> "$GITHUB_STEP_SUMMARY"
+            failed=yes
+          else
+            echo "The listener and policy comparison completed. Read the final run summary below; zero fresh in-box events means no fresh local observations were ingested during this run, not proof of no lightning." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          summary_row="$(grep -F '"kind":"run_summary"' "$log" | tail -n 1 || true)"
+          if [ -n "$summary_row" ] && command -v node >/dev/null 2>&1; then
+            SUMMARY_ROW="$summary_row" node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          const row = JSON.parse(process.env.SUMMARY_ROW ?? "{}");
+          const keys = ["messages", "connections", "reconnects", "malformed", "decoded", "unique", "insideBox", "insideBoxFresh", "insideBoxStale", "clustersObserved", "candidatesCreated", "candidatesExpired", "promoted", "wouldPublish", "suppressions", "suppressionsByReason", "nearbyRepeatSuppressions", "reopenedOrRecreated", "activeIncidents", "closedIncidents", "sourceHealthInterruptions"];
+          console.log("\n### Final run metrics\n");
+          console.log("| Metric | Value |\n|---|---|");
+          for (const key of keys) console.log(`| ${key} | ${JSON.stringify(row[key] ?? null)} |`);
+          NODE
+          fi
+
+          comparison_row="$(grep -F '"kind":"same_sequence_policy_comparison"' "$log" | tail -n 1 || true)"
+          if [ -n "$comparison_row" ] && command -v node >/dev/null 2>&1; then
+            COMPARISON_ROW="$comparison_row" node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          const row = JSON.parse(process.env.COMPARISON_ROW ?? "{}");
+          console.log("\n### Same-sequence A/B/C policy comparison\n");
+          console.log("| Profile | Clusters | Promoted | Would publish | Expired candidates | Suppressions | Nearby suppressions | Recreated nearby |\n|---|---:|---:|---:|---:|---:|---:|---:|");
+          for (const result of row.results ?? []) {
+            console.log(`| ${result.profile.id} | ${result.clustersObserved} | ${result.incidentsPromoted} | ${result.publishCandidatesGenerated} | ${result.candidatesExpired} | ${result.suppressions} | ${result.nearbyRepeatSuppressions} | ${result.reopenedOrRecreated} |`);
+          }
+          NODE
+          fi
+
+          if [ "$failed" = yes ]; then exit 1; fi
