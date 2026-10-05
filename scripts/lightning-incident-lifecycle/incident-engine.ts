@@ -172,8 +172,9 @@ export class IncidentLifecycleEngine {
   }
 
   private createCandidate(observation: ClusterObservation): InternalIncident {
-    const nearbyClosed = this.incidents.some(item => item.status === "closed" && item.closeReason === "quiet_period" &&
-      observation.receivedAtMs >= (item.closedAtMs ?? 0) && observation.receivedAtMs - (item.closedAtMs ?? 0) <= 30 * 60_000 &&
+    const cooldownMs = this.profile.nearbyCooldownMinutes * 60_000;
+    const nearbyClosed = cooldownMs > 0 && this.incidents.some(item => item.status === "closed" && item.closeReason === "quiet_period" &&
+      observation.receivedAtMs >= (item.closedAtMs ?? 0) && observation.receivedAtMs - (item.closedAtMs ?? 0) <= cooldownMs &&
       greatCircleDistanceKm(observation.latitude, observation.longitude, item.representativeLatitude, item.representativeLongitude)
         <= this.profile.nearbyCooldownDistanceKm);
     if (nearbyClosed) this.metrics.reopenedOrRecreated++;

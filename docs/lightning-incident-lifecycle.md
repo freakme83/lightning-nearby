@@ -69,6 +69,8 @@ The run reports clusters observed, candidates created/expired, promotions, quiet
 
 At completion, profiles A/B/C are replayed over the **same ordered activity, cluster-close, and source-health signal sequence**. This compares policy behavior on identical cluster evidence. If the in-memory signal cap was reached, the comparison is over the retained prefix and says so. Fewer publish candidates alone do not establish a better profile.
 
+The diagnostic `reopenedOrRecreated` count is profile-scoped: it counts nearby candidates only when they fall within the current profile's cooldown distance and time window. Profile A's zero-minute cooldown therefore yields no such counts. Live summaries and same-sequence comparisons use the same conventional median helper, averaging the two middle values for even-sized samples.
+
 ## Deterministic validation
 
 The offline tests cover singleton withholding, 2- and 3-event promotion, candidate expiry, active-incident continuity, repeated-activity suppression, quiet close, disconnect protection, recovery timer reset, nearby renewal, cooldown suppression and expiry, geographically separate incidents, out-of-order event timestamps, deterministic replay, directional profile comparisons, and source-health interruption accounting. Tests do not connect to the WebSocket or pretend a live connection succeeded.

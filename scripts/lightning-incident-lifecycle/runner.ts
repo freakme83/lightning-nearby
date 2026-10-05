@@ -5,6 +5,7 @@ import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeli
 import { IncidentLifecycleEngine } from "./incident-engine.ts";
 import { compareIncidentProfiles, applyTransitions } from "./experiment.ts";
 import { DryRunPublishPolicy } from "./publish-policy.ts";
+import { median } from "./stats.ts";
 import { SourceHealthTracker } from "./source-health.ts";
 import { INCIDENT_POLICY_PROFILES, type IncidentPolicyProfile, type IncidentReplaySignal, type IncidentTransition, type PublishDecision } from "./types.ts";
 
@@ -12,12 +13,6 @@ function positive(value: string | undefined, name: string): number {
   const result = Number(value);
   if (!Number.isFinite(result) || result <= 0) throw new Error(`Invalid ${name}`);
   return result;
-}
-function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 function readOptions(argv: string[]) {
   const args = new Map<string, string>();

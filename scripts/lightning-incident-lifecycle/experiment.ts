@@ -1,13 +1,8 @@
 import type { SourceHealth } from "./source-health.ts";
 import { IncidentLifecycleEngine } from "./incident-engine.ts";
 import { DryRunPublishPolicy } from "./publish-policy.ts";
+import { median } from "./stats.ts";
 import type { IncidentPolicyProfile, IncidentReplaySignal, IncidentTransition, LightningIncident, PublishDecision } from "./types.ts";
-
-function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) / 2)];
-}
 
 export type IncidentExperimentResult = {
   profile: IncidentPolicyProfile;

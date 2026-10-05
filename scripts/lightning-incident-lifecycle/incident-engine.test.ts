@@ -101,14 +101,46 @@ test("disconnect freezes closure; reconnect starts a new known-coverage quiet in
   assert.equal(engine.tick(resumedAt+p.closeAfterMinutes*minute)[0].type,"closed");
 });
 
-test("renewed nearby activity after closure is a new incident candidate", () => {
+test("Profile B counts a nearby renewal within its 20-minute window", () => {
   const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
   promotion(engine,"c-old",start,3);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
-  const transitions=engine.observe(observation("c-new",first.closedAtMs!+minute,first.closedAtMs!+minute+1000,40.01,33));
+  const transitions=engine.observe(observation("c-new",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,40.01,33));
   assert.equal(transitions.some(item=>item.type==="candidate_created"),true);
   assert.notEqual(engine.incidents[1].id,first.id);
   assert.equal(engine.snapshot().metrics.reopenedOrRecreated,1);
+});
+
+test("Profile A does not count nearby renewal when its cooldown is zero", () => {
+  const p=profile({id:"A",nearbyCooldownMinutes:0}); const engine=new IncidentLifecycleEngine(p,start); live(engine);
+  promotion(engine,"c-old",start,3);
+  const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
+  engine.observe(observation("c-new",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,40.01,33));
+  assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
+});
+
+test("Profile B does not count nearby renewal after its 20-minute window", () => {
+  const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
+  promotion(engine,"c-old",start,3);
+  const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
+  engine.observe(observation("c-new",first.closedAtMs!+20*minute+1,first.closedAtMs!+20*minute+1001,40.01,33));
+  assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
+});
+
+test("Profile C counts nearby renewal within its 30-minute window", () => {
+  const p=profile({id:"C",closeAfterMinutes:30,nearbyCooldownMinutes:30}); const engine=new IncidentLifecycleEngine(p,start); live(engine);
+  promotion(engine,"c-old",start,3);
+  const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
+  engine.observe(observation("c-new",first.closedAtMs!+25*minute,first.closedAtMs!+25*minute+1000,40.01,33));
+  assert.equal(engine.snapshot().metrics.reopenedOrRecreated,1);
+});
+
+test("a geographically distant renewal does not increment reopenedOrRecreated", () => {
+  const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
+  promotion(engine,"c-old",start,3);
+  const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
+  engine.observe(observation("c-far",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,42,33));
+  assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
 });
 
 test("nearby cooldown suppresses a new promoted incident and records its related incident", () => {
@@ -191,6 +223,20 @@ test("profile comparison reuses one signal sequence and changes promotion and cl
   assert.ok(b.incidentsClosed>=c.incidentsClosed);
   assert.equal(a.clustersObserved,b.clustersObserved);
   assert.equal(b.clustersObserved,c.clustersObserved);
+});
+
+test("same-sequence comparison uses the conventional midpoint for even promotion samples", () => {
+  const p=profile({id:"A",promotionMinEvents:2,promotionWindowMinutes:5,nearbyCooldownMinutes:0});
+  const signals: IncidentReplaySignal[]=[
+    {kind:"source_health",atMs:start,health:{state:"live",lastFrameAtMs:start}},
+    {kind:"activity",atMs:start+1_000,observation:observation("c-one",start,start+1_000,40,33)},
+    {kind:"activity",atMs:start+minute+1_000,observation:observation("c-one",start+minute,start+minute+1_000,40,33)},
+    {kind:"activity",atMs:start+2*minute+1_000,observation:observation("c-two",start+2*minute,start+2*minute+1_000,42,33)},
+    {kind:"activity",atMs:start+6*minute+1_000,observation:observation("c-two",start+6*minute,start+6*minute+1_000,42,33)},
+  ];
+  const result=runIncidentExperiment(signals,p,start+7*minute).result;
+  assert.equal(result.incidentsPromoted,2);
+  assert.equal(result.medianTimeToPromotionMinutes,2.5);
 });
 
 test("source health marks stale and does not double-count a single stale-to-disconnected outage", () => {
