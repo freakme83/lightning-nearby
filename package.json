@@ -18,7 +18,9 @@
     "research:lightning-clustering": "node --experimental-strip-types scripts/live-lightning-clustering/runner.ts",
     "test:research:lightning-clustering": "node --experimental-strip-types --test scripts/live-lightning-clustering/*.test.ts",
     "research:lightning-incidents": "node --experimental-strip-types scripts/lightning-incident-lifecycle/runner.ts",
-    "test:research:lightning-incidents": "node --experimental-strip-types --test scripts/lightning-incident-lifecycle/*.test.ts"
+    "test:research:lightning-incidents": "node --experimental-strip-types --test scripts/lightning-incident-lifecycle/*.test.ts",
+    "research:reverse-geocode": "node --experimental-strip-types scripts/lightning-location-naming/runner.ts",
+    "test:research:lightning-location-naming": "node --experimental-strip-types --test scripts/lightning-location-naming/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
