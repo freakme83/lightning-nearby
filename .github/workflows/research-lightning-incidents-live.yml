@@ -25,7 +25,7 @@ on:
         type: string
         default: "-3.85"
       durationMinutes:
-        description: Live run duration (1-20 minutes)
+        description: Live run duration (1-45 minutes)
         required: true
         type: string
         default: "15"
@@ -51,7 +51,7 @@ jobs:
   live-test:
     name: Connect and collect research metrics
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -100,7 +100,7 @@ jobs:
             if (value < min || value > max) throw new Error(`${name} must be between ${min} and ${max}`);
             return value;
           };
-          integer("DURATION_MINUTES", 1, 20);
+          integer("DURATION_MINUTES", 1, 45);
           integer("SUMMARY_EVERY_SECONDS", 5, 3600);
           if (!["A", "B", "C"].includes(process.env.INCIDENT_PROFILE ?? "")) throw new Error("INCIDENT_PROFILE must be A, B, or C");
           console.log("Manual inputs are valid.");
