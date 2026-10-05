@@ -4,7 +4,7 @@ This manual-only workflow tests whether a GitHub-hosted Ubuntu runner can use th
 
 ## Run manually
 
-The repository's default branch is `main`. GitHub requires the workflow file to be present on the default branch before `workflow_dispatch` can be run. This PR targets `merge-ready`, so it does not by itself make the workflow dispatchable. Once the workflow is present on `main`, open **Actions → Research Lightning Incident Live Test → Run workflow**, select `merge-ready` (or the desired branch containing the workflow), enter or retain the inputs, and start the run. The workflow is triggered only by `workflow_dispatch`; it does not run on pushes, pull requests, schedules, or other workflows.
+The workflow is present on the repository's default branch (`main`) and can be started from **Actions → Research Lightning Incident Live Test → Run workflow**. Select the branch containing the workflow version to test, choose `ankara` or `custom`, and start the manual run. The workflow is triggered only by `workflow_dispatch`; it does not run on pushes, pull requests, schedules, or other workflows.
 
 Inputs include a monitoring area (`custom` or `ankara`), north/east/south/west coordinates, duration, summary interval, and incident profile A/B/C. Coordinates are used only for `area=custom`; the `ankara` option selects the research operational polygon and its derived subscription box. The default area remains `custom`, with the previously documented Spain research box; prior activity there does not mean it is active during a later run. Duration validation allows 1–45 minutes (default 15). The job uses `ubuntu-latest`, Node 22, and a bounded 55-minute timeout. Summary metrics distinguish the subscription bounding box from the strict local monitoring polygon.
 

@@ -190,6 +190,8 @@ jobs:
           first_frame=no
           final_summary=no
           policy_comparison=no
+          coordinate_input="$NORTH, $EAST, $SOUTH, $WEST"
+          if [ "$AREA" != custom ]; then coordinate_input="not used (area=$AREA)"; fi
           if [ -f "$log" ]; then
             grep -Fq '"kind":"connected"' "$log" && connected=yes || true
             grep -Fq '"kind":"source_health"' "$log" && grep -Fq '"to":"live"' "$log" && first_frame=yes || true
@@ -201,7 +203,7 @@ jobs:
             echo
             echo "| Check | Result |"
             echo "|---|---|"
-            echo "| Inputs (N/E/S/W) | $NORTH, $EAST, $SOUTH, $WEST |"
+            echo "| Coordinate inputs | $coordinate_input |"
             echo "| Monitoring area | $AREA |"
             echo "| Duration / summary interval | $DURATION_MINUTES min / $SUMMARY_EVERY_SECONDS sec |"
             echo "| Incident profile | $INCIDENT_PROFILE |"
