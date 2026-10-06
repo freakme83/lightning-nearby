@@ -468,9 +468,20 @@ test("real lifecycle suppresses a duplicate publish while paired validation reac
     eventTimeMs: time - 30_000,
   });
   assert.equal(artifact?.status === "paired_result" && artifact.triggerMode, "reactivated_after_stale_publish");
-  assert.equal(artifact?.status === "paired_result" && artifact.reactivation.originalStaleAgeMs,
-    time - promotedIncident.lastActivityTimeMs);
-  assert.equal(artifact?.status === "paired_result" && artifact.reactivation.reactivationAgeMs, 30_000);
+  assert.equal(artifact?.status, "paired_result");
+
+  if (
+    artifact?.status !== "paired_result" ||
+    artifact.triggerMode !== "reactivated_after_stale_publish"
+  ) {
+    assert.fail("expected reactivated paired result");
+  }
+
+  assert.equal(
+    artifact.reactivation.originalStaleAgeMs,
+    time - promotedIncident.lastActivityTimeMs,
+  );
+  assert.equal(artifact.reactivation.reactivationAgeMs, 30_000);
   assert.equal(artifact?.status === "paired_result" && artifact.incident.latitude,
     updatedIncident?.type === "activity" ? updatedIncident.incident.representativeLatitude : NaN);
   assert.equal(artifact?.status === "paired_result" && artifact.incident.longitude,
