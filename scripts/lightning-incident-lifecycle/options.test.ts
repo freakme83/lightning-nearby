@@ -20,3 +20,11 @@ test("--box retains arbitrary custom research boxes", () => {
 test("--area and --box together fail with an ambiguity error", () => {
   assert.throws(() => readIncidentRunnerOptions(["--area=ankara", "--box=40,-2,38,-4"]), /cannot be supplied together/);
 });
+
+
+test("paired-validation output path is opt-in and must be non-empty", () => {
+  assert.equal(readIncidentRunnerOptions(["--box=40.05,-2.05,38.55,-3.85"]).pairedValidationOutput, undefined);
+  assert.equal(readIncidentRunnerOptions(["--paired-validation-output=artifacts/paired.json"]).pairedValidationOutput,
+    "artifacts/paired.json");
+  assert.throws(() => readIncidentRunnerOptions(["--paired-validation-output="]), /non-empty path/);
+});

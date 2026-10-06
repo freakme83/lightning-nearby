@@ -1,0 +1,181 @@
+name: Research Lightning CG Paired Validation
+run-name: Lightning CG paired validation (${{ inputs.area }} / profile ${{ inputs.incidentProfile }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      north:
+        description: North latitude (used when area is custom)
+        required: true
+        type: string
+        default: "40.05"
+      east:
+        description: East longitude (used when area is custom)
+        required: true
+        type: string
+        default: "-2.05"
+      south:
+        description: South latitude (used when area is custom)
+        required: true
+        type: string
+        default: "38.55"
+      west:
+        description: West longitude (used when area is custom)
+        required: true
+        type: string
+        default: "-3.85"
+      area:
+        description: Custom bounding box or optional Ankara operational area
+        required: true
+        type: choice
+        options:
+          - custom
+          - ankara
+        default: custom
+      durationMinutes:
+        description: Live duration (5–20 minutes; stops earlier after first WOULD_PUBLISH)
+        required: true
+        type: string
+        default: "10"
+      incidentProfile:
+        description: Existing research lifecycle profile
+        required: true
+        type: choice
+        options:
+          - A
+          - B
+          - C
+        default: B
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightning-cg-paired-validation
+  cancel-in-progress: false
+
+jobs:
+  paired-validation:
+    name: Capture one incident and one Xweather enrichment
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate manual inputs
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+        run: |
+          node --input-type=module <<'NODE'
+          const number = name => {
+            const raw = process.env[name] ?? "";
+            if (!/^-?\d+(?:\.\d+)?$/.test(raw)) throw new Error(`${name} must be a decimal number`);
+            const value = Number(raw);
+            if (!Number.isFinite(value)) throw new Error(`${name} must be finite`);
+            return value;
+          };
+          if (!["custom", "ankara"].includes(process.env.AREA ?? "")) throw new Error("AREA must be custom or ankara");
+          if (process.env.AREA === "custom") {
+            const north = number("NORTH"), east = number("EAST"), south = number("SOUTH"), west = number("WEST");
+            if (north > 90 || north <= south || south < -90) throw new Error("Require 90 >= north > south >= -90");
+            if (east > 180 || east <= west || west < -180) throw new Error("Require 180 >= east > west >= -180");
+          }
+          const duration = Number(process.env.DURATION_MINUTES);
+          if (!/^\d+$/.test(process.env.DURATION_MINUTES ?? "") || duration < 5 || duration > 20) {
+            throw new Error("DURATION_MINUTES must be an integer from 5 through 20");
+          }
+          if (!["A", "B", "C"].includes(process.env.INCIDENT_PROFILE ?? "")) throw new Error("Invalid lifecycle profile");
+          console.log("Paired-validation inputs are valid.");
+          NODE
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          : > artifacts/lightning-cg-paired-live-run.jsonl
+
+      - name: Run existing live incident pipeline with one-shot pairing
+        id: live_run
+        continue-on-error: true
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+          XWEATHER_CLIENT_ID: ${{ secrets.XWEATHER_CLIENT_ID }}
+          XWEATHER_CLIENT_SECRET: ${{ secrets.XWEATHER_CLIENT_SECRET }}
+        run: |
+          set +e
+          run_args=(--duration="$DURATION_MINUTES" --summary-every=60 --format=jsonl)
+          if [ "$AREA" = ankara ]; then
+            run_args+=(--area=ankara)
+          else
+            run_args+=(--box="$NORTH,$EAST,$SOUTH,$WEST")
+          fi
+          npm run research:lightning-incidents -- "${run_args[@]}" \
+            --incident-profile="$INCIDENT_PROFILE" \
+            --paired-validation-output=artifacts/lightning-cg-paired-result.json \
+            2>&1 | tee artifacts/lightning-cg-paired-live-run.jsonl
+          command_status=${PIPESTATUS[0]}
+          echo "exit_code=$command_status" >> "$GITHUB_OUTPUT"
+          exit "$command_status"
+
+      - name: Upload paired result and feed diagnostics
+        id: upload_artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-cg-paired-validation-${{ github.run_id }}
+          path: |
+            artifacts/lightning-cg-paired-result.json
+            artifacts/lightning-cg-paired-live-run.jsonl
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Summarize paired result
+        if: always()
+        env:
+          LIVE_EXIT_CODE: ${{ steps.live_run.outputs.exit_code || 'not-started' }}
+          LIVE_RUN_OUTCOME: ${{ steps.live_run.outcome }}
+        run: |
+          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { readFileSync, existsSync } from "node:fs";
+          const path = "artifacts/lightning-cg-paired-result.json";
+          console.log("## Research Lightning CG Paired Validation\n");
+          console.log(`Live runner: ${process.env.LIVE_RUN_OUTCOME ?? "unknown"}; exit code: ${process.env.LIVE_EXIT_CODE ?? "unknown"}.\n`);
+          if (!existsSync(path)) {
+            console.log("No paired artifact was written. Inspect the live-run JSONL artifact for runner/setup errors.");
+            process.exit(0);
+          }
+          const result = JSON.parse(readFileSync(path, "utf8"));
+          console.log(`Result status: **${result.status}**\n`);
+          if (result.status === "no_publish_candidate") {
+            console.log(`No Xweather call was made. Profile ${result.profile.id}; duration ${result.durationSeconds}s; source health ${result.sourceHealth}.`);
+            process.exit(0);
+          }
+          const incident = result.incident;
+          const enrichment = result.enrichment;
+          console.log(`Incident: ${incident.incidentId}; ${incident.latitude}, ${incident.longitude}; reference ${new Date(incident.eventTimeMs).toISOString()}.`);
+          console.log(`Xweather: ${enrichment.status}; selected ${enrichment.match?.type ?? "none"}; distance ${enrichment.match?.distanceKm ?? "—"} km; time delta ${enrichment.match?.timeDifferenceMs ?? "—"} ms.`);
+          console.log(`Counts: returned ${enrichment.counts?.returned ?? "—"}, matched ${enrichment.counts?.matched ?? "—"}, CG ${enrichment.counts?.matchedCg ?? "—"}, IC ${enrichment.counts?.matchedIc ?? "—"}.`);
+          console.log(`Cost tokens: ${enrichment.cost?.tokens ?? "not reported"}; provider request attempted: ${result.guardrail.providerRequestAttempted}.`);
+          console.log("\nThis is observational paired evidence, not proof of exact physical-flash identity or a PASS/FAIL score.");
+          NODE
