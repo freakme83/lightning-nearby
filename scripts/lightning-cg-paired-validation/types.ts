@@ -10,6 +10,15 @@ export type IncidentPairSnapshot = EnrichmentReference & {
   clusterCount: number;
 };
 
+export type TriggerFreshnessDiagnostics = {
+  incidentAgeMs?: number;
+  maxIncidentAgeMs: number;
+  stalePublishCount: number;
+  freshestSkippedIncidentAgeMs: number | null;
+  futureDatedPublishCount: number;
+  invalidTimestampPublishCount: number;
+};
+
 export type PairedRunContext = {
   profile: Pick<IncidentPolicyProfile, "id" | "name">;
   areaSelection: string;
@@ -20,6 +29,19 @@ export type PairedRunContext = {
   wouldPublishCount: number;
 };
 
+type NoPairArtifactFields = {
+  profile: Pick<IncidentPolicyProfile, "id" | "name">;
+  areaSelection: string;
+  bounds: Box;
+  startedAtMs: number;
+  endedAtMs: number;
+  durationSeconds: number;
+  sourceHealth: string;
+  wouldPublishCount: number;
+  triggerFreshness: TriggerFreshnessDiagnostics;
+  guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 0; providerRequestAttempted: false };
+};
+
 export type PairedValidationArtifact =
   | {
       status: "paired_result";
@@ -27,21 +49,12 @@ export type PairedValidationArtifact =
       profile: Pick<IncidentPolicyProfile, "id" | "name">;
       incident: IncidentPairSnapshot;
       enrichment: EnrichmentResult;
+      triggerFreshness: TriggerFreshnessDiagnostics & { incidentAgeMs: number };
       guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 1; providerRequestAttempted: boolean };
       capturedAt: string;
     }
-  | {
-      status: "no_publish_candidate";
-      profile: Pick<IncidentPolicyProfile, "id" | "name">;
-      areaSelection: string;
-      bounds: Box;
-      startedAtMs: number;
-      endedAtMs: number;
-      durationSeconds: number;
-      sourceHealth: string;
-      wouldPublishCount: number;
-      guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 0; providerRequestAttempted: false };
-    };
+  | (NoPairArtifactFields & { status: "no_publish_candidate" })
+  | (NoPairArtifactFields & { status: "no_fresh_publish_candidate" });
 
 export type PairedEnrichmentFunction = (reference: EnrichmentReference) => Promise<EnrichmentResult>;
 export type ArtifactWriter = (artifact: PairedValidationArtifact) => Promise<void>;

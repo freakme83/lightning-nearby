@@ -7,7 +7,7 @@ import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
 import { enrichIncidentWithLightningType } from "../lightning-cg-enrichment/xweather.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import type { LightningIncident, PublishDecision } from "../lightning-incident-lifecycle/types.ts";
-import { PairedValidationController } from "./controller.ts";
+import { MAX_PAIRING_INCIDENT_AGE_MS, PairedValidationController } from "./controller.ts";
 import type { PairedValidationArtifact, PairedRunContext } from "./types.ts";
 
 const time = Date.parse("2026-10-06T12:21:30Z");
@@ -32,9 +32,15 @@ function result(status: EnrichmentResult["status"], match?: EnrichmentResult["ma
     ...(status === "provider_unavailable" ? { failure: "network_error" as const } : {}),
     cost: { tokens: 10, multipliers: "endpoint=10; spatial=1; temporal=1" } };
 }
-function harness(enrich: (reference: EnrichmentReference) => Promise<EnrichmentResult>) {
+function harness(enrich: (reference: EnrichmentReference) => Promise<EnrichmentResult>, options: {
+  nowMs?: () => number; onEnrichmentStarted?: () => void;
+  onStaleTriggerSkipped?: (diagnostic: { incidentId: string; incidentAgeMs: number | null;
+    maxIncidentAgeMs: number; skipReason: "incident_too_old" | "future_dated_incident" | "invalid_event_time" }) => void;
+} = {}) {
   const artifacts: PairedValidationArtifact[] = [];
-  const controller = new PairedValidationController({ enrich, writeArtifact: async artifact => { artifacts.push(artifact); }, now: () => "captured" });
+  const controller = new PairedValidationController({ enrich, writeArtifact: async artifact => { artifacts.push(artifact); },
+    now: () => "captured", nowMs: options.nowMs ?? (() => time),
+    onEnrichmentStarted: options.onEnrichmentStarted, onStaleTriggerSkipped: options.onStaleTriggerSkipped });
   return { controller, artifacts };
 }
 
@@ -155,7 +161,7 @@ test("controller stops observing after the first enrichment attempt", async () =
   let stopCalls = 0;
   let writes = 0;
   const controller = new PairedValidationController({ enrich: async () => { calls++; return result("no_match"); },
-    writeArtifact: async () => { writes++; }, onEnrichmentStarted: () => { stopCalls++; } });
+    writeArtifact: async () => { writes++; }, nowMs: () => time, onEnrichmentStarted: () => { stopCalls++; } });
   controller.observeDecision(wouldPublish, incident, profile);
   await controller.waitForCompletion();
   await controller.writeNoCandidate(context);
@@ -207,4 +213,113 @@ test("candidate enrichment is observational and reports the configured threshold
   const artifact = await h.controller.waitForCompletion();
   assert.equal(artifact?.status === "paired_result" && artifact.enrichment.thresholds.maxMatchDistanceKm, 8);
   assert.equal(artifact?.status === "paired_result" && artifact.trigger, "first_would_publish");
+});
+
+
+test("fresh WOULD_PUBLISH at the exact age threshold is eligible", async () => {
+  let calls = 0;
+  const now = time + MAX_PAIRING_INCIDENT_AGE_MS;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => now });
+  assert.equal(h.controller.observeDecision(wouldPublish, incident, profile), true);
+  assert.equal(h.controller.enrichmentClaimed, true);
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(artifact?.status, "paired_result");
+  if (artifact?.status === "paired_result") {
+    assert.equal(artifact.triggerFreshness.incidentAgeMs, MAX_PAIRING_INCIDENT_AGE_MS);
+    assert.equal(artifact.triggerFreshness.maxIncidentAgeMs, MAX_PAIRING_INCIDENT_AGE_MS);
+  }
+});
+
+test("stale WOULD_PUBLISH is skipped, leaves the latch available, and keeps listening", async () => {
+  let calls = 0;
+  let stopCalls = 0;
+  const diagnostics: unknown[] = [];
+  const h = harness(async () => { calls++; return result("no_match"); }, {
+    nowMs: () => time + MAX_PAIRING_INCIDENT_AGE_MS + 1,
+    onEnrichmentStarted: () => { stopCalls++; },
+    onStaleTriggerSkipped: diagnostic => diagnostics.push(diagnostic),
+  });
+  assert.equal(h.controller.observeDecision(wouldPublish, incident, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+  assert.equal(calls, 0);
+  assert.equal(stopCalls, 0);
+  assert.deepEqual(diagnostics, [{ incidentId: incident.id, incidentAgeMs: MAX_PAIRING_INCIDENT_AGE_MS + 1,
+    maxIncidentAgeMs: MAX_PAIRING_INCIDENT_AGE_MS, skipReason: "incident_too_old" }]);
+});
+
+test("stale followed by fresh WOULD_PUBLISH triggers only the fresh incident once", async () => {
+  let calls = 0;
+  const h = harness(async reference => { calls++; assert.equal(reference.eventTimeMs, time - 30_000); return result("cg_verified"); },
+    { nowMs: () => time });
+  const stale = { ...incident, id: "i-stale", lastActivityTimeMs: time - MAX_PAIRING_INCIDENT_AGE_MS - 1 };
+  assert.equal(h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+  const fresh = { ...incident, id: "i-fresh", lastActivityTimeMs: time - 30_000 };
+  assert.equal(h.controller.observeDecision({ ...wouldPublish, incidentId: fresh.id }, fresh, profile), true);
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(artifact?.status, "paired_result");
+  if (artifact?.status === "paired_result") {
+    assert.equal(artifact.incident.incidentId, "i-fresh");
+    assert.equal(artifact.triggerFreshness.stalePublishCount, 1);
+    assert.equal(artifact.triggerFreshness.incidentAgeMs, 30_000);
+  }
+});
+
+test("multiple stale publish candidates use no Xweather calls and write no_fresh_publish_candidate", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  for (const [id, age] of [["i-old-1", 5 * 60_000], ["i-old-2", 10 * 60_000]] as const) {
+    const old = { ...incident, id, lastActivityTimeMs: time - age };
+    assert.equal(h.controller.observeDecision({ ...wouldPublish, incidentId: id }, old, profile), false);
+    assert.equal(h.controller.enrichmentClaimed, false);
+  }
+  const artifact = await h.controller.writeNoCandidate({ ...context, wouldPublishCount: 2 });
+  assert.equal(calls, 0);
+  assert.equal(artifact?.status, "no_fresh_publish_candidate");
+  if (artifact?.status === "no_fresh_publish_candidate") {
+    assert.equal(artifact.triggerFreshness.stalePublishCount, 2);
+    assert.equal(artifact.triggerFreshness.freshestSkippedIncidentAgeMs, 5 * 60_000);
+    assert.equal(artifact.triggerFreshness.maxIncidentAgeMs, MAX_PAIRING_INCIDENT_AGE_MS);
+    assert.equal(artifact.guardrail.enrichmentCalls, 0);
+    assert.equal(artifact.guardrail.providerRequestAttempted, false);
+  }
+});
+
+test("an incident older than the freshness threshold by one millisecond is skipped", () => {
+  const h = harness(async () => result("no_match"), { nowMs: () => time + MAX_PAIRING_INCIDENT_AGE_MS + 1 });
+  assert.equal(h.controller.observeDecision(wouldPublish, incident, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+});
+
+test("future-dated incident timestamps are conservatively skipped without crashing", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const future = { ...incident, lastActivityTimeMs: time + 1 };
+  assert.equal(h.controller.observeDecision(wouldPublish, future, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+  const artifact = await h.controller.writeNoCandidate({ ...context, wouldPublishCount: 1 });
+  assert.equal(calls, 0);
+  assert.equal(artifact?.status, "no_fresh_publish_candidate");
+  if (artifact?.status === "no_fresh_publish_candidate") {
+    assert.equal(artifact.triggerFreshness.futureDatedPublishCount, 1);
+    assert.equal(artifact.guardrail.providerRequestAttempted, false);
+  }
+});
+
+test("fresh candidate claims the one-call latch synchronously before enrichment settles", async () => {
+  let resolveEnrichment!: (value: EnrichmentResult) => void;
+  let calls = 0;
+  const h = harness(() => {
+    calls++;
+    return new Promise(resolve => { resolveEnrichment = resolve; });
+  }, { nowMs: () => time });
+  assert.equal(h.controller.observeDecision(wouldPublish, incident, profile), true);
+  assert.equal(h.controller.enrichmentClaimed, true);
+  assert.equal(calls, 1);
+  assert.equal(h.controller.observeDecision(wouldPublish, incident, profile), false);
+  resolveEnrichment(result("no_match"));
+  await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
 });
