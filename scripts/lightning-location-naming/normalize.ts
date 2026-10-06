@@ -5,17 +5,54 @@ export function validateCoordinates(latitude: number, longitude: number): void {
   if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) throw new RangeError("longitude must be finite and between -180 and 180");
 }
 
-function field(address: Record<string, unknown>, ...keys: string[]): string | undefined {
+type AddressComponent = { key: string; value: string };
+
+const SMALL_PLACE_FIELDS = ["quarter", "neighbourhood", "neighborhood", "suburb", "village", "hamlet", "city_district"] as const;
+const ADMIN_SUFFIX = /\s+(?:Mahallesi|İlçesi|İli)$/iu;
+
+function cleanAdministrativeSuffix(value: string | undefined): string | undefined {
+  const clean = value?.trim().replace(ADMIN_SUFFIX, "").trim();
+  return clean || undefined;
+}
+
+function component(address: Record<string, unknown>, ...keys: string[]): AddressComponent | undefined {
   for (const key of keys) {
     const value = address[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "string") {
+      const clean = cleanAdministrativeSuffix(value);
+      if (clean) return { key, value: clean };
+    }
   }
   return undefined;
 }
 
-function trimSuffix(value: string | undefined, suffix: RegExp): string | undefined {
-  const clean = value?.trim().replace(suffix, "").trim();
-  return clean || undefined;
+function comparisonKey(value: string): string {
+  return value.normalize("NFC").trim().toLocaleLowerCase("tr-TR");
+}
+
+function samePlace(left?: string, right?: string): boolean {
+  return Boolean(left && right && comparisonKey(left) === comparisonKey(right));
+}
+
+export function isAnkaraProvince(province?: string): boolean {
+  const normalizedProvince = cleanAdministrativeSuffix(province);
+  return Boolean(normalizedProvince && samePlace(normalizedProvince, "Ankara"));
+}
+
+function smallPlaceComponent(address: Record<string, unknown>): AddressComponent | undefined {
+  return component(address, ...SMALL_PLACE_FIELDS);
+}
+
+function localityComponent(address: Record<string, unknown>): AddressComponent | undefined {
+  return component(address, "town", "village", "hamlet", "city", "municipality");
+}
+
+function districtComponent(address: Record<string, unknown>): AddressComponent | undefined {
+  for (const key of ["county", "district", "state_district", "city_district"]) {
+    const candidate = component(address, key);
+    if (candidate) return candidate;
+  }
+  return undefined;
 }
 
 export function normalizeNominatimAddress(payload: unknown): NormalizedPlace {
@@ -23,23 +60,22 @@ export function normalizeNominatimAddress(payload: unknown): NormalizedPlace {
   const row = payload as NominatimPayload;
   if (!row.address || typeof row.address !== "object" || Array.isArray(row.address)) throw new TypeError("Nominatim response has no structured address object");
   const address = row.address;
-  const neighborhood = trimSuffix(field(address, "neighbourhood", "neighborhood", "quarter", "suburb"), /\s+Mahallesi$/iu);
-  const localityRaw = field(address, "town", "village", "hamlet", "city", "municipality");
+  const smallPlace = smallPlaceComponent(address);
+  const localityComponentValue = localityComponent(address);
+  const localityRaw = localityComponentValue?.value;
   let localityKind: LocalityKind | undefined;
-  if (typeof localityRaw === "string" && address.town === localityRaw) localityKind = "town";
-  else if (typeof localityRaw === "string" && address.village === localityRaw) localityKind = "village";
-  else if (typeof localityRaw === "string" && address.hamlet === localityRaw) localityKind = "hamlet";
-  else if (typeof localityRaw === "string" && address.city === localityRaw) localityKind = "city";
-  else if (typeof localityRaw === "string" && address.municipality === localityRaw) localityKind = "municipality";
-  // Keep Köyü because it can be a meaningful public-facing locality suffix.
-  const locality = localityRaw;
-  const district = trimSuffix(field(address, "county", "district", "state_district", "city_district"), /\s+İlçesi$/iu);
-  const province = trimSuffix(field(address, "province", "state", "region"), /\s+İli$/iu);
-  const country = field(address, "country");
+  if (localityComponentValue?.key === "town") localityKind = "town";
+  else if (localityComponentValue?.key === "village") localityKind = "village";
+  else if (localityComponentValue?.key === "hamlet") localityKind = "hamlet";
+  else if (localityComponentValue?.key === "city") localityKind = "city";
+  else if (localityComponentValue?.key === "municipality") localityKind = "municipality";
+  const district = districtComponent(address)?.value;
+  const province = component(address, "province", "state", "region")?.value;
+  const country = component(address, "country")?.value;
   const rawType = typeof row.addresstype === "string" ? row.addresstype : typeof row.type === "string" ? row.type : undefined;
   return {
-    ...(neighborhood ? { neighborhood } : {}),
-    ...(locality ? { locality } : {}),
+    ...(smallPlace ? { neighborhood: smallPlace.value } : {}),
+    ...(localityRaw ? { locality: localityRaw } : {}),
     ...(localityKind ? { localityKind } : {}),
     ...(district ? { district } : {}),
     ...(province ? { province } : {}),
@@ -60,35 +96,34 @@ export function extractProviderAddressHierarchy(payload: unknown): ProviderAddre
   })) as ProviderAddressHierarchy;
 }
 
+function districtLikeParent(place: NormalizedPlace, province?: string, child?: string): string | undefined {
+  const candidates = [
+    place.localityKind === "town" ? cleanAdministrativeSuffix(place.locality) : undefined,
+    cleanAdministrativeSuffix(place.district),
+  ];
+  return candidates.find((candidate): candidate is string => Boolean(candidate && !samePlace(candidate, province) && !samePlace(candidate, child)));
+}
+
 /**
- * Prefer a human-meaningful locality. Address-level streets and provider display_name
- * are deliberately ignored. Domestic labels omit country and collapse duplicate levels.
+ * Ankara labels retain the smallest useful local place; outside Ankara, labels
+ * use a district-like parent and province to orient readers to this Ankara-focused bot.
  */
 export function makeDisplayLabel(place: NormalizedPlace): string | null {
-  const neighborhood = trimSuffix(place.neighborhood, /\s+Mahallesi$/iu);
-  const locality = place.locality?.trim();
-  const district = trimSuffix(place.district, /\s+İlçesi$/iu);
-  const province = trimSuffix(place.province, /\s+İli$/iu);
-  const differs = (left?: string, right?: string) => left && right && left.normalize("NFC").toLocaleLowerCase("tr-TR") !== right.normalize("NFC").toLocaleLowerCase("tr-TR");
+  const smallPlace = cleanAdministrativeSuffix(place.neighborhood);
+  const locality = cleanAdministrativeSuffix(place.locality);
+  const district = cleanAdministrativeSuffix(place.district);
+  const province = cleanAdministrativeSuffix(place.province);
+  const normalizedPlace = { ...place, locality, district };
+  const parent = districtLikeParent(normalizedPlace, province, isAnkaraProvince(province) ? smallPlace : undefined);
 
-  if (neighborhood) {
-    if (district && differs(neighborhood, district)) return `${neighborhood}, ${district}`;
-    if (locality && differs(neighborhood, locality)) return `${neighborhood}, ${locality}`;
-    return neighborhood;
+  if (isAnkaraProvince(province)) {
+    if (smallPlace) return parent ? `${smallPlace}, ${parent}` : smallPlace;
+    if (parent) return province && !samePlace(parent, province) ? `${parent}, ${province}` : parent;
+    return province ?? locality ?? null;
   }
 
-  if (locality) {
-    if (place.localityKind === "village" || place.localityKind === "hamlet") {
-      const parent = [district, province].find((value) => differs(value, locality));
-      return parent ? `${locality}, ${parent}` : locality;
-    }
-    if (province && differs(locality, province)) return `${locality}, ${province}`;
-    if (district && differs(locality, district)) return `${locality}, ${district}`;
-    return locality;
-  }
-
-  if (district && differs(district, province)) return `${district}, ${province}`;
-  return district ?? province ?? null;
+  if (parent && province && !samePlace(parent, province)) return `${parent}, ${province}`;
+  return parent ?? province ?? locality ?? null;
 }
 
 export function normalizeAndLabel(payload: unknown): NormalizedPlace & { displayLabel: string | null } {

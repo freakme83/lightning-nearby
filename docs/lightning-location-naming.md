@@ -37,36 +37,34 @@ type ReverseGeocodeResult = {
 };
 ```
 
-Nominatim address components are mapped separately: `neighbourhood`/`neighborhood`, `quarter`, or `suburb` to neighborhood; `town`, `village`, `hamlet`, `city`, or `municipality` to locality; `county`, `district`, `state_district`, or `city_district` to district; `province`, `state`, or `region` to province. Field availability and meanings vary by place and OSM tagging. Provider `display_name`, road, house number, postcode, and country are not used to compose domestic labels.
+Nominatim address components are mapped separately: `quarter`, `neighbourhood`/`neighborhood`, `suburb`, `village`, `hamlet`, and `city_district` can supply a small-place candidate; `town`, `village`, `hamlet`, `city`, or `municipality` can supply a locality; and `county`, `district`, `state_district`, or `city_district` can supply a district-like parent. `city_district` can serve either semantic role depending on the label policy; duplicate child/parent names are collapsed. `province`, `state`, or `region` supplies the normalized province. Field availability and meanings vary by place and OSM tagging. Provider `display_name`, road, house number, postcode, and country are not used to compose domestic labels.
 
 The adapter validates coordinates, requests JSON with structured address details and Turkish language, identifies itself with a project User-Agent, applies an 8-second timeout, and distinguishes timeout/network/HTTP/malformed-response errors. An address with no usable place hierarchy returns `displayLabel: null`; no Ankara fallback is invented. Tests inject fetch responses and do not access the network. No raw response or event coordinate dataset is persisted.
 
 ## Label policy
 
-The policy aims for the smallest **reliable, human-meaningful** area, not the smallest field returned:
+Labels are Ankara-centered because the bot focuses on Ankara while its operational monitoring polygon also reaches nearby provinces. Ankara detection uses only the normalized provider province; neither coordinates nor polygon membership can make a place Ankara.
 
-- Urban neighborhood + district: `Ayrancı, Çankaya`, `Bahçelievler, Çankaya`, `Eryaman, Etimesgut`.
-- Meaningful town + province: `Polatlı, Ankara`, `Keskin, Kırıkkale`; identical locality/province collapses to `Kırıkkale`.
-- Village/hamlet: preserve its human-readable name (including `Köyü` when supplied), followed by a distinct district when available, otherwise province.
-- Without a neighborhood/locality, use district + province, or province alone. Missing hierarchy produces no label.
-- Duplicate adjacent hierarchy names are collapsed; country is kept in structured data but omitted from domestic display labels.
-- `Mahallesi` is stripped only from a neighborhood field; `İlçesi` and `İli` are stripped only from their respective admin fields. Other suffixes are preserved. This is intentionally conservative and Turkish-specific.
+For Ankara, keep the smallest reliable human-meaningful local place and add a useful parent (prefer a distinct `town`, then a district-like field). Candidate small-place fields are checked in this order: `quarter`, `neighbourhood`/`neighborhood`, `suburb`, `village`, `hamlet`, and `city_district`. This preserves a specific quarter such as Aşağı Ayrancı over a broader suburb. If no small place is returned, use parent + province when available, otherwise the province.
 
-Illustrative fixture mappings (not provider observations):
+Outside Ankara, omit neighborhood, village, quarter, and other small-place detail by default. Use a district-like parent + province, or province alone if no parent is available. This gives readers useful regional context for nearby provinces without presenting unfamiliar hyper-local names.
 
-| Structured components | Label |
+Only trailing administrative suffixes `Mahallesi`, `İlçesi`, and `İli` are removed from display components. Meaningful name parts such as `Aşağı`, `Yukarı`, `Eski`, and `Yeni` are preserved. Turkish locale-aware comparisons collapse duplicate hierarchy names. Country, streets, house numbers, postcodes, and provider `display_name` are not included in labels.
+
+| Real hosted Nominatim observation | Normalized label |
 |---|---|
-| neighborhood Ayrancı; district Çankaya; province Ankara | `Ayrancı, Çankaya` |
-| neighborhood Batıkent; district Yenimahalle; province Ankara | `Batıkent, Yenimahalle` |
-| town Polatlı; district Polatlı; province Ankara | `Polatlı, Ankara` |
-| village Aşağıörükbağ Köyü; district Bala; province Ankara | `Aşağıörükbağ Köyü, Bala` |
-| locality Ankara; province Ankara | `Ankara` |
+| quarter Aşağı Ayrancı; suburb Ayrancı Mahallesi; town Çankaya; province Ankara | `Aşağı Ayrancı, Çankaya` |
+| city_district Beynam Mahallesi; town Balâ; province Ankara | `Beynam, Balâ` |
+| village Yenipeçenek Mahallesi; town Sincan; province Ankara | `Yenipeçenek, Sincan` |
+| suburb Alacaatlı Mahallesi; town Çankaya; province Ankara | `Alacaatlı, Çankaya` |
 
-The monitoring polygon only determines whether an incident is relevant. It never overrides the reverse-geocoded name: a point around Kırıkkale must not be labelled Ankara solely because it falls in the operational monitoring region.
+The first and fourth labels were already good. The Beynam and Yenipeçenek observations exposed that useful local-place fields were being lost. Outside-Ankara regressions remain `Keskin, Kırıkkale` and `Kulu, Konya`, with small-place detail omitted.
+
+The monitoring polygon only determines whether an incident is relevant. It never overrides provider-resolved geography: a point around Kırıkkale must not be labelled Ankara solely because it falls in the operational monitoring region.
 
 ## Manual samples and limitations
 
-The intended small sample set covers Ankara center, Ayrancı, another central neighborhood, Eryaman/Batıkent, Polatlı, Haymana/Bala, Şereflikoçhisar-side, Kırıkkale, Keskin, and one rural point within the operational area. On 5 October 2026 the research environment could not reach Nominatim: the direct provider URL was inaccessible through the available research fetch path, and the workspace has no outbound GitHub/provider network route. No live place result is reported or inferred from that failure. The fixture mappings above are synthetic contract tests, not real lookup evidence. Run individual CLI lookups manually from an allowed network before comparing actual Turkish hierarchy quality; keep calls serial and below the public server's rate cap.
+Hosted manual lookups have produced real Nominatim observations for Ayrancı, Beynam/Bala, Yenipeçenek/Sincan, and Alacaatlı (table above). These demonstrate both useful Ankara sub-area fields and provider variation: `quarter`, `suburb`, `city_district`, and `village` can each contain the meaningful smaller place. Live results are observations for those coordinates, not authoritative boundaries. Keep future samples small, serial, and below the public server's rate cap.
 
 ## Manual GitHub Actions live verification
 
@@ -76,7 +74,7 @@ Normalization is deterministic **after** a provider hierarchy is available:
 provider hierarchy → normalization → displayLabel
 ```
 
-But our code cannot determine which OSM object/address hierarchy Nominatim will associate with a given coordinate. Real-provider sampling is needed to assess whether neighborhood-level labels are actually useful for Ankara coordinates.
+The adapter cannot determine which OSM object/address hierarchy Nominatim will associate with a coordinate, so real-provider samples remain necessary. The hosted observations above now confirm that Ankara coordinates can return useful quarter, suburb, village, and city_district detail.
 
 The manual-only workflow is `.github/workflows/research-lightning-location-naming-live.yml` (`workflow_dispatch`; no push, pull-request, or scheduled runs). One dispatch performs one Nominatim reverse lookup. Workflow runs share a concurrency group so concurrent manual dispatches are serialized. Choose `preset` and one sample, or `custom` and enter one latitude/longitude pair. The default preset is Ayrancı. The result artifact and Actions Step Summary separate the whitelisted provider hierarchy from the normalized fields and final `displayLabel`; absent values appear as “not returned”. Success means only that a lookup returned a structured result—manual hierarchy review is still required. Provider, rate-limit, timeout, malformed-response, and unresolved outcomes are reported without substituting a place name.
 
@@ -97,7 +95,7 @@ Preset coordinates are representative points, not official centroids or administ
 
 Coordinates for Ayrancı, Bahçelievler, and Eryaman were also checked against the map records identifying those places and their administrative context. The listed references are coordinate aids only; they do not make points official centroids. Nominatim's public 1 request/second cap and fair-use restrictions still apply. The workflow has no secrets, loops over no sample list, and does not persist results beyond a seven-day Actions artifact.
 
-GitHub documents that a `workflow_dispatch` workflow must exist on the repository's default branch for a run to be triggered. Because this workflow is only in the PR branch, a hosted lookup cannot be started until it is present on the default branch. Do not merge solely to enable a lookup; retain the implementation and report the hosted validation as unavailable for this draft PR.
+The workflow is available on the default branch after PR #38 was merged. A manual dispatch can run one lookup against the selected branch; use it sparingly and review the real hierarchy alongside normalized output.
 
 Additional limitations: reverse geocoding returns the nearest suitable indexed object/hierarchy for a coordinate, not an exact event address or definitive boundary membership. Neighborhood coverage varies within Turkey; a `suburb` or `city_district` may not correspond neatly to a Turkish mahalle. Human review is needed before deciding that a granular field is meaningful. Labels should be framed as approximate place references.
 
@@ -112,6 +110,6 @@ The CLI makes one request, prints normalized components and the label (or `unres
 
 ## Research decision
 
-**GO WITH CAVEATS for message-composer research.** The schema and deterministic Turkish label policy are testable, and Nominatim exposes the component-oriented reverse API needed by the adapter. But actual Ankara neighborhood quality was not live-verified in this environment; public Nominatim is rate-limited and intended for limited use; and external/public text reuse and attribution need review. The next step is a manually run, low-volume sample on an allowed network followed by human review of urban and rural labels. No public production use is recommended by this research result.
+**GO WITH CAVEATS for message-composer research.** The schema and deterministic Ankara-centered label policy are testable, and hosted samples show that Nominatim can return useful local detail for Ankara. Public Nominatim remains rate-limited and intended for limited use; external/public text reuse and attribution need review. Continue low-volume sampling and human review before any public use. No public production use is recommended by this research result.
 
 The separate known startup burst remains a **low-frequency operational edge case to revisit before production deployment**; this work does not address it.
