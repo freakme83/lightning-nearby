@@ -37,7 +37,7 @@ type ReverseGeocodeResult = {
 };
 ```
 
-Nominatim address components are mapped separately: `neighbourhood`/`neighborhood`, `quarter`, or `suburb` to neighborhood; `town`, `village`, `hamlet`, `city`, or `municipality` to locality; `county`, `district`, `state_district`, or `city_district` to district; `province`, `state`, or `region` to province. Field availability and meanings vary by place and OSM tagging. Provider `display_name`, road, house number, postcode, and country are not used to compose domestic labels.
+Nominatim address components are mapped separately: `quarter`, `neighbourhood`/`neighborhood`, `suburb`, `village`, `hamlet`, and `city_district` can supply a small-place candidate; `town`, `village`, `hamlet`, `city`, or `municipality` can supply a locality; and `county`, `district`, `state_district`, or `city_district` can supply a district-like parent. `city_district` can serve either semantic role depending on the label policy; duplicate child/parent names are collapsed. `province`, `state`, or `region` supplies the normalized province. Field availability and meanings vary by place and OSM tagging. Provider `display_name`, road, house number, postcode, and country are not used to compose domestic labels.
 
 The adapter validates coordinates, requests JSON with structured address details and Turkish language, identifies itself with a project User-Agent, applies an 8-second timeout, and distinguishes timeout/network/HTTP/malformed-response errors. An address with no usable place hierarchy returns `displayLabel: null`; no Ankara fallback is invented. Tests inject fetch responses and do not access the network. No raw response or event coordinate dataset is persisted.
 
