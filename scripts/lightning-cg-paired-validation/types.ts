@@ -17,6 +17,18 @@ export type TriggerFreshnessDiagnostics = {
   freshestSkippedIncidentAgeMs: number | null;
   futureDatedPublishCount: number;
   invalidTimestampPublishCount: number;
+  trackedStaleIncidentCount: number;
+  staleIncidentsWithLaterActivityCount: number;
+  reactivatedIncidentCount: number;
+};
+
+export type PairedReactivationDiagnostics = {
+  incidentId: string;
+  originalStaleAgeMs: number;
+  reactivationAgeMs: number;
+  maxIncidentAgeMs: number;
+  stalePublishCount: number;
+  triggeredByLaterFreshActivity: true;
 };
 
 export type PairedRunContext = {
@@ -42,17 +54,19 @@ type NoPairArtifactFields = {
   guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 0; providerRequestAttempted: false };
 };
 
+type PairedResultFields = {
+  status: "paired_result";
+  profile: Pick<IncidentPolicyProfile, "id" | "name">;
+  incident: IncidentPairSnapshot;
+  enrichment: EnrichmentResult;
+  triggerFreshness: TriggerFreshnessDiagnostics & { incidentAgeMs: number };
+  guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 1; providerRequestAttempted: boolean };
+  capturedAt: string;
+};
+
 export type PairedValidationArtifact =
-  | {
-      status: "paired_result";
-      trigger: "first_would_publish";
-      profile: Pick<IncidentPolicyProfile, "id" | "name">;
-      incident: IncidentPairSnapshot;
-      enrichment: EnrichmentResult;
-      triggerFreshness: TriggerFreshnessDiagnostics & { incidentAgeMs: number };
-      guardrail: { maxEnrichmentCalls: 1; enrichmentCalls: 1; providerRequestAttempted: boolean };
-      capturedAt: string;
-    }
+  | (PairedResultFields & { triggerMode: "fresh_would_publish"; reactivation?: never })
+  | (PairedResultFields & { triggerMode: "reactivated_after_stale_publish"; reactivation: PairedReactivationDiagnostics })
   | (NoPairArtifactFields & { status: "no_publish_candidate" })
   | (NoPairArtifactFields & { status: "no_fresh_publish_candidate" });
 
@@ -60,5 +74,5 @@ export type PairedEnrichmentFunction = (reference: EnrichmentReference) => Promi
 export type ArtifactWriter = (artifact: PairedValidationArtifact) => Promise<void>;
 export type DecisionForPairing = Pick<PublishDecision, "action" | "incidentId">;
 export type IncidentForPairing = Pick<LightningIncident,
-  "id" | "representativeLatitude" | "representativeLongitude" | "lastActivityTimeMs" |
+  "id" | "status" | "representativeLatitude" | "representativeLongitude" | "lastActivityTimeMs" |
   "firstEventTimeMs" | "totalEvents" | "sourceClusterIds">;

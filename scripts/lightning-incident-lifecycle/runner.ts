@@ -81,6 +81,13 @@ function processTransitions(transitions: IncidentTransition[]) {
       events: transition.incident.totalEvents, reason: transition.incident.closeReason });
   }
   for (const decision of applyTransitions(transitions, publishPolicy, lifecycle)) logDecision(decision);
+  if (pairedValidation) {
+    for (const transition of transitions) {
+      if (transition.type === "activity" && pairedValidation.observeActivity(transition.incident, profile)) {
+        emit("paired_validation_reactivated", { incidentId: transition.incident.id });
+      }
+    }
+  }
 }
 function recordHealthTransition(transition: ReturnType<SourceHealthTracker["frame"]>, intentional = false) {
   if (!transition) return;
