@@ -23,7 +23,9 @@
     "test:research:lightning-location-naming": "node --experimental-strip-types --test scripts/lightning-location-naming/*.test.ts",
     "research:cg-enrichment": "node --experimental-strip-types scripts/lightning-cg-enrichment/runner.ts",
     "test:research:lightning-cg-enrichment": "node --experimental-strip-types --test scripts/lightning-cg-enrichment/*.test.ts",
-    "test:research:lightning-cg-paired-validation": "node --experimental-strip-types --test scripts/lightning-cg-paired-validation/*.test.ts"
+    "test:research:lightning-cg-paired-validation": "node --experimental-strip-types --test scripts/lightning-cg-paired-validation/*.test.ts",
+    "research:lightning-message-compose": "node --experimental-strip-types scripts/lightning-message-composer/runner.ts",
+    "test:research:lightning-message-composer": "node --experimental-strip-types --test scripts/lightning-message-composer/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
