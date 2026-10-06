@@ -182,6 +182,12 @@ jobs:
           const enrichment = result.enrichment;
           console.log(`Incident: ${incident.incidentId}; ${incident.latitude}, ${incident.longitude}; reference ${new Date(incident.eventTimeMs).toISOString()}.`);
           console.log(`Pairing freshness: incident age ${result.triggerFreshness.incidentAgeMs} ms; maximum ${result.triggerFreshness.maxIncidentAgeMs} ms; stale candidates skipped first ${result.triggerFreshness.stalePublishCount}.`);
+          if (result.triggerMode === "fresh_would_publish") {
+            console.log("Trigger mode: fresh WOULD_PUBLISH.");
+          } else {
+            const reactivation = result.reactivation;
+            console.log(`Trigger mode: reactivated stale-published incident after new fresh activity; incident ${reactivation.incidentId}; original stale age ${reactivation.originalStaleAgeMs} ms; reactivation age ${reactivation.reactivationAgeMs} ms; max allowed age ${reactivation.maxIncidentAgeMs} ms.`);
+          }
           console.log(`Xweather: ${enrichment.status}; selected ${enrichment.match?.type ?? "none"}; distance ${enrichment.match?.distanceKm ?? "—"} km; time delta ${enrichment.match?.timeDifferenceMs ?? "—"} ms.`);
           console.log(`Counts: returned ${enrichment.counts?.returned ?? "—"}, matched ${enrichment.counts?.matched ?? "—"}, CG ${enrichment.counts?.matchedCg ?? "—"}, IC ${enrichment.counts?.matchedIc ?? "—"}.`);
           console.log(`Cost tokens: ${enrichment.cost?.tokens ?? "not reported"}; provider request attempted: ${result.guardrail.providerRequestAttempted}.`);

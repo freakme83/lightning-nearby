@@ -3,12 +3,14 @@ import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import type {
   ArtifactWriter, DecisionForPairing, IncidentForPairing, IncidentPairSnapshot, PairedEnrichmentFunction,
-  PairedRunContext, PairedValidationArtifact, TriggerFreshnessDiagnostics,
+  PairedReactivationDiagnostics, PairedRunContext, PairedValidationArtifact, TriggerFreshnessDiagnostics,
 } from "./types.ts";
 
 export const MAX_PAIRING_INCIDENT_AGE_MS = 240_000;
 
 export class PairedValidationController {
+  private readonly staleSkippedCandidates = new Map<string, { originalStaleAgeMs: number; receivedLaterActivity: boolean }>();
+  private reactivatedIncidentCount = 0;
   private callClaimed = false;
   private finalized = false;
   private pending: Promise<PairedValidationArtifact> | null = null;
@@ -64,16 +66,37 @@ export class PairedValidationController {
       this.stalePublishCount++;
       this.freshestSkippedIncidentAgeMs = this.freshestSkippedIncidentAgeMs === null
         ? incidentAgeMs : Math.min(this.freshestSkippedIncidentAgeMs, incidentAgeMs);
+      if (!this.staleSkippedCandidates.has(incident.id)) {
+        this.staleSkippedCandidates.set(incident.id, { originalStaleAgeMs: incidentAgeMs, receivedLaterActivity: false });
+      }
       this.onStaleTriggerSkipped?.({ incidentId: incident.id, incidentAgeMs,
         maxIncidentAgeMs: MAX_PAIRING_INCIDENT_AGE_MS, skipReason: "incident_too_old" });
       return false;
     }
     // Freshness is checked before claiming. Claim synchronously before invoking the provider so repeated decisions cannot make a second call.
-    this.callClaimed = true;
-    const incidentSnapshot = this.snapshotIncident(incident);
-    this.pending = this.createPairedResult(incidentSnapshot, profile, this.freshnessDiagnostics(incidentAgeMs));
-    this.onEnrichmentStarted?.();
-    return true;
+    return this.beginEnrichment(incident, profile, "fresh_would_publish", incidentAgeMs);
+  }
+
+  observeActivity(incident: IncidentForPairing, profile: PairedRunContext["profile"]): boolean {
+    if (this.callClaimed || this.finalized || incident.status !== "active") return false;
+    const staleCandidate = this.staleSkippedCandidates.get(incident.id);
+    if (!staleCandidate) return false;
+    staleCandidate.receivedLaterActivity = true;
+
+    const reactivationAgeMs = this.nowMs() - incident.lastActivityTimeMs;
+    if (!Number.isFinite(reactivationAgeMs) || reactivationAgeMs < 0 ||
+        reactivationAgeMs > MAX_PAIRING_INCIDENT_AGE_MS) return false;
+
+    this.reactivatedIncidentCount++;
+    const reactivation: PairedReactivationDiagnostics = {
+      incidentId: incident.id,
+      originalStaleAgeMs: staleCandidate.originalStaleAgeMs,
+      reactivationAgeMs,
+      maxIncidentAgeMs: MAX_PAIRING_INCIDENT_AGE_MS,
+      stalePublishCount: this.stalePublishCount,
+      triggeredByLaterFreshActivity: true,
+    };
+    return this.beginEnrichment(incident, profile, "reactivated_after_stale_publish", reactivationAgeMs, reactivation);
   }
 
   async waitForCompletion(): Promise<PairedValidationArtifact | null> {
@@ -128,11 +151,29 @@ export class PairedValidationController {
       freshestSkippedIncidentAgeMs: this.freshestSkippedIncidentAgeMs,
       futureDatedPublishCount: this.futureDatedPublishCount,
       invalidTimestampPublishCount: this.invalidTimestampPublishCount,
+      trackedStaleIncidentCount: this.staleSkippedCandidates.size,
+      staleIncidentsWithLaterActivityCount: [...this.staleSkippedCandidates.values()]
+        .filter(candidate => candidate.receivedLaterActivity).length,
+      reactivatedIncidentCount: this.reactivatedIncidentCount,
     };
   }
 
+  private beginEnrichment(incident: IncidentForPairing, profile: PairedRunContext["profile"],
+    triggerMode: "fresh_would_publish" | "reactivated_after_stale_publish", incidentAgeMs: number,
+    reactivation?: PairedReactivationDiagnostics): boolean {
+    this.callClaimed = true;
+    const incidentSnapshot = this.snapshotIncident(incident);
+    this.pending = this.createPairedResult(incidentSnapshot, profile, triggerMode,
+      this.freshnessDiagnostics(incidentAgeMs), reactivation);
+    this.onEnrichmentStarted?.();
+    return true;
+  }
+
   private async createPairedResult(incident: IncidentPairSnapshot,
-    profile: PairedRunContext["profile"], triggerFreshness: TriggerFreshnessDiagnostics & { incidentAgeMs: number }): Promise<PairedValidationArtifact> {
+    profile: PairedRunContext["profile"],
+    triggerMode: "fresh_would_publish" | "reactivated_after_stale_publish",
+    triggerFreshness: TriggerFreshnessDiagnostics & { incidentAgeMs: number },
+    reactivation?: PairedReactivationDiagnostics): Promise<PairedValidationArtifact> {
     const reference: EnrichmentReference = {
       latitude: incident.latitude,
       longitude: incident.longitude,
@@ -148,20 +189,22 @@ export class PairedValidationController {
         thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error",
       };
     }
-    const artifact: PairedValidationArtifact = {
-      status: "paired_result",
-      trigger: "first_would_publish",
+    const common = {
+      status: "paired_result" as const,
       profile: { ...profile },
       incident,
       enrichment,
       triggerFreshness,
       guardrail: {
-        maxEnrichmentCalls: 1,
-        enrichmentCalls: 1,
+        maxEnrichmentCalls: 1 as const,
+        enrichmentCalls: 1 as const,
         providerRequestAttempted: enrichment.failure !== "missing_credentials",
       },
       capturedAt: this.now(),
     };
+    const artifact: PairedValidationArtifact = triggerMode === "reactivated_after_stale_publish" && reactivation
+      ? { ...common, triggerMode, reactivation }
+      : { ...common, triggerMode: "fresh_would_publish" };
     await this.writeArtifact(artifact);
     return artifact;
   }
