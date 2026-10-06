@@ -41,7 +41,8 @@ let socket: WebSocket | null = null;
 const closedClusterIds = new Set<string>();
 const pendingWaits = new Set<() => void>();
 const pairedValidation = config.pairedValidationOutput ? new PairedValidationController({
-  onEnrichmentStarted: () => stop("first_would_publish_paired_validation"),
+  onEnrichmentStarted: () => stop("first_fresh_would_publish_paired_validation"),
+  onStaleTriggerSkipped: diagnostic => emit("paired_validation_stale_trigger_skipped", diagnostic),
   writeArtifact: async artifact => {
     await writeFile(config.pairedValidationOutput!, `${JSON.stringify(artifact, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     emit("paired_validation_artifact_written", { status: artifact.status, path: config.pairedValidationOutput });

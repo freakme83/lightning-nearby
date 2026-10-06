@@ -168,12 +168,20 @@ jobs:
           const result = JSON.parse(readFileSync(path, "utf8"));
           console.log(`Result status: **${result.status}**\n`);
           if (result.status === "no_publish_candidate") {
-            console.log(`No Xweather call was made. Profile ${result.profile.id}; duration ${result.durationSeconds}s; source health ${result.sourceHealth}.`);
+            console.log(`No WOULD_PUBLISH candidate occurred. No Xweather call was made. Profile ${result.profile.id}; duration ${result.durationSeconds}s; source health ${result.sourceHealth}.`);
+            process.exit(0);
+          }
+          if (result.status === "no_fresh_publish_candidate") {
+            const freshness = result.triggerFreshness;
+            console.log("Publish candidates were observed, but all were too old or had future/invalid event times for reliable Xweather pairing. No Xweather call was made.\n");
+            console.log(`Stale candidates: ${freshness.stalePublishCount}; freshest skipped stale age: ${freshness.freshestSkippedIncidentAgeMs ?? "not available"} ms; max allowed age: ${freshness.maxIncidentAgeMs} ms.`);
+            console.log(`Future-dated candidates: ${freshness.futureDatedPublishCount}; invalid event times: ${freshness.invalidTimestampPublishCount}; provider requests: ${result.guardrail.providerRequestAttempted ? "yes" : "no"}.`);
             process.exit(0);
           }
           const incident = result.incident;
           const enrichment = result.enrichment;
           console.log(`Incident: ${incident.incidentId}; ${incident.latitude}, ${incident.longitude}; reference ${new Date(incident.eventTimeMs).toISOString()}.`);
+          console.log(`Pairing freshness: incident age ${result.triggerFreshness.incidentAgeMs} ms; maximum ${result.triggerFreshness.maxIncidentAgeMs} ms; stale candidates skipped first ${result.triggerFreshness.stalePublishCount}.`);
           console.log(`Xweather: ${enrichment.status}; selected ${enrichment.match?.type ?? "none"}; distance ${enrichment.match?.distanceKm ?? "—"} km; time delta ${enrichment.match?.timeDifferenceMs ?? "—"} ms.`);
           console.log(`Counts: returned ${enrichment.counts?.returned ?? "—"}, matched ${enrichment.counts?.matched ?? "—"}, CG ${enrichment.counts?.matchedCg ?? "—"}, IC ${enrichment.counts?.matchedIc ?? "—"}.`);
           console.log(`Cost tokens: ${enrichment.cost?.tokens ?? "not reported"}; provider request attempted: ${result.guardrail.providerRequestAttempted}.`);
