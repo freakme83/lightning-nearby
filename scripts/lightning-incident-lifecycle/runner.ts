@@ -1,4 +1,5 @@
 // Research-only incident lifecycle dry-run. No application import or real publisher.
+import { writeFile } from "node:fs/promises";
 import { backoffMs, parseFrame, subscription, type LightningEvent } from "../live-lightning-listener/core.ts";
 import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeline.ts";
 import { IncidentLifecycleEngine } from "./incident-engine.ts";
@@ -9,6 +10,7 @@ import { SourceHealthTracker } from "./source-health.ts";
 import { INCIDENT_POLICY_PROFILES, type IncidentPolicyProfile, type IncidentReplaySignal, type IncidentTransition, type PublishDecision } from "./types.ts";
 import { pointInMonitoringArea } from "./monitoring-area.ts";
 import { readIncidentRunnerOptions } from "./options.ts";
+import { PairedValidationController } from "../lightning-cg-paired-validation/controller.ts";
 
 const config = readIncidentRunnerOptions(process.argv.slice(2));
 const profile = INCIDENT_POLICY_PROFILES.find(item => item.id === config.profileId)!;
@@ -38,6 +40,13 @@ let stopping = false;
 let socket: WebSocket | null = null;
 const closedClusterIds = new Set<string>();
 const pendingWaits = new Set<() => void>();
+const pairedValidation = config.pairedValidationOutput ? new PairedValidationController({
+  onEnrichmentStarted: () => stop("first_would_publish_paired_validation"),
+  writeArtifact: async artifact => {
+    await writeFile(config.pairedValidationOutput!, `${JSON.stringify(artifact, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    emit("paired_validation_artifact_written", { status: artifact.status, path: config.pairedValidationOutput });
+  },
+}) : null;
 
 function emit(kind: string, data: Record<string, unknown> = {}) {
   const row = { kind, at: new Date().toISOString(), ...data };
@@ -51,6 +60,10 @@ function logDecision(decision: PublishDecision) {
   if (decision.action === "WOULD_PUBLISH") {
     emit("WOULD_PUBLISH", { incidentId: decision.incidentId, reason: decision.reason,
       events: lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId)?.totalEvents });
+    if (pairedValidation) {
+      const incident = lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId);
+      if (incident) pairedValidation.observeDecision(decision, incident, profile);
+    }
   } else {
     const key = `${decision.incidentId}:${decision.reason}`;
     if (loggedSuppressions.has(key)) return;
@@ -222,8 +235,20 @@ while (!stopping) {
   await wait(delay);
 }
 
+await pairedValidation?.waitForCompletion();
 const endedAtMs = Date.now();
 summary(endedAtMs, "run_summary");
 const comparisons = compareIncidentProfiles(replaySignals, INCIDENT_POLICY_PROFILES, endedAtMs);
 emit("same_sequence_policy_comparison", { replaySignals: replaySignals.length, signalsDropped,
   inputActivityEvents: replaySignals.filter(item => item.kind === "activity").length, results: comparisons });
+if (pairedValidation) {
+  await pairedValidation.writeNoCandidate({
+    profile: { id: profile.id, name: profile.name },
+    areaSelection: config.areaSelection,
+    bounds: config.box,
+    startedAtMs,
+    endedAtMs,
+    sourceHealth: sourceHealth.state.state,
+    wouldPublishCount: publishPolicy.summary().publishCandidatesGenerated,
+  });
+}

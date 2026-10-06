@@ -10,7 +10,7 @@ function positive(value: string | undefined, name: string): number {
 
 export function readIncidentRunnerOptions(argv: string[]) {
   const args = new Map<string, string>();
-  const allowed = new Set(["duration", "box", "area", "incident-profile", "summary-every", "format"]);
+  const allowed = new Set(["duration", "box", "area", "incident-profile", "summary-every", "format", "paired-validation-output"]);
   for (const arg of argv) {
     if (!arg.startsWith("--") || !arg.includes("=")) throw new Error(`Expected --name=value: ${arg}`);
     const [name, ...rest] = arg.slice(2).split("=");
@@ -38,10 +38,12 @@ export function readIncidentRunnerOptions(argv: string[]) {
   if (selected !== "A" && selected !== "B" && selected !== "C") throw new Error("--incident-profile=A|B|C");
   const format = args.get("format") ?? "human";
   if (format !== "human" && format !== "jsonl") throw new Error("--format=human|jsonl");
+  const pairedValidationOutput = args.get("paired-validation-output");
+  if (args.has("paired-validation-output") && !pairedValidationOutput) throw new Error("--paired-validation-output must be a non-empty path");
   const parameters: ClusterParameters = { ...DEFAULT_CLUSTER_PARAMETERS };
   return {
     box, monitoringArea, areaSelection: monitoringArea ? "ankara" as const : "custom" as const,
-    profileId: selected, format,
+    profileId: selected, format, pairedValidationOutput,
     durationMs: positive(args.get("duration") ?? "15", "duration") * 60_000,
     summaryMs: positive(args.get("summary-every") ?? "60", "summary-every") * 1000,
     parameters,
