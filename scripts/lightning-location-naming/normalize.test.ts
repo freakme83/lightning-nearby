@@ -58,6 +58,10 @@ test("outside Ankara falls back to province alone when no district-like parent e
   assert.equal(normalizeAndLabel(payload({ province: "Konya" })).displayLabel, "Konya");
 });
 
+test("a district-like field is also an outside-Ankara parent fallback", () => {
+  assert.equal(normalizeAndLabel(payload({ village: "Remote Mahallesi", city_district: "Keskin İlçesi", province: "Kırıkkale İli" })).displayLabel, "Keskin, Kırıkkale");
+});
+
 test("Ankara without a small place uses town plus province, or province alone", () => {
   assert.equal(normalizeAndLabel(payload({ town: "Polatlı", province: "Ankara" })).displayLabel, "Polatlı, Ankara");
   assert.equal(normalizeAndLabel(payload({ province: "Ankara" })).displayLabel, "Ankara");
@@ -72,11 +76,19 @@ test("Kırıkkale city and repeated hierarchy levels collapse", () => {
 
 test("previously good naming mappings remain stable", () => {
   assert.equal(normalizeAndLabel(payload({ city: "Ankara", province: "Ankara", country: "Türkiye" })).displayLabel, "Ankara");
+  assert.equal(normalizeAndLabel(payload({ neighbourhood: "Bahçelievler Mahallesi", county: "Çankaya İlçesi", state: "Ankara" })).displayLabel, "Bahçelievler, Çankaya");
+  assert.equal(normalizeAndLabel(payload({ suburb: "Eryaman", county: "Etimesgut", state: "Ankara" })).displayLabel, "Eryaman, Etimesgut");
+  assert.equal(normalizeAndLabel(payload({ neighbourhood: "Batıkent Mahallesi", county: "Yenimahalle", state: "Ankara" })).displayLabel, "Batıkent, Yenimahalle");
   assert.equal(normalizeAndLabel(payload({ town: "Polatlı", county: "Polatlı", province: "Ankara" })).displayLabel, "Polatlı, Ankara");
   assert.equal(normalizeAndLabel(payload({ city: "Kırıkkale", province: "Kırıkkale" })).displayLabel, "Kırıkkale");
   assert.equal(normalizeAndLabel(payload({ town: "Keskin", county: "Keskin", province: "Kırıkkale" })).displayLabel, "Keskin, Kırıkkale");
   assert.equal(normalizeAndLabel(payload({ suburb: "Alacaatlı Mahallesi", town: "Çankaya", province: "Ankara" })).displayLabel, "Alacaatlı, Çankaya");
   assert.equal(normalizeAndLabel(payload({ quarter: "Aşağı Ayrancı", suburb: "Ayrancı Mahallesi", town: "Çankaya", province: "Ankara" })).displayLabel, "Aşağı Ayrancı, Çankaya");
+});
+
+test("district-like fields provide an Ankara parent when town is absent", () => {
+  assert.equal(normalizeAndLabel(payload({ suburb: "Ayrancı Mahallesi", county: "Çankaya İlçesi", province: "Ankara İli" })).displayLabel, "Ayrancı, Çankaya");
+  assert.equal(normalizeAndLabel(payload({ county: "Polatlı", province: "Ankara" })).displayLabel, "Polatlı, Ankara");
 });
 
 test("duplicate names are collapsed with Turkish locale comparison", () => {
