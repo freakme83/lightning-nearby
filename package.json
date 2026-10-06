@@ -22,7 +22,8 @@
     "research:reverse-geocode": "node --experimental-strip-types scripts/lightning-location-naming/runner.ts",
     "test:research:lightning-location-naming": "node --experimental-strip-types --test scripts/lightning-location-naming/*.test.ts",
     "research:cg-enrichment": "node --experimental-strip-types scripts/lightning-cg-enrichment/runner.ts",
-    "test:research:lightning-cg-enrichment": "node --experimental-strip-types --test scripts/lightning-cg-enrichment/*.test.ts"
+    "test:research:lightning-cg-enrichment": "node --experimental-strip-types --test scripts/lightning-cg-enrichment/*.test.ts",
+    "test:research:lightning-cg-paired-validation": "node --experimental-strip-types --test scripts/lightning-cg-paired-validation/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
