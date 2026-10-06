@@ -106,7 +106,6 @@ jobs:
           SAMPLE: ${{ steps.resolve.outputs.sample }}
         run: |
           mkdir -p artifacts
-          set +e
           raw_stdout=/tmp/lightning-location-naming-stdout.txt
           set +e
           node --experimental-strip-types scripts/lightning-location-naming/runner.ts \
