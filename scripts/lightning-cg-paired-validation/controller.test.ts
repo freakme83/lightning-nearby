@@ -8,6 +8,10 @@ import { enrichIncidentWithLightningType } from "../lightning-cg-enrichment/xwea
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import type { LightningIncident, PublishDecision } from "../lightning-incident-lifecycle/types.ts";
 import { MAX_PAIRING_INCIDENT_AGE_MS, PairedValidationController } from "./controller.ts";
+import { IncidentLifecycleEngine } from "../lightning-incident-lifecycle/incident-engine.ts";
+import { applyTransitions } from "../lightning-incident-lifecycle/experiment.ts";
+import { DryRunPublishPolicy } from "../lightning-incident-lifecycle/publish-policy.ts";
+import { INCIDENT_POLICY_PROFILES } from "../lightning-incident-lifecycle/types.ts";
 import type { PairedValidationArtifact, PairedRunContext } from "./types.ts";
 
 const time = Date.parse("2026-10-06T12:21:30Z");
@@ -212,7 +216,7 @@ test("candidate enrichment is observational and reports the configured threshold
   h.controller.observeDecision(wouldPublish, incident, profile);
   const artifact = await h.controller.waitForCompletion();
   assert.equal(artifact?.status === "paired_result" && artifact.enrichment.thresholds.maxMatchDistanceKm, 8);
-  assert.equal(artifact?.status === "paired_result" && artifact.trigger, "first_would_publish");
+  assert.equal(artifact?.status === "paired_result" && artifact.triggerMode, "fresh_would_publish");
 });
 
 
@@ -322,4 +326,169 @@ test("fresh candidate claims the one-call latch synchronously before enrichment 
   resolveEnrichment(result("no_match"));
   await h.controller.waitForCompletion();
   assert.equal(calls, 1);
+});
+
+
+test("stale-skipped incident reactivates after its own later activity without another WOULD_PUBLISH", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("cg_verified"); }, { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 9 * 60_000 };
+  assert.equal(h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+
+  const current = { ...stale, lastActivityTimeMs: time - 20_000, representativeLatitude: 39.2, representativeLongitude: 32.4 };
+  assert.equal(h.controller.observeActivity(current, profile), true);
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(artifact?.status, "paired_result");
+  if (artifact?.status === "paired_result" && artifact.triggerMode === "reactivated_after_stale_publish") {
+    assert.equal(artifact.reactivation.incidentId, stale.id);
+    assert.equal(artifact.reactivation.originalStaleAgeMs, 9 * 60_000);
+    assert.equal(artifact.reactivation.reactivationAgeMs, 20_000);
+    assert.equal(artifact.reactivation.triggeredByLaterFreshActivity, true);
+    assert.equal(artifact.incident.latitude, current.representativeLatitude);
+    assert.equal(artifact.incident.longitude, current.representativeLongitude);
+    assert.equal(artifact.incident.eventTimeMs, current.lastActivityTimeMs);
+  } else assert.fail("expected reactivated paired result");
+});
+
+test("fresh activity on an unrelated incident cannot reactivate a stale-skipped candidate", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 8 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile);
+  const unrelated = { ...incident, id: "i-unrelated", status: "active" as const, lastActivityTimeMs: time - 10_000 };
+  assert.equal(h.controller.observeActivity(unrelated, profile), false);
+  assert.equal(calls, 0);
+  assert.equal(h.controller.enrichmentClaimed, false);
+});
+
+test("only an incident with a stale-skipped WOULD_PUBLISH decision may reactivate", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const eligible = { ...incident, id: "i-stale", lastActivityTimeMs: time - 7 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: eligible.id }, eligible, profile);
+  const otherStale = { ...eligible, id: "i-second-stale", lastActivityTimeMs: time - 8 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: otherStale.id }, otherStale, profile);
+  const current = { ...otherStale, lastActivityTimeMs: time - 30_000 };
+  assert.equal(h.controller.observeActivity(current, profile), true);
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(artifact?.status === "paired_result" && artifact.incident.incidentId, otherStale.id);
+  assert.equal(artifact?.status === "paired_result" && artifact.triggerFreshness.trackedStaleIncidentCount, 2);
+});
+
+test("a stale candidate receiving activity that remains old is not enriched until a later fresh update", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 10 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile);
+  const stillOld = { ...stale, lastActivityTimeMs: time - MAX_PAIRING_INCIDENT_AGE_MS - 1 };
+  assert.equal(h.controller.observeActivity(stillOld, profile), false);
+  assert.equal(calls, 0);
+  assert.equal(h.controller.enrichmentClaimed, false);
+  const fresh = { ...stillOld, lastActivityTimeMs: time - MAX_PAIRING_INCIDENT_AGE_MS };
+  assert.equal(h.controller.observeActivity(fresh, profile), true);
+  await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+});
+
+test("reactivated stale incident exactly at the age threshold is eligible", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 5 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile);
+  const threshold = { ...stale, lastActivityTimeMs: time - MAX_PAIRING_INCIDENT_AGE_MS };
+  assert.equal(h.controller.observeActivity(threshold, profile), true);
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(artifact?.status === "paired_result" && artifact.triggerMode, "reactivated_after_stale_publish");
+  assert.equal(artifact?.status === "paired_result" && artifact.triggerFreshness.incidentAgeMs, MAX_PAIRING_INCIDENT_AGE_MS);
+});
+
+test("reactivation claims the only Xweather call before any later fresh publish decision", async () => {
+  let calls = 0;
+  const h = harness(async () => { calls++; return result("no_match"); }, { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 6 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile);
+  assert.equal(h.controller.observeActivity({ ...stale, lastActivityTimeMs: time - 10_000 }, profile), true);
+  const other = { ...incident, id: "i-other", lastActivityTimeMs: time - 5_000 };
+  assert.equal(h.controller.observeDecision({ ...wouldPublish, incidentId: other.id }, other, profile), false);
+  await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+});
+
+test("real lifecycle suppresses a duplicate publish while paired validation reactivates the same incident", async () => {
+  const lifecycleProfile = INCIDENT_POLICY_PROFILES.find(item => item.id === "B")!;
+  const staleEventTime = time - 9 * 60_000;
+  const engine = new IncidentLifecycleEngine(lifecycleProfile, staleEventTime);
+  engine.setSourceHealth({ state: "live", lastFrameAtMs: staleEventTime }, staleEventTime);
+  const policy = new DryRunPublishPolicy(lifecycleProfile);
+  const decisions: PublishDecision[] = [];
+  const observations = [
+    { sourceClusterId: "cluster-1", eventTimeMs: staleEventTime, receivedAtMs: staleEventTime, latitude: 39.1, longitude: 32.3 },
+    { sourceClusterId: "cluster-1", eventTimeMs: staleEventTime + 1_000, receivedAtMs: staleEventTime + 1_000, latitude: 39.101, longitude: 32.301 },
+    { sourceClusterId: "cluster-1", eventTimeMs: staleEventTime + 2_000, receivedAtMs: staleEventTime + 2_000, latitude: 39.102, longitude: 32.302 },
+  ];
+  let promotedIncident!: LightningIncident;
+  for (const observation of observations) {
+    const transitions = engine.observe(observation);
+    decisions.push(...applyTransitions(transitions, policy, engine));
+    const promoted = transitions.find(transition => transition.type === "promoted");
+    if (promoted?.type === "promoted") promotedIncident = promoted.incident;
+  }
+  const publishDecision = decisions.find(decision => decision.action === "WOULD_PUBLISH")!;
+  assert.equal(publishDecision.reason, "incident_promoted");
+  let enrichmentReference: EnrichmentReference | undefined;
+  let calls = 0;
+  const h = harness(async referenceValue => { calls++; enrichmentReference = referenceValue; return result("cg_verified"); },
+    { nowMs: () => time });
+  assert.equal(h.controller.observeDecision(publishDecision, promotedIncident, profile), false);
+  assert.equal(h.controller.enrichmentClaimed, false);
+
+  const laterTransitions = engine.observe({
+    sourceClusterId: "cluster-1", eventTimeMs: time - 30_000, receivedAtMs: time - 30_000,
+    latitude: 39.3, longitude: 32.5,
+  });
+  const laterDecisions = applyTransitions(laterTransitions, policy, engine);
+  assert.deepEqual(laterDecisions.map(decision => decision.reason), ["already_published_active_incident"]);
+  assert.equal(laterDecisions.some(decision => decision.action === "WOULD_PUBLISH"), false);
+  const updatedIncident = laterTransitions.find(transition => transition.type === "activity");
+  assert.equal(updatedIncident?.type, "activity");
+  if (updatedIncident?.type === "activity") {
+    assert.equal(h.controller.observeActivity(updatedIncident.incident, profile), true);
+  }
+  const artifact = await h.controller.waitForCompletion();
+  assert.equal(calls, 1);
+  assert.equal(policy.summary().publishCandidatesGenerated, 1);
+  assert.equal(policy.summary().suppressionsByReason.already_published_active_incident, 1);
+  assert.deepEqual(enrichmentReference, {
+    latitude: updatedIncident?.type === "activity" ? updatedIncident.incident.representativeLatitude : NaN,
+    longitude: updatedIncident?.type === "activity" ? updatedIncident.incident.representativeLongitude : NaN,
+    eventTimeMs: time - 30_000,
+  });
+  assert.equal(artifact?.status === "paired_result" && artifact.triggerMode, "reactivated_after_stale_publish");
+  assert.equal(artifact?.status === "paired_result" && artifact.reactivation.originalStaleAgeMs,
+    time - promotedIncident.lastActivityTimeMs);
+  assert.equal(artifact?.status === "paired_result" && artifact.reactivation.reactivationAgeMs, 30_000);
+  assert.equal(artifact?.status === "paired_result" && artifact.incident.latitude,
+    updatedIncident?.type === "activity" ? updatedIncident.incident.representativeLatitude : NaN);
+  assert.equal(artifact?.status === "paired_result" && artifact.incident.longitude,
+    updatedIncident?.type === "activity" ? updatedIncident.incident.representativeLongitude : NaN);
+});
+
+test("stale-only timeout still records no_fresh_publish_candidate and later activity diagnostics", async () => {
+  const h = harness(async () => result("no_match"), { nowMs: () => time });
+  const stale = { ...incident, lastActivityTimeMs: time - 9 * 60_000 };
+  h.controller.observeDecision({ ...wouldPublish, incidentId: stale.id }, stale, profile);
+  h.controller.observeActivity({ ...stale, lastActivityTimeMs: time - 5 * 60_000 }, profile);
+  const artifact = await h.controller.writeNoCandidate({ ...context, wouldPublishCount: 1 });
+  assert.equal(artifact?.status, "no_fresh_publish_candidate");
+  if (artifact?.status === "no_fresh_publish_candidate") {
+    assert.equal(artifact.triggerFreshness.trackedStaleIncidentCount, 1);
+    assert.equal(artifact.triggerFreshness.staleIncidentsWithLaterActivityCount, 1);
+    assert.equal(artifact.triggerFreshness.reactivatedIncidentCount, 0);
+    assert.equal(artifact.guardrail.enrichmentCalls, 0);
+    assert.equal(artifact.guardrail.providerRequestAttempted, false);
+  }
 });

@@ -16,6 +16,12 @@ Paired validation therefore applies its own deterministic trigger guard: `Date.n
 
 Stale publish decisions are logged and skipped without claiming the one-call guard or stopping the feed. The run keeps listening for a later fresh `WOULD_PUBLISH`. If it ends after stale/ineligible candidates only, the artifact is `no_fresh_publish_candidate`, with stale count, freshest skipped stale age, the threshold, and zero provider requests. These skips consume no Xweather credits.
 
+## Reactivating stale-skipped incidents
+
+A startup/backlog publish decision can refer to an incident that remains active and later receives genuinely fresh events. The lifecycle correctly suppresses duplicate publication for that incident. Paired validation now separately watches only incident IDs whose actual `WOULD_PUBLISH` was skipped for staleness; on a later active-incident activity update, it rechecks the current `lastActivityTimeMs` against the unchanged four-minute threshold.
+
+If that same incident becomes fresh, pairing uses its current representative coordinates and current `lastActivityTimeMs`. This research-only trigger creates no second `WOULD_PUBLISH` and does not change publication suppression. The one-Xweather-request limit still applies to the whole run.
+
 ## Pair and reference fields
 
 The incident snapshot is taken from the actual promoted incident: `representativeLatitude` and `representativeLongitude` locate the accumulated incident; `lastActivityTimeMs` is the enrichment reference event time. `firstEventTimeMs`, `totalEvents`, and `sourceClusterIds.length` are included as context. Promotion time is not used as event time because it records when the lifecycle processed the promotion.
