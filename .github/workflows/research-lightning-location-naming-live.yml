@@ -107,25 +107,41 @@ jobs:
         run: |
           mkdir -p artifacts
           set +e
-          npm run research:reverse-geocode -- \
+          raw_stdout=/tmp/lightning-location-naming-stdout.txt
+          set +e
+          node --experimental-strip-types scripts/lightning-location-naming/runner.ts \
             --lat="$LATITUDE" \
             --lon="$LONGITUDE" \
             --sample="$SAMPLE" \
             --provider=nominatim \
             --format=json \
             --include-provider-hierarchy=true \
-            > artifacts/lightning-location-naming-result.json \
+            > "$raw_stdout" \
             2> artifacts/lightning-location-naming-stderr.txt
           lookup_status=$?
           set -e
           echo "exit_code=$lookup_status" >> "$GITHUB_OUTPUT"
-          if ! node --input-type=module -e 'import { readFileSync } from "node:fs"; JSON.parse(readFileSync(process.argv[1], "utf8"))' artifacts/lightning-location-naming-result.json 2>/dev/null; then
-            LOOKUP_EXIT_CODE="$lookup_status" node --input-type=module <<'NODE' > artifacts/lightning-location-naming-result.json
-          const { LATITUDE, LONGITUDE, SAMPLE, LOOKUP_EXIT_CODE } = process.env;
+
+          if node --input-type=module -e 'import { readFileSync } from "node:fs"; JSON.parse(readFileSync(process.argv[1], "utf8"))' "$raw_stdout" 2>/dev/null; then
+            cp "$raw_stdout" artifacts/lightning-location-naming-result.json
+          else
+            cp "$raw_stdout" artifacts/lightning-location-naming-stdout-raw.txt
+            if [ "$lookup_status" -eq 0 ]; then
+              error_type=workflow_output_capture_failure
+              message="CLI exited 0 but stdout was not valid JSON; original stdout is preserved in lightning-location-naming-stdout-raw.txt"
+              final_status=1
+            else
+              error_type=cli_failure
+              message="CLI exited $lookup_status without structured JSON; original stdout is preserved in lightning-location-naming-stdout-raw.txt"
+              final_status="$lookup_status"
+            fi
+            LOOKUP_EXIT_CODE="$lookup_status" ERROR_TYPE="$error_type" FAILURE_MESSAGE="$message" node --input-type=module <<'NODE' > artifacts/lightning-location-naming-result.json
+          const { LATITUDE, LONGITUDE, SAMPLE, LOOKUP_EXIT_CODE, ERROR_TYPE, FAILURE_MESSAGE } = process.env;
           console.log(JSON.stringify({
             status: "lookup_failed",
-            errorType: "runner_failure",
-            message: `CLI exited ${LOOKUP_EXIT_CODE} without a structured JSON result`,
+            errorType: ERROR_TYPE,
+            message: FAILURE_MESSAGE,
+            exitCode: Number(LOOKUP_EXIT_CODE),
             sample: SAMPLE,
             requested: { latitude: Number(LATITUDE), longitude: Number(LONGITUDE) },
             provider: "nominatim",
@@ -133,14 +149,17 @@ jobs:
           NODE
           fi
           cat artifacts/lightning-location-naming-result.json
-          exit "$lookup_status"
+          exit "${final_status:-$lookup_status}"
 
       - name: Upload compact lookup result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lightning-location-naming-result-${{ github.run_id }}
-          path: artifacts/lightning-location-naming-result.json
+          path: |
+            artifacts/lightning-location-naming-result.json
+            artifacts/lightning-location-naming-stderr.txt
+            artifacts/lightning-location-naming-stdout-raw.txt
           if-no-files-found: warn
           retention-days: 7
 
