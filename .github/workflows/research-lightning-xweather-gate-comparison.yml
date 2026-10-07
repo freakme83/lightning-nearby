@@ -1,0 +1,155 @@
+name: Research Lightning Xweather Gate Comparison
+run-name: Lightning gate comparison (${{ inputs.area }} / profile ${{ inputs.incidentProfile }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      area:
+        description: Existing research area mode (custom box or Ankara polygon)
+        required: true
+        type: choice
+        options: [custom, ankara]
+        default: custom
+      north:
+        description: North latitude for custom box
+        required: true
+        type: string
+        default: "40.05"
+      east:
+        description: East longitude for custom box
+        required: true
+        type: string
+        default: "-2.05"
+      south:
+        description: South latitude for custom box
+        required: true
+        type: string
+        default: "38.55"
+      west:
+        description: West longitude for custom box
+        required: true
+        type: string
+        default: "-3.85"
+      durationMinutes:
+        description: Bounded duration (1–20 whole minutes)
+        required: true
+        type: string
+        default: "15"
+      incidentProfile:
+        description: Existing research lifecycle profile
+        required: true
+        type: choice
+        options: [A, B, C]
+        default: B
+      maxXweatherCalls:
+        description: Hard request cap (0–10; 0 is provider-free)
+        required: true
+        type: string
+        default: "3"
+      hypotheticalUserChecks:
+        description: Optional planning-only Summary/Flash checks (0–100000)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lightning-xweather-gate-comparison
+  cancel-in-progress: false
+
+jobs:
+  comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Run bounded research comparison
+        id: live_run
+        continue-on-error: true
+        env:
+          AREA: ${{ inputs.area }}
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+          MAX_XWEATHER_CALLS: ${{ inputs.maxXweatherCalls }}
+          HYPOTHETICAL_USER_CHECKS: ${{ inputs.hypotheticalUserChecks }}
+          XWEATHER_CLIENT_ID: ${{ secrets.XWEATHER_CLIENT_ID }}
+          XWEATHER_CLIENT_SECRET: ${{ secrets.XWEATHER_CLIENT_SECRET }}
+        run: |
+          mkdir -p artifacts
+          args=(--gate-comparison=true --format=jsonl --summary-every=60
+            --duration="$DURATION_MINUTES" --incident-profile="$INCIDENT_PROFILE"
+            --max-xweather-calls="$MAX_XWEATHER_CALLS")
+          if [ -n "$HYPOTHETICAL_USER_CHECKS" ]; then
+            args+=(--hypothetical-user-checks="$HYPOTHETICAL_USER_CHECKS")
+          fi
+          if [ "$AREA" = ankara ]; then
+            args+=(--area=ankara)
+          elif [ "$AREA" = custom ]; then
+            args+=(--box="$NORTH,$EAST,$SOUTH,$WEST")
+          else
+            echo "Invalid area mode" >&2
+            exit 2
+          fi
+          set +e
+          node --experimental-strip-types scripts/lightning-incident-lifecycle/runner.ts "${args[@]}" \
+            > artifacts/lightning-gate-comparison.jsonl \
+            2> artifacts/lightning-gate-comparison-stderr.txt
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-gate-comparison-${{ github.run_id }}
+          path: |
+            artifacts/lightning-gate-comparison.jsonl
+            artifacts/lightning-gate-comparison-stderr.txt
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Summarize comparison
+        if: always()
+        env:
+          LIVE_EXIT_CODE: ${{ steps.live_run.outputs.exit_code || 'not-started' }}
+        run: |
+          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { existsSync, readFileSync } from "node:fs";
+          console.log("## Research Lightning Xweather gate comparison\n");
+          console.log(`Runner exit code: ${process.env.LIVE_EXIT_CODE}.`);
+          const path = "artifacts/lightning-gate-comparison.jsonl";
+          if (!existsSync(path)) {
+            console.log("No JSONL artifact; inspect setup/runner diagnostics.");
+            process.exit(0);
+          }
+          let summary;
+          for (const line of readFileSync(path, "utf8").split("\n")) {
+            try { const item = JSON.parse(line); if (item.kind === "gate_final_comparison_summary") summary = item; }
+            catch { /* preserve raw JSONL for inspection */ }
+          }
+          if (!summary) {
+            console.log("No final comparison summary. Inspect the partial JSONL and stderr artifacts.");
+            process.exit(0);
+          }
+          const gate = summary.gate;
+          console.log(`Promotions: ${summary.incidents.promotions}; WOULD_PUBLISH: ${summary.incidents.wouldPublish}; fresh eligible: ${gate.freshEligibleIncidents}; stale triggers: ${gate.stalePublishTriggers}.`);
+          console.log(`Xweather requests: ${gate.actualXweatherRequests} / ${gate.maxXweatherCalls}; states: ${JSON.stringify(gate.enrichmentStates)}.`);
+          console.log(`Observed tokens: ${gate.observedXweatherCost.totalTokensWhenFullyKnown ?? "incomplete headers"}; known header sum: ${gate.observedXweatherCost.knownHeaderTokenSum}.`);
+          if (gate.hypotheticalProductionSummaryFlash) {
+            const plan = gate.hypotheticalProductionSummaryFlash;
+            console.log(`Planning-only Summary→Flash range for ${plan.hypotheticalUserChecks} manual checks: ${plan.observedPlanningTokenFloor}–${plan.observedPlanningTokenCeiling} observed-planning tokens.`);
+          }
+          console.log("\nThe planning range is not measured counterfactual spend or evidence of recall equivalence.");
+          NODE
+      - name: Report runner failure after preserving artifacts
+        if: steps.live_run.outcome == 'failure'
+        run: exit 1
