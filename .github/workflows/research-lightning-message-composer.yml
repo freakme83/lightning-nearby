@@ -1,0 +1,70 @@
+name: Research Lightning Message Composer Preview
+run-name: Lightning message preview (${{ inputs.scenario }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Synthetic research fixture
+        required: true
+        type: choice
+        options:
+          - cg_verified_urban
+          - ic_only_urban
+          - no_match_urban
+          - provider_unavailable_urban
+          - cg_verified_rural
+          - outside_ankara_generic
+        default: cg_verified_urban
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Compose one fixture without provider calls
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          mkdir -p artifacts
+          node --experimental-strip-types scripts/lightning-message-composer/runner.ts \
+            --fixture="$SCENARIO" > artifacts/lightning-message-composer-preview.json
+
+      - name: Show preview
+        if: always()
+        run: |
+          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { existsSync, readFileSync } from "node:fs";
+          const path = "artifacts/lightning-message-composer-preview.json";
+          console.log("## Turkish lightning message preview\n");
+          if (!existsSync(path)) {
+            console.log("No composer output was written. Inspect the workflow log.");
+            process.exit(0);
+          }
+          const result = JSON.parse(readFileSync(path, "utf8"));
+          if (!result.ok) {
+            console.log(`Composer error: ${result.error.code}`);
+            process.exit(0);
+          }
+          console.log("```text");
+          console.log(result.text);
+          console.log("```\n");
+          console.log(`Character count: ${result.characterCount}; event kind: ${result.eventKind}; map link included: ${result.mapUrl !== null ? "yes" : "no"}.`);
+          NODE
+
+      - name: Upload structured preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-message-composer-preview-${{ github.run_id }}
+          path: artifacts/lightning-message-composer-preview.json
+          if-no-files-found: warn
+          retention-days: 3
