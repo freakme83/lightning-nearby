@@ -7,10 +7,36 @@ import { LIVE_CURRENT_EVENT_LIMIT, type CurrentLightning, type CurrentLightningE
 
 export const ACTIVITY_MAP_MIN_ZOOM = 5;
 export const ACTIVITY_MAP_MAX_ZOOM = 13;
+export const ACTIVITY_MAP_NEARBY_KM = 10;
 export type MapPoint = [latitude: number, longitude: number];
+export type ActivityDistanceBand = "very-near" | "near" | "regional" | "outer";
+const EVENT_COLORS: Record<ActivityDistanceBand, string> = {
+  "very-near": "#b85d50", near: "#c47b4c", regional: "#bd9154", outer: "#b5a07a",
+};
+
+export function activityDistanceBand(distanceKm: number): ActivityDistanceBand {
+  if (distanceKm <= 5) return "very-near";
+  if (distanceKm <= 10) return "near";
+  if (distanceKm <= 25) return "regional";
+  return "outer";
+}
+
+/** All observations share a circular marker; size, border and halo identify the nearest. */
+export function activityEventMarkerStyle(distanceKm: number, nearest: boolean) {
+  return { options: { radius: nearest ? 8 : 5, color: nearest ? "#ffffff" : "#fffaf0",
+    weight: nearest ? 3 : 1.5, fillColor: EVENT_COLORS[activityDistanceBand(distanceKm)],
+    fillOpacity: nearest ? 1 : .88, interactive: false }, halo: nearest } as const;
+}
+
+/** Touch panning is opt-in so a one-finger swipe can scroll the surrounding page. */
+export function activityMapInteraction(coarsePointer: boolean) {
+  return { zoomControl: true, scrollWheelZoom: !coarsePointer, dragging: !coarsePointer,
+    touchZoom: true, doubleClickZoom: true, boxZoom: false, keyboard: true, tapHold: false } as const;
+}
+
 export interface ActivityMapData {
   monitored: MapPoint;
-  events: { event: CurrentLightningEvent; point: MapPoint; nearest: boolean }[];
+  events: { event: CurrentLightningEvent; point: MapPoint; nearest: boolean; distanceKm: number }[];
   bounds: [MapPoint, MapPoint];
 }
 export interface ActivityPlaceContext {
@@ -25,10 +51,12 @@ export function activityMapData(current: CurrentLightning | undefined, latitude:
   const events = (current.events ?? []).slice(0, LIVE_CURRENT_EVENT_LIMIT)
     .filter(event => isValidCoordinates(event.latitude, event.longitude) && Number.isFinite(event.observedAtMs))
     .map((event, index) => ({ event, nearest: index === 0,
+      distanceKm: greatCircleDistanceKm(latitude, longitude, event.latitude, event.longitude),
       point: [event.latitude, longitude + ((event.longitude - longitude + 540) % 360 - 180)] as MapPoint }));
   if (!events.length) return null;
   const monitored: MapPoint = [latitude, longitude];
-  const points = [monitored, ...events.map(item => item.point)];
+  const nearby = events.filter(item => item.distanceKm <= ACTIVITY_MAP_NEARBY_KM);
+  const points = [monitored, ...(nearby.length ? nearby : [events[0]]).map(item => item.point)];
   return { monitored, events, bounds: [
     [Math.min(...points.map(point => point[0])), Math.min(...points.map(point => point[1]))],
     [Math.max(...points.map(point => point[0])), Math.max(...points.map(point => point[1]))],

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { activityMapData, formatActivityPlace, liveActivityView, lookupActivityPlace, parseActivityPlace } from "./live-activity.ts";
+import { ACTIVITY_MAP_MAX_ZOOM, ACTIVITY_MAP_NEARBY_KM, activityDistanceBand, activityEventMarkerStyle, activityMapData, activityMapInteraction, formatActivityPlace, liveActivityView, lookupActivityPlace, parseActivityPlace } from "./live-activity.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, LIVE_CURRENT_EVENT_LIMIT, type CurrentLightningAvailable, type CurrentLightningEvent } from "./lightning/types.ts";
 
 const nearest: CurrentLightningEvent = { latitude: 39.9, longitude: 32.82, observedAtMs: 1_000_000, type: "CG" };
@@ -63,6 +63,67 @@ test("multiple API events stay bounded, retain nearest identity, and fit with th
   assert.equal(data.events[0].event, events[0]);
   assert.deepEqual(data.bounds[0], [39.89, data.events[0].point[1]]);
   assert.deepEqual(data.bounds[1], [events[11].latitude, 32.85]);
+});
+
+test("warm distance bands classify boundaries without green, and nearest adds size, border and halo", () => {
+  assert.deepEqual([0, 5, 5.001, 10, 10.001, 25, 25.001, 40].map(activityDistanceBand),
+    ["very-near", "very-near", "near", "near", "regional", "regional", "outer", "outer"]);
+  const colors = [2, 7, 18, 35].map(distance => activityEventMarkerStyle(distance, false).options.fillColor);
+  assert.equal(new Set(colors).size, 4);
+  assert.deepEqual(colors, ["#b85d50", "#c47b4c", "#bd9154", "#b5a07a"]);
+  const other = activityEventMarkerStyle(7, false);
+  const closest = activityEventMarkerStyle(7, true);
+  assert.ok(closest.options.radius > other.options.radius);
+  assert.ok(closest.options.weight > other.options.weight);
+  assert.equal(closest.halo, true);
+  assert.equal(other.halo, false);
+  assert.equal(closest.options.fillColor, other.options.fillColor);
+  const styles = readFileSync("src/app/styles.css", "utf8");
+  assert.match(styles, /\.activity-location-marker span\{[^}]*background:var\(--deep\)/);
+  assert.match(styles, /\.activity-location-marker span\{[^}]*border:3px solid white/);
+  assert.doesNotMatch(styles, /\.activity-nearest-marker|⚡/);
+});
+
+test("initial bounds prioritize nearby activity without removing distant observations", () => {
+  const near = { ...nearest, latitude: 0.02, longitude: 0 };
+  const far = { ...nearest, latitude: 0.3, longitude: 0 };
+  const boundary = { ...nearest, latitude: 0, longitude: 0.0899 };
+  const data = activityMapData(active([near, far, boundary]), 0, 0)!;
+  assert.equal(ACTIVITY_MAP_NEARBY_KM, 10);
+  assert.equal(data.events.length, 3);
+  assert.equal(data.events[1].event, far);
+  assert.ok(data.events[1].distanceKm > 10);
+  assert.equal(data.bounds[1][0], near.latitude);
+  assert.ok(Math.abs(data.bounds[1][1] - boundary.longitude) < 1e-9);
+  assert.ok(data.events[1].point[0] > data.bounds[1][0]);
+});
+
+test("when nothing is within 10 km, initial bounds contain monitored and nearest only", () => {
+  const nearish = { ...nearest, latitude: 0.15, longitude: 0 };
+  const far = { ...nearest, latitude: 0.35, longitude: 0 };
+  const data = activityMapData(active([nearish, far]), 0, 0)!;
+  assert.deepEqual(data.bounds, [[0, 0], [nearish.latitude, 0]]);
+  assert.equal(data.events.length, 2);
+  assert.equal(data.events[0].nearest, true);
+  assert.equal(ACTIVITY_MAP_MAX_ZOOM, 13);
+});
+
+test("desktop and touch interactions permit exploration while touch scrolling stays opt-in", () => {
+  const desktop = activityMapInteraction(false);
+  assert.equal(desktop.dragging, true);
+  assert.equal(desktop.scrollWheelZoom, true);
+  assert.equal(desktop.doubleClickZoom, true);
+  assert.equal(desktop.zoomControl, true);
+  assert.equal(desktop.keyboard, true);
+  const mobile = activityMapInteraction(true);
+  assert.equal(mobile.dragging, false);
+  assert.equal(mobile.scrollWheelZoom, false);
+  assert.equal(mobile.touchZoom, true);
+  assert.equal(mobile.zoomControl, true);
+  const mapSource = readFileSync("src/app/live-activity-map.tsx", "utf8");
+  assert.match(mapSource, /map\.dragging\.enable\(\)/);
+  assert.match(mapSource, /maxZoom: ACTIVITY_MAP_MAX_ZOOM/);
+  assert.doesNotMatch(mapSource, /⚡|activityMapSubset|activity-map-subset/);
 });
 
 test("one event, tightly coincident points and antimeridian crossings have useful bounds", () => {
