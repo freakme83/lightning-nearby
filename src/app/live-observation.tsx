@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CompassDirection } from "@/lib/lightning/bearing";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
-import { DEFAULT_PROXIMITY_SCALE, proximityColor, proximityPoint, proximityScale } from "@/lib/proximity";
+import { activityMapData, liveActivityView, lookupActivityPlace, type ActivityPlaceContext } from "@/lib/live-activity";
+import LiveActivityMap from "./live-activity-map";
 import type { RiskLevel } from "@/lib/weather";
-import { directionLabel, formatDistance, intlLocale, t, type Locale } from "@/lib/i18n";
+import { intlLocale, t, type Locale } from "@/lib/i18n";
 
 const unavailable: LiveLightningApiResult = {
   ok: false, status: "provider-unavailable", message: "Unavailable", diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
@@ -28,42 +28,12 @@ interface Props {
   locale: Locale;
 }
 
-function ProximityGraphic({ distanceKm, direction, clear, locale }: { locale: Locale; distanceKm?: number | null; direction?: CompassDirection | null; clear?: boolean }) {
-  const scale = distanceKm != null && Number.isFinite(distanceKm) && distanceKm >= 0
-    ? proximityScale(distanceKm) : DEFAULT_PROXIMITY_SCALE;
-  const point = distanceKm != null && direction ? proximityPoint(distanceKm, direction, scale.outerKm) : null;
-  const directionText = direction ? directionLabel(locale, direction) : null;
-  const scaleLabel = t(locale, "scale", { distance: scale.outerKm });
-  const description = [t(locale, "scaleAccessible", { distance: scale.outerKm }),
-    point && distanceKm != null && directionText ? t(locale, "proximityClosest", { distance: formatDistance(distanceKm, locale), direction: directionText }) : clear ? t(locale, "proximityClear") : "",
-    t(locale, "schematicAccessible")].filter(Boolean).join(" ");
-  const ringRadius = (distance: number) => distance / scale.outerKm * 42;
-  const ringLabelY = (distance: number) => distance === scale.outerKm ? 12 : 50 - ringRadius(distance) - 2;
-  const [innerKm, middleKm, outerKm] = scale.ringsKm;
-  const color = distanceKm != null && Number.isFinite(distanceKm) ? proximityColor(distanceKm) : null;
-
-  return <figure className={`proximity ${clear ? "is-clear" : ""}`} aria-label={description}>
-    <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
-      <circle className="proximity-fill" cx="50" cy="50" r="42" />
-      {[outerKm, middleKm, innerKm].map((range) => <circle key={range} className="proximity-ring" cx="50" cy="50" r={ringRadius(range)} />)}
-      {[outerKm, middleKm, innerKm].map((range) => <text key={range} className="proximity-range" x="50" y={ringLabelY(range)}>{range} km</text>)}
-      <text className="proximity-north" x="50" y="3">{t(locale, "northInitial")}</text>
-      {point && color && <g className={`proximity-flash proximity-flash-${color}`} transform={`translate(${point.x} ${point.y})`}>
-        <circle className="proximity-flash-halo" r="2.5" />
-        <circle className="proximity-flash-marker" r="1.8" />
-        <path className="proximity-flash-glyph" d="M1.2 -4.2 -2.2 .3 .2 .3 -1.1 4.2 3 -1 0.7 -1Z" transform="scale(.25)" />
-      </g>}
-      <circle className="proximity-center-halo" cx="50" cy="50" r="3.5" />
-      <circle className="proximity-center" cx="50" cy="50" r="2" />
-    </svg>
-    <figcaption>{[scaleLabel,
-      point && distanceKm != null && directionText ? t(locale, "closestShort", { distance: formatDistance(distanceKm, locale), direction: directionText }) : clear ? t(locale, "noCurrentShort") : "",
-      t(locale, "schematic")].filter(Boolean).join(" · ")}</figcaption>
-  </figure>;
-}
-
 export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible, locale }: Props) {
   const [result, setResult] = useState<LiveLightningApiResult | null>(null);
+  const [place, setPlace] = useState<ActivityPlaceContext | null>(null);
+  const placeController = useRef<AbortController | null>(null);
+  const lookupLocale = useRef(locale);
+  useEffect(() => { lookupLocale.current = locale; }, [locale]);
   const [loading, setLoading] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -75,6 +45,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   useEffect(() => () => {
     requestId.current += 1;
     controller.current?.abort();
+    placeController.current?.abort();
   }, []);
 
   const checkActivity = useCallback(async () => {
@@ -83,6 +54,8 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
     controller.current = active;
     const id = ++requestId.current;
     const ownedBy = locationKey;
+    placeController.current?.abort();
+    setPlace(null);
     setLoading(true);
     setResult(null);
     setCheckedAt(null);
@@ -96,6 +69,14 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
       if (!isCurrentLiveRequest(id, requestId.current, ownedBy, locationRef.current, active.signal)) return;
       setResult(response.ok && body.ok && body.summary ? body : unavailable);
       setCheckedAt(Date.now());
+      const mapData = response.ok && body.ok ? activityMapData(body.summary.current, latitude, longitude) : null;
+      if (mapData) {
+        const lookup = new AbortController();
+        placeController.current = lookup;
+        void lookupActivityPlace(mapData.events[0].event, lookup.signal, lookupLocale.current).then(context => {
+          if (isCurrentLiveRequest(id, requestId.current, ownedBy, locationRef.current, lookup.signal)) setPlace(context);
+        });
+      }
     } catch {
       if (!isCurrentLiveRequest(id, requestId.current, ownedBy, locationRef.current, active.signal)) return;
       setResult(unavailable);
@@ -124,6 +105,8 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   const severity = liveSeverity(result);
   const summary = result?.ok ? result.summary : null;
   const current = summary?.current;
+  const mapData = useMemo(() => activityMapData(current, latitude, longitude), [current, latitude, longitude]);
+  const activity = liveActivityView(current, latitude, longitude, locale, place);
   const countRadius = current?.status === "active" && severity && severity !== "none"
     ? severity === "high" ? 10 : severity === "elevated" ? 25 : 40 : null;
   const count = current?.status === "active" && countRadius
@@ -145,16 +128,16 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
         : !result ? <><h1 id="overview-title">{forecast?.headline ?? t(locale, "checkCurrent")}</h1><p>{forecast?.summary ?? t(locale, "runLiveCheck")}</p>{forecast?.strongestWindow && <p className="strongest-window">{t(locale, "strongestWindow")} <strong>{forecast.strongestWindow}</strong></p>}</>
           : !summary ? <><h1 id="overview-title">{t(locale, "liveUnavailable")}</h1><p>{t(locale, "liveUnavailableBody")}</p></>
             : current?.status === "unavailable" ? <><h1 id="overview-title">{t(locale, "currentUnavailable")}</h1><p>{liveActivityCopy(summary, locale)}</p></>
-              : active ? <><h1 id="overview-title">{t(locale, "lightningNearby")}</h1>
-                {current.nearestKm !== null && <p className="nearest-line">{t(locale, "closestActivity")} <strong>{formatDistance(current.nearestKm, locale)} km{current.nearestDirection ? ` ${directionLabel(locale, current.nearestDirection)}` : ""}{current.nearestAgeMinutes !== null ? ` · ${t(locale, "ageMinutes", { age: Math.max(0, Math.round(current.nearestAgeMinutes)) })}` : ""}</strong></p>}
+              : active ? <><h1 id="overview-title">{activity?.headline}</h1>
+                {activity?.placeContext && <p className="activity-place">{activity.placeContext}</p>}
+                {activity?.nearestLine && <p className="nearest-line"><span className="visually-hidden">{t(locale, "closestActivity")} </span><strong>{activity.nearestLine}</strong></p>}
+                {mapData && <LiveActivityMap data={mapData} locale={locale} />}
                 {count !== null && countRadius !== null && <p className="flash-count">{liveEventCountCopy(count, countRadius, locale)}</p>}
                 <p className="live-context">{liveActivityCopy(summary, locale)}</p>
               </>
                 : <><h1 id="overview-title">{t(locale, "noCurrentActivity")}</h1><p>{liveActivityCopy(summary, locale)}</p></>}
     </div>
     <button className={`${result ? "secondary-button" : "primary-button"} live-action`} type="button" disabled={loading} onClick={() => void checkActivity()}>{loading ? t(locale, "checking") : checkedAt ? t(locale, "refreshLive") : t(locale, "checkLive")}</button>
-    {!loading && active && <ProximityGraphic locale={locale} distanceKm={current.nearestKm} direction={current.nearestDirection} />}
-    {!loading && clear && <ProximityGraphic locale={locale} clear />}
     {result && forecast && <aside className={`forecast-context risk-${forecast.risk}`} aria-label={t(locale, "forecastContext")}>
       <div><p className="eyebrow">{t(locale, "next24hOutlook")}</p><h2>{forecast.headline}</h2></div>
       <p>{forecast.summary}</p>
