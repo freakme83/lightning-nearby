@@ -53,13 +53,41 @@ test("outside Ankara ignores hyper-local details and uses district-like parent p
   assert.equal(normalizeAndLabel(payload({ suburb: "Ayrancı Mahallesi", town: "Keskin", province: "Kırıkkale" })).displayLabel, "Keskin, Kırıkkale");
 });
 
+test("outside Ankara retains meaningful towns and villages with the closest useful broader parent", () => {
+  assert.equal(normalizeAndLabel(payload({ town: "Rochefort", county: "Charente-Maritime", state: "Nouvelle-Aquitaine" })).displayLabel, "Rochefort, Charente-Maritime");
+  assert.equal(normalizeAndLabel(payload({ village: "Bors-de-Montmoreau", county: "Charente", state: "Nouvelle-Aquitaine" })).displayLabel, "Bors-de-Montmoreau, Charente");
+});
+
+test("real-style France hierarchy keeps village over hamlet and municipality", () => {
+  const result = normalizeAndLabel(payload({
+    village: "Bors-de-Montmoreau",
+    hamlet: "Le Pignier",
+    municipality: "Angoulême",
+    county: "Charente",
+    state: "Nouvelle-Aquitaine",
+    country: "France",
+  }));
+  assert.equal(result.locality, "Bors-de-Montmoreau");
+  assert.equal(result.localityKind, "village");
+  assert.equal(result.district, "Charente");
+  assert.equal(result.province, "Nouvelle-Aquitaine");
+  assert.equal(result.displayLabel, "Bors-de-Montmoreau, Charente");
+  assert.doesNotMatch(result.displayLabel!, /Le Pignier|Angoulême/);
+});
+
+test("outside Ankara suppresses a hamlet alone and falls back to available administration", () => {
+  assert.equal(normalizeAndLabel(payload({ hamlet: "Le Pignier", county: "Charente", state: "Nouvelle-Aquitaine" })).displayLabel, "Charente, Nouvelle-Aquitaine");
+  assert.equal(normalizeAndLabel(payload({ hamlet: "Le Pignier", state: "Nouvelle-Aquitaine" })).displayLabel, "Nouvelle-Aquitaine");
+  assert.equal(normalizeAndLabel(payload({ hamlet: "Le Pignier" })).displayLabel, null);
+});
+
 test("outside Ankara falls back to province alone when no district-like parent exists", () => {
-  assert.equal(normalizeAndLabel(payload({ village: "Remote Mahallesi", city: "Some City", province: "Kırıkkale" })).displayLabel, "Kırıkkale");
+  assert.equal(normalizeAndLabel(payload({ suburb: "Remote Mahallesi", city: "Some City", province: "Kırıkkale" })).displayLabel, "Kırıkkale");
   assert.equal(normalizeAndLabel(payload({ province: "Konya" })).displayLabel, "Konya");
 });
 
 test("a district-like field is also an outside-Ankara parent fallback", () => {
-  assert.equal(normalizeAndLabel(payload({ village: "Remote Mahallesi", city_district: "Keskin İlçesi", province: "Kırıkkale İli" })).displayLabel, "Keskin, Kırıkkale");
+  assert.equal(normalizeAndLabel(payload({ suburb: "Remote Mahallesi", city_district: "Keskin İlçesi", province: "Kırıkkale İli" })).displayLabel, "Keskin, Kırıkkale");
 });
 
 test("Ankara without a small place uses town plus province, or province alone", () => {
