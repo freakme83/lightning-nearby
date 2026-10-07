@@ -47,7 +47,7 @@ Labels are Ankara-centered because the bot focuses on Ankara while its operation
 
 For Ankara, keep the smallest reliable human-meaningful local place and add a useful parent (prefer a distinct `town`, then a district-like field). Candidate small-place fields are checked in this order: `quarter`, `neighbourhood`/`neighborhood`, `suburb`, `village`, `hamlet`, and `city_district`. This preserves a specific quarter such as Aşağı Ayrancı over a broader suburb. If no small place is returned, use parent + province when available, otherwise the province.
 
-Outside Ankara, omit neighborhood, village, quarter, and other small-place detail by default. Use a district-like parent + province, or province alone if no parent is available. This gives readers useful regional context for nearby provinces without presenting unfamiliar hyper-local names.
+Outside Ankara, retain a meaningful `town` or `village` and pair it with the closest useful broader parent, preferring a distinct county/district over the province and using the province when no such parent exists. If neither settlement is available, fall back to district/county + province, then province alone. A recent rural hierarchy included both a village and a hamlet plus municipality, county, and region: dropping the village left only a broad regional label, while promoting the hamlet would have been too granular. Hyper-local fields such as neighbourhood, quarter, suburb, and hamlet therefore remain suppressed by default outside Ankara. This keeps the label anchored to a useful settlement without exposing raw maximum granularity.
 
 Only trailing administrative suffixes `Mahallesi`, `İlçesi`, and `İli` are removed from display components. Meaningful name parts such as `Aşağı`, `Yukarı`, `Eski`, and `Yeni` are preserved. Turkish locale-aware comparisons collapse duplicate hierarchy names. Country, streets, house numbers, postcodes, and provider `display_name` are not included in labels.
 
@@ -58,7 +58,7 @@ Only trailing administrative suffixes `Mahallesi`, `İlçesi`, and `İli` are re
 | village Yenipeçenek Mahallesi; town Sincan; province Ankara | `Yenipeçenek, Sincan` |
 | suburb Alacaatlı Mahallesi; town Çankaya; province Ankara | `Alacaatlı, Çankaya` |
 
-The first and fourth labels were already good. The Beynam and Yenipeçenek observations exposed that useful local-place fields were being lost. Outside-Ankara regressions remain `Keskin, Kırıkkale` and `Kulu, Konya`, with small-place detail omitted.
+The first and fourth labels were already good. The Beynam and Yenipeçenek observations exposed that useful local-place fields were being lost. Outside-Ankara regressions remain `Keskin, Kırıkkale`, `Kulu, Konya`, and `Kırıkkale`; a meaningful village is now retained with its county when available. Neighborhood and hamlet detail remains omitted outside Ankara.
 
 The monitoring polygon only determines whether an incident is relevant. It never overrides provider-resolved geography: a point around Kırıkkale must not be labelled Ankara solely because it falls in the operational monitoring region.
 
