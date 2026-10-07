@@ -10,7 +10,8 @@ function positive(value: string | undefined, name: string): number {
 
 export function readIncidentRunnerOptions(argv: string[]) {
   const args = new Map<string, string>();
-  const allowed = new Set(["duration", "box", "area", "incident-profile", "summary-every", "format", "paired-validation-output"]);
+  const allowed = new Set(["duration", "box", "area", "incident-profile", "summary-every", "format", "paired-validation-output",
+    "gate-comparison", "max-xweather-calls", "hypothetical-user-checks"]);
   for (const arg of argv) {
     if (!arg.startsWith("--") || !arg.includes("=")) throw new Error(`Expected --name=value: ${arg}`);
     const [name, ...rest] = arg.slice(2).split("=");
@@ -40,11 +41,31 @@ export function readIncidentRunnerOptions(argv: string[]) {
   if (format !== "human" && format !== "jsonl") throw new Error("--format=human|jsonl");
   const pairedValidationOutput = args.get("paired-validation-output");
   if (args.has("paired-validation-output") && !pairedValidationOutput) throw new Error("--paired-validation-output must be a non-empty path");
+  const gateComparison = args.get("gate-comparison") === "true";
+  if (args.has("gate-comparison") && !gateComparison) throw new Error("--gate-comparison=true");
+  if (gateComparison && pairedValidationOutput) throw new Error("Gate comparison and paired validation are separate modes");
+  if (!gateComparison && (args.has("max-xweather-calls") || args.has("hypothetical-user-checks"))) {
+    throw new Error("Gate comparison options require --gate-comparison=true");
+  }
+  const maxXweatherCalls = Number(args.get("max-xweather-calls") ?? "3");
+  if (!Number.isInteger(maxXweatherCalls) || maxXweatherCalls < 0 || maxXweatherCalls > 10) {
+    throw new Error("--max-xweather-calls must be an integer from 0 through 10");
+  }
+  const hypotheticalRaw = args.get("hypothetical-user-checks");
+  const hypotheticalUserChecks = hypotheticalRaw === undefined ? undefined : Number(hypotheticalRaw);
+  if (hypotheticalUserChecks !== undefined && (!/^\d+$/.test(hypotheticalRaw!) ||
+      !Number.isSafeInteger(hypotheticalUserChecks) || hypotheticalUserChecks > 100_000)) {
+    throw new Error("--hypothetical-user-checks must be an integer from 0 through 100000");
+  }
+  const durationMinutes = positive(args.get("duration") ?? "15", "duration");
+  if (gateComparison && (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 20)) {
+    throw new Error("Gate comparison duration must be 1 through 20 whole minutes");
+  }
   const parameters: ClusterParameters = { ...DEFAULT_CLUSTER_PARAMETERS };
   return {
     box, monitoringArea, areaSelection: monitoringArea ? "ankara" as const : "custom" as const,
-    profileId: selected, format, pairedValidationOutput,
-    durationMs: positive(args.get("duration") ?? "15", "duration") * 60_000,
+    profileId: selected, format, pairedValidationOutput, gateComparison, maxXweatherCalls, hypotheticalUserChecks,
+    durationMs: durationMinutes * 60_000,
     summaryMs: positive(args.get("summary-every") ?? "60", "summary-every") * 1000,
     parameters,
   };
