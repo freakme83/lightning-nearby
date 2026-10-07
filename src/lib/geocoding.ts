@@ -172,6 +172,18 @@ export async function reverseGeocodeLocation(
   fetcher: typeof fetch = fetch,
   locale: Locale = "en",
 ): Promise<ResolvedPlaceLabel | null> {
+  return reverseGeocodePlace(latitude, longitude, parseReversePlace, signal, fetcher, locale);
+}
+
+/** Shared production transport; callers choose a concise presentation parser. */
+export async function reverseGeocodePlace<T>(
+  latitude: number,
+  longitude: number,
+  parse: (payload: unknown) => T | null,
+  signal?: AbortSignal,
+  fetcher: typeof fetch = fetch,
+  locale: Locale = "en",
+): Promise<T | null> {
   const url = new URL("https://nominatim.openstreetmap.org/reverse");
   url.searchParams.set("lat", String(latitude));
   url.searchParams.set("lon", String(longitude));
@@ -184,7 +196,7 @@ export async function reverseGeocodeLocation(
     if (!response.ok) return null;
     const payload: unknown = await response.json();
     if (signal?.aborted) throw signal.reason ?? new DOMException("Lookup cancelled", "AbortError");
-    return parseReversePlace(payload);
+    return parse(payload);
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;
