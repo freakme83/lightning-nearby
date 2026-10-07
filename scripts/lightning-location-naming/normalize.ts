@@ -104,9 +104,24 @@ function districtLikeParent(place: NormalizedPlace, province?: string, child?: s
   return candidates.find((candidate): candidate is string => Boolean(candidate && !samePlace(candidate, province) && !samePlace(candidate, child)));
 }
 
+function outsideAnkaraLabel(place: NormalizedPlace, district?: string, province?: string): string | null {
+  const locality = cleanAdministrativeSuffix(place.locality);
+  const settlement = place.localityKind === "town" || place.localityKind === "village" ? locality : undefined;
+
+  if (settlement) {
+    const parent = [district, province].find((candidate) => candidate && !samePlace(candidate, settlement));
+    if (parent) return `${settlement}, ${parent}`;
+    return province && samePlace(settlement, province) ? province : settlement;
+  }
+
+  if (district && province && !samePlace(district, province)) return `${district}, ${province}`;
+  return district ?? province ?? null;
+}
+
 /**
- * Ankara labels retain the smallest useful local place; outside Ankara, labels
- * use a district-like parent and province to orient readers to this Ankara-focused bot.
+ * Ankara labels retain the smallest useful local place. Outside Ankara, retain
+ * meaningful towns and villages with a broader parent, while suppressing
+ * hyper-local fields such as neighborhoods and hamlets by default.
  */
 export function makeDisplayLabel(place: NormalizedPlace): string | null {
   const smallPlace = cleanAdministrativeSuffix(place.neighborhood);
@@ -122,8 +137,7 @@ export function makeDisplayLabel(place: NormalizedPlace): string | null {
     return province ?? locality ?? null;
   }
 
-  if (parent && province && !samePlace(parent, province)) return `${parent}, ${province}`;
-  return parent ?? province ?? locality ?? null;
+  return outsideAnkaraLabel(normalizedPlace, district, province);
 }
 
 export function normalizeAndLabel(payload: unknown): NormalizedPlace & { displayLabel: string | null } {
