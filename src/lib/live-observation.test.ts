@@ -16,6 +16,7 @@ function observed(nearestKm: number | null, status: "not-requested" | "clear" | 
     recentArea: { status: "active", windowMinutes: 30, radiusKm: 50, totalDetections: 4, oldestEventAt: null, newestEventAt: null, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS },
     current: {
       status, windowMinutes: 5, radiusKm: 40, latestEventAt: null, nearestKm, nearestDirection: null, nearestAgeMinutes: null,
+      events: [],
       counts: { within5Km: 0, within10Km: 0, within25Km: 0, within40Km: status === "active" ? 1 : 0 },
       totalFlashes: status === "active" ? 1 : 0, rejectedEventCount: 0, mayBeTruncated: false, diagnostics: EMPTY_PROVIDER_DIAGNOSTICS,
     },

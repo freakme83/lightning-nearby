@@ -37,6 +37,8 @@ When the regional Summary is positive, Flash answers whether consolidated lightn
 
 Flash and Raw records are not equivalent event units. Raw represents individual pulses/strikes; Flash consolidates related activity. Validation in PR #15 found that Flash generally preserved presence, broad direction, and recency, while also finding one-sided detections and material nearest-distance differences in sparse or edge cases. This architecture does not claim that Flash is equivalent to Raw.
 
+Successful Flash results also expose `current.events`: at most 12 usable recent records with only `observedAtMs`, `latitude`, `longitude`, and `type` (`IC`, `CG`, or `unknown`). They are ordered by distance from the monitored coordinate, then newer time, latitude, longitude, and type for deterministic ties. A healthy clear result contains `events: []`; not-requested/unavailable results have no event list. All summary metrics still use the full usable Flash set, with the existing nearest-summary tie behavior preserved independently of the public list ordering. This field prepares a future map UI without changing the current display or provider requests.
+
 ## Expected token use
 
 Observed costs for the tested query shapes are planning inputs, not guaranteed future pricing:
