@@ -7,6 +7,7 @@ export const LIVE_AREA_WINDOW_MINUTES = 30;
 export const LIVE_AREA_RADIUS_KM = 50;
 export const LIVE_CURRENT_WINDOW_MINUTES = 5;
 export const LIVE_CURRENT_RADIUS_KM = 40;
+export const LIVE_CURRENT_EVENT_LIMIT = 12;
 
 export type PulseType = "IC" | "CG" | "unknown";
 
@@ -17,6 +18,9 @@ export interface LiveStrike {
   longitude: number;
   type: PulseType;
 }
+
+/** Bounded public map data; excludes provider IDs and raw records. */
+export type CurrentLightningEvent = Pick<LiveStrike, "observedAtMs" | "latitude" | "longitude" | "type">;
 
 export interface ProviderDiagnostics {
   httpStatus: number | null;
@@ -82,6 +86,7 @@ export interface CurrentLightningNotRequested extends CurrentLightningBase {
 
 export interface CurrentLightningAvailable extends CurrentLightningBase {
   status: "clear" | "active";
+  events: CurrentLightningEvent[];
   latestEventAt: number | null;
   nearestKm: number | null;
   nearestDirection: CompassDirection | null;
