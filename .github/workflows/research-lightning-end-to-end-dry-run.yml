@@ -1,0 +1,109 @@
+name: Research Lightning End-to-End Dry Run
+run-name: Lightning end-to-end dry run (${{ inputs.area }} / profile ${{ inputs.incidentProfile }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      north:
+        description: North latitude (used when area is custom)
+        required: true
+        type: string
+        default: "40.05"
+      east:
+        description: East longitude (used when area is custom)
+        required: true
+        type: string
+        default: "-2.05"
+      south:
+        description: South latitude (used when area is custom)
+        required: true
+        type: string
+        default: "38.55"
+      west:
+        description: West longitude (used when area is custom)
+        required: true
+        type: string
+        default: "-3.85"
+      area:
+        description: Custom bounding box or optional Ankara operational area
+        required: true
+        type: choice
+        options:
+          - custom
+          - ankara
+        default: custom
+      durationMinutes:
+        description: Live duration (5–20 minutes; stops earlier after first WOULD_PUBLISH)
+        required: true
+        type: string
+        default: "10"
+      incidentProfile:
+        description: Existing research lifecycle profile
+        required: true
+        type: choice
+        options:
+          - A
+          - B
+          - C
+        default: B
+
+permissions:
+  contents: read
+
+# Share the location-naming lock with the standalone Nominatim lookup workflow.
+concurrency:
+  group: research-lightning-location-naming-nominatim
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    name: Live paired validation, one location lookup, message preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out selected repository revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run research-only orchestration
+        id: orchestrate
+        continue-on-error: true
+        env:
+          NORTH: ${{ inputs.north }}
+          EAST: ${{ inputs.east }}
+          SOUTH: ${{ inputs.south }}
+          WEST: ${{ inputs.west }}
+          AREA: ${{ inputs.area }}
+          DURATION_MINUTES: ${{ inputs.durationMinutes }}
+          INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
+          XWEATHER_CLIENT_ID: ${{ secrets.XWEATHER_CLIENT_ID }}
+          XWEATHER_CLIENT_SECRET: ${{ secrets.XWEATHER_CLIENT_SECRET }}
+        run: node --experimental-strip-types scripts/lightning-end-to-end-dry-run/runner.ts
+
+      - name: Upload structured result and paired diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-end-to-end-dry-run-${{ github.run_id }}
+          path: |
+            artifacts/lightning-end-to-end-dry-run-result.json
+            artifacts/lightning-cg-paired-result.json
+            artifacts/lightning-cg-paired-live-run.jsonl
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Summarize dry run
+        if: always()
+        run: node --experimental-strip-types scripts/lightning-end-to-end-dry-run/summary-runner.ts >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark operational failures
+        if: steps.orchestrate.outcome == 'failure'
+        run: exit 1
