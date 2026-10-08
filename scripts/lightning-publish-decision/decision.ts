@@ -17,7 +17,9 @@ export type PublishDecision = {
 
 export type DecisionContext = {
   sourceHealthAtTrigger?: SourceHealth["state"] | null;
-  // Supplied by a caller for simulation only. No cross-run history is stored in v1A.
+  // Set by a storage-independent record matcher. The gate does not query storage.
+  knownDuplicate?: boolean;
+  // Legacy run-scoped fixture context; raw incident IDs are not cross-run identities.
   previouslyPublishedIncidentIds?: ReadonlySet<string>;
   now?: () => string;
 };
@@ -62,8 +64,9 @@ export function decidePublish(result: Pick<DryRunResult, "status" | "paired" | "
   const locationUsable = hasUsableGeography(result.location);
   const sourceHealthAtTrigger = context.sourceHealthAtTrigger ?? null;
   const sourceHealthy = sourceHealthAtTrigger === "live";
-  const duplicateIncident = context.previouslyPublishedIncidentIds === undefined || !incidentId ? null :
-    context.previouslyPublishedIncidentIds.has(incidentId);
+  const duplicateIncident = context.knownDuplicate ??
+    (context.previouslyPublishedIncidentIds === undefined || !incidentId ? null :
+      context.previouslyPublishedIncidentIds.has(incidentId));
   const reasonCodes: string[] = [];
   if (!messageReady) reasonCodes.push("message_not_ready");
   if (!locationUsable) reasonCodes.push("location_insufficient");
