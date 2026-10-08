@@ -6,7 +6,7 @@ import { PAIRED_ARTIFACT_FIXTURES } from "../lightning-message-preview/fixtures.
 import { ReverseGeocodeError } from "../lightning-location-naming/nominatim.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { continueFromPairedArtifact, pairedValidationFailure } from "./orchestrate.ts";
-import { pairedRunnerArgs } from "./runner.ts";
+import { pairedRunnerArgs, runnerExitCode } from "./runner.ts";
 import { renderEndToEndSummary } from "./summary.ts";
 
 const label = "Cisterna di Latina, Latina";
@@ -80,6 +80,8 @@ test("null label stops before composer without inventing an offshore place", asy
   assert.equal(result.providerCalls.nominatimReverseLookups, 1);
   assert.equal(previews, 0);
   assert.equal(result.message, null);
+  assert.equal(result.location && "normalized" in result.location
+    ? (result.location.normalized as Record<string, unknown>).displayLabel : undefined, null);
   const summary = renderEndToEndSummary(result);
   assert.match(summary, /No usable display label was produced\./);
   assert.doesNotMatch(summary, /\`\`\`text/);
@@ -133,6 +135,15 @@ test("failed live runner has a structured terminal result and no final message",
   assert.equal(result.providerCalls.xweatherEnrichmentCalls, null);
   assert.equal(result.message, null);
   assert.match(renderEndToEndSummary(result), /No final message: \*\*paired_validation_failed\*\*/);
+});
+
+test("expected terminal statuses exit successfully; operational statuses remain failures", () => {
+  for (const status of ["message_preview_ready", "no_publish_candidate", "no_fresh_publish_candidate", "no_usable_location_label"] as const) {
+    assert.equal(runnerExitCode(status), 0, status);
+  }
+  for (const status of ["paired_validation_failed", "location_lookup_failed", "message_composition_failed"] as const) {
+    assert.equal(runnerExitCode(status), 1, status);
+  }
 });
 
 test("runner uses paired-validation options and accepts only the current manual input range", () => {

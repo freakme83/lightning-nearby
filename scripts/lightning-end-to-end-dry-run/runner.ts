@@ -6,12 +6,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readIncidentRunnerOptions } from "../lightning-incident-lifecycle/options.ts";
-import { continueFromPairedArtifact, pairedValidationFailure, type DryRunResult } from "./orchestrate.ts";
+import { continueFromPairedArtifact, pairedValidationFailure, type DryRunResult, type DryRunStatus } from "./orchestrate.ts";
 
 const artifactDirectory = "artifacts";
 const pairedPath = `${artifactDirectory}/lightning-cg-paired-result.json`;
 const logPath = `${artifactDirectory}/lightning-cg-paired-live-run.jsonl`;
 const resultPath = `${artifactDirectory}/lightning-end-to-end-dry-run-result.json`;
+
+export function runnerExitCode(status: DryRunStatus): number {
+  return ["paired_validation_failed", "location_lookup_failed", "message_composition_failed"].includes(status) ? 1 : 0;
+}
 
 export function pairedRunnerArgs(env: Record<string, string | undefined>): string[] {
   const duration = env.DURATION_MINUTES ?? "";
@@ -87,8 +91,8 @@ export async function main(): Promise<void> {
   if (!result) result = pairedValidationFailure("No end-to-end result was produced.");
   await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
   console.log(`End-to-end dry-run status: ${result.status}. Result: ${resultPath}`);
-  if (result.status === "no_usable_location_label") process.exitCode = 2;
-  else if (["paired_validation_failed", "location_lookup_failed", "message_composition_failed"].includes(result.status)) process.exitCode = 1;
+  const exitCode = runnerExitCode(result.status);
+  if (exitCode !== 0) process.exitCode = exitCode;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
