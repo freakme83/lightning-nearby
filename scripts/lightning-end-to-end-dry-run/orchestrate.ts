@@ -63,6 +63,7 @@ function summarizePaired(value: unknown): Record<string, unknown> | null {
     reactivation: value.reactivation ?? null,
     enrichment: enrichment && {
       status: enrichment.status,
+      provider: enrichment.provider ?? null,
       counts: enrichment.counts ?? null,
       match: enrichment.match ?? null,
       cost: enrichment.cost ?? null,
