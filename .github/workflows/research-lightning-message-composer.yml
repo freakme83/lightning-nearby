@@ -57,7 +57,8 @@ jobs:
           console.log("```text");
           console.log(result.text);
           console.log("```\n");
-          console.log(`Character count: ${result.characterCount}; event kind: ${result.eventKind}; map link included: ${result.mapUrl !== null ? "yes" : "no"}.`);
+          console.log(`Character count: ${result.characterCount}; event kind: ${result.eventKind}; internal map URL available: ${result.mapUrl !== null ? "yes" : "no"}.`);
+          console.log(`Public message contains URL: ${/https?:\/\//i.test(result.text) ? "yes" : "no"}; public coordinate: ${result.coordinateText ?? "not applicable"}.`);
           NODE
 
       - name: Upload structured preview

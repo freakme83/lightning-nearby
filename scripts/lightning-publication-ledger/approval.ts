@@ -10,6 +10,7 @@ export type ApprovalCandidate = {
   approvalStatus: ApprovalStatus | null;
   messageFingerprint: string;
   messageText: string | null;
+  mapUrl?: string | null;
 };
 export type ApprovalStore = {
   getPublicationForApproval(publicationId: string): Promise<ApprovalCandidate | null>;
@@ -26,6 +27,7 @@ export type ApprovalResult = {
   outcome: ApprovalOutcome;
   decision: PublicationRecord["decision"] | null;
   messageText: string | null;
+  mapUrl: string | null;
   reason: string | null;
 };
 
@@ -41,7 +43,7 @@ export async function applyManualApproval(publicationId: string, action: Approva
   store: ApprovalStore, options: { actor?: string | null; now?: () => string } = {}): Promise<ApprovalResult> {
   const target = action === "approve" ? "approved" : "skipped";
   const base: ApprovalResult = { publicationId, requestedAction: action, previousStatus: null,
-    finalStatus: null, outcome: "storage_error", decision: null, messageText: null, reason: null };
+    finalStatus: null, outcome: "storage_error", decision: null, messageText: null, mapUrl: null, reason: null };
   if (!/^pub_[0-9a-f]{32}$/.test(publicationId) || !["approve", "skip"].includes(action)) {
     return { ...base, outcome: "not_eligible", reason: "Invalid publication ID or action." };
   }
@@ -49,7 +51,7 @@ export async function applyManualApproval(publicationId: string, action: Approva
     const existing = await store.getPublicationForApproval(publicationId);
     if (!existing) return { ...base, outcome: "not_found", reason: "Publication record was not found." };
     const details = { ...base, previousStatus: existing.approvalStatus, finalStatus: existing.approvalStatus,
-      decision: existing.decision, messageText: existing.messageText };
+      decision: existing.decision, messageText: existing.messageText, mapUrl: existing.mapUrl ?? null };
     if (existing.publicationId !== publicationId || !eligible(existing)) return { ...details, outcome: "not_eligible",
       reason: "The record is not an actionable, complete WOULD_PUBLISH candidate." };
     if (existing.approvalStatus === target) return { ...details,

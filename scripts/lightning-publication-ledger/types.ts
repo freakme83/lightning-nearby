@@ -18,6 +18,8 @@ export type PublicationRecord = {
   decision: PublishDecision["decision"] | "PUBLISHED";
   recordedAt: string;
   platformPostId?: string | null;
+  // Internal selected CG map metadata; never part of the public-text fingerprint.
+  mapUrl?: string | null;
 };
 
 export type DuplicateMatchResult = {

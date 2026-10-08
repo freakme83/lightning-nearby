@@ -49,11 +49,17 @@ test("real paired path uses incident coordinates for one lookup and selected CG 
     assert.equal(result.message.text, previewPairedMessage({ artifact, locationDisplayLabel: label }).text);
     assert.equal(result.message.mapUrl, "https://www.google.com/maps?q=41.4784,12.8168");
     assert.ok(result.message.text.includes("Cisterna di Latina / Latina"));
+    assert.ok(result.message.text.endsWith("\n\n41.478, 12.817"));
+    assert.doesNotMatch(result.message.text, /https?:\/\/|41\.536, 12\.797/);
     const summary = renderEndToEndSummary(result);
     assert.ok(summary.includes(`\`\`\`text\n${result.message.text}\n\`\`\``));
     assert.match(summary, /\`\`\`text\nCisterna di Latina, Latina\n\`\`\`/);
     assert.match(summary, /Incident coordinate used for lookup: 41\.535948999999995, 12\.797077000223082/);
     assert.match(summary, /Selected map coordinate: 41\.4784,12\.8168/);
+    assert.match(summary, /Internal map URL available: yes/);
+    assert.match(summary, /Public message contains URL: no/);
+    assert.match(summary, /Public coordinate: 41\.478, 12\.817/);
+    assert.match(summary, /Internal Maps URL: https:\/\/www\.google\.com\/maps\?q=41\.4784,12\.8168/);
   }
   assert.equal(result.capturedAt, "captured");
 });

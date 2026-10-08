@@ -19,6 +19,8 @@ export function renderApprovalSummary(result: ApprovalResult): string {
     ...(result.reason ? [`- Reason: ${result.reason}`] : []),
     "", "### Exact candidate message", "",
     result.messageText ? fencedText(result.messageText) : "No actionable candidate message is available.",
+    ...(result.mapUrl && /^https:\/\/www\.google\.com\/maps\?q=-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?$/.test(result.mapUrl)
+      ? ["", "### Internal map", "", result.mapUrl] : []),
     "", "No social post was sent.", ""];
   return rows.join("\n");
 }

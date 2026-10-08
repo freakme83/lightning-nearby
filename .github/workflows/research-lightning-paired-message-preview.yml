@@ -192,7 +192,9 @@ jobs:
             ["Enrichment state / event kind", `${preview.enrichmentStatus ?? "not available"} / ${preview.composer?.eventKind ?? "not available"}`],
             ["Final location label", result.input.locationLabel],
             ["Character count", preview.characterCount],
-            ["Map link included", preview.mapUrl ? "yes" : "no"],
+            ["Internal map URL available", preview.mapUrl ? "yes" : "no"],
+            ["Public message contains URL", /https?:\/\//i.test(preview.text) ? "yes" : "no"],
+            ["Public coordinate", preview.composer?.coordinateText ?? "not applicable"],
             ["Selected map coordinates", mapCoordinates],
           ];
           console.log("### Diagnostics\n\n| Item | Value |\n|---|---|");

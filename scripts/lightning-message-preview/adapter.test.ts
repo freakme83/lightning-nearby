@@ -57,6 +57,9 @@ test("CG map uses selected match coordinates, never incident representative coor
   if (!result.ok) return;
   assert.notEqual(result.mapUrl, "https://www.google.com/maps?q=39.9,32.8");
   assert.ok(result.mapUrl?.endsWith("39.902742,32.851494"));
+  assert.equal(result.composer.coordinateText, "39.903, 32.851");
+  assert.ok(result.text.endsWith("\n\n39.903, 32.851"));
+  assert.doesNotMatch(result.text, /39\.900, 32\.800|https?:\/\//);
 });
 
 test("the current lastActivityTimeMs wins over any older eventTimeMs", () => {

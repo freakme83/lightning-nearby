@@ -19,6 +19,7 @@ export type ComposedMessage = {
   locationText: string;
   eventText: string;
   mapUrl: string | null;
+  coordinateText: string | null;
   characterCount: number;
   eventKind: ComposerEnrichmentStatus;
 };
