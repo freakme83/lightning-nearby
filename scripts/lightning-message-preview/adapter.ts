@@ -1,6 +1,6 @@
 import { composeLightningMessage } from "../lightning-message-composer/compose.ts";
 import type { ComposerEnrichmentStatus, ComposerInput } from "../lightning-message-composer/types.ts";
-import type { PairedMessagePreview, PairedPreviewInput, PairedSourceStatus, PairedTriggerMode } from "./types.ts";
+import type { PairedMessagePreview, PairedPreviewInput, PairedResult, PairedSourceStatus, PairedTriggerMode } from "./types.ts";
 
 const statuses = new Set<ComposerEnrichmentStatus>(["cg_verified", "ic_only", "no_match", "provider_unavailable"]);
 const sourceStatuses = new Set<PairedSourceStatus>([
@@ -27,26 +27,12 @@ function unavailable(input: PairedPreviewInput, status: PairedSourceStatus,
 
 export function previewPairedMessage(input: PairedPreviewInput): PairedMessagePreview {
   const artifact = input.artifact;
-  const status = sourceStatus(artifact);
-  if (status === "no_publish_candidate" || status === "no_fresh_publish_candidate") {
-    return unavailable(input, status, "not_paired_result", "This artifact has no paired enrichment result to compose.");
+  const inspection = inspectPairedArtifact(artifact);
+  if (!inspection.ok) {
+    return unavailable(input, inspection.status, inspection.code, inspection.message);
   }
-  if (status !== "paired_result" || !record(artifact)) {
-    return unavailable(input, status, "malformed_paired_artifact", "A paired_result artifact is required.");
-  }
-
-  const triggerMode = artifact.triggerMode;
-  const incident = artifact.incident;
-  const enrichment = artifact.enrichment;
-  if ((triggerMode !== "fresh_would_publish" && triggerMode !== "reactivated_after_stale_publish") ||
-      !record(incident) || typeof incident.incidentId !== "string" || !incident.incidentId.trim() ||
-      typeof incident.lastActivityTimeMs !== "number" || !Number.isSafeInteger(incident.lastActivityTimeMs) ||
-      !record(enrichment) || typeof enrichment.status !== "string" ||
-      !statuses.has(enrichment.status as ComposerEnrichmentStatus)) {
-    return unavailable(input, status, "malformed_paired_artifact", "Required paired incident or enrichment fields are invalid.");
-  }
-
-  const enrichmentStatus = enrichment.status as ComposerEnrichmentStatus;
+  const { triggerMode, incident, enrichment } = inspection.artifact;
+  const enrichmentStatus = enrichment.status;
   // Only the selected match may supply the CG map coordinate; incident representative coordinates are never read.
   const selectedMatch = record(enrichment.match) ? enrichment.match : null;
   const match: ComposerInput["enrichment"]["match"] = enrichmentStatus === "cg_verified" && selectedMatch &&
@@ -80,4 +66,29 @@ export function previewPairedMessage(input: PairedPreviewInput): PairedMessagePr
     ok: true, ...metadata, locationDisplayLabel: input.locationDisplayLabel!, composer,
     text: composer.text, characterCount: composer.characterCount, mapUrl: composer.mapUrl,
   };
+}
+
+// Shared preflight for orchestration: no location lookup or message composition takes place here.
+export function inspectPairedArtifact(artifact: unknown):
+  | { ok: true; artifact: PairedResult }
+  | { ok: false; status: PairedSourceStatus; code: "not_paired_result" | "malformed_paired_artifact"; message: string } {
+  const status = sourceStatus(artifact);
+  if (status === "no_publish_candidate" || status === "no_fresh_publish_candidate") {
+    return { ok: false, status, code: "not_paired_result", message: "This artifact has no paired enrichment result to compose." };
+  }
+  if (status !== "paired_result" || !record(artifact)) {
+    return { ok: false, status, code: "malformed_paired_artifact", message: "A paired_result artifact is required." };
+  }
+
+  const triggerMode = artifact.triggerMode;
+  const incident = artifact.incident;
+  const enrichment = artifact.enrichment;
+  if ((triggerMode !== "fresh_would_publish" && triggerMode !== "reactivated_after_stale_publish") ||
+      !record(incident) || typeof incident.incidentId !== "string" || !incident.incidentId.trim() ||
+      typeof incident.lastActivityTimeMs !== "number" || !Number.isSafeInteger(incident.lastActivityTimeMs) ||
+      !record(enrichment) || typeof enrichment.status !== "string" ||
+      !statuses.has(enrichment.status as ComposerEnrichmentStatus)) {
+    return { ok: false, status, code: "malformed_paired_artifact", message: "Required paired incident or enrichment fields are invalid." };
+  }
+  return { ok: true, artifact: artifact as PairedResult };
 }
