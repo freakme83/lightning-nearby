@@ -82,8 +82,11 @@ export function renderEndToEndSummary(result: DryRunResult): string {
     rows.push(fencedText(preview.text), "",
       `- Character count: ${preview.characterCount}`,
       `- Event kind: ${value(preview.composer.eventKind)}`,
-      `- Map link included: ${preview.mapUrl ? "yes" : "no"}`,
-      `- Selected map coordinate: ${mapCoordinate}`);
+      `- Internal map URL available: ${preview.mapUrl ? "yes" : "no"}`,
+      `- Public message contains URL: ${/https?:\/\//i.test(preview.text) ? "yes" : "no"}`,
+      `- Public coordinate: ${preview.composer.coordinateText ?? "not applicable"}`,
+      `- Selected map coordinate: ${mapCoordinate}`,
+      ...(preview.mapUrl ? [`- Internal Maps URL: ${preview.mapUrl}`] : []));
   } else {
     rows.push(`No final message: **${value(result.status)}** — ${value(result.reason ?? (result.message?.ok === false ? result.message.error.message : null))}.`);
   }

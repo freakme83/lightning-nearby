@@ -52,6 +52,7 @@ function toRow(record: PublicationRecord, exactMessageText: string): Row {
     message_fingerprint: record.messageFingerprint, decision: record.decision,
     recorded_at: record.recordedAt, platform_post_id: record.platformPostId ?? null,
     message_text: exactMessageText,
+    map_url: record.enrichmentStatus === "cg_verified" ? record.mapUrl ?? null : null,
     approval_status: record.decision === "WOULD_PUBLISH" ? "pending" : null,
     approval_updated_at: null, approval_actor: null,
   };
@@ -113,11 +114,12 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
   };
 }
 
-const approvalColumns = "publication_id,decision,platform_post_id,approval_status,message_fingerprint,message_text";
+const approvalColumns = "publication_id,decision,platform_post_id,approval_status,message_fingerprint,message_text,map_url";
 function approvalRow(row: Row): ApprovalCandidate {
   if (typeof row.publication_id !== "string" || typeof row.message_fingerprint !== "string" ||
       !["WOULD_PUBLISH", "HOLD", "PUBLISHED"].includes(String(row.decision)) ||
       (row.message_text !== null && typeof row.message_text !== "string") ||
+      (row.map_url !== null && typeof row.map_url !== "string") ||
       (row.platform_post_id !== null && typeof row.platform_post_id !== "string") ||
       (row.approval_status !== null && !["pending", "approved", "skipped"].includes(String(row.approval_status)))) {
     throw new Error("Invalid approval record response.");
@@ -125,7 +127,8 @@ function approvalRow(row: Row): ApprovalCandidate {
   return { publicationId: row.publication_id, decision: row.decision as ApprovalCandidate["decision"],
     platformPostId: row.platform_post_id as string | null,
     approvalStatus: row.approval_status as ApprovalCandidate["approvalStatus"],
-    messageFingerprint: row.message_fingerprint, messageText: row.message_text as string | null };
+    messageFingerprint: row.message_fingerprint, messageText: row.message_text as string | null,
+    mapUrl: row.map_url as string | null };
 }
 
 export function createSupabaseApprovalStore(config: { url?: string; serviceRoleKey?: string },

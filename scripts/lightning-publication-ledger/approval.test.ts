@@ -107,3 +107,23 @@ test("approval result displays exact persisted text, with no publishing integrat
   const code = await readFile(new URL("./approval-runner.ts", import.meta.url), "utf8");
   assert.doesNotMatch(code, /XWEATHER|X_API|TWITTER|webhook|https?:\/\//i);
 });
+
+test("historical public URL text remains the immutable approval payload", async () => {
+  const historicalText = messageText + "https://www.google.com/maps?q=41.4784,12.8168";
+  const state = memory({ ...base, messageText: historicalText,
+    messageFingerprint: fingerprintMessage(historicalText), mapUrl: null });
+  const result = await applyManualApproval(id, "approve", state.store);
+  assert.equal(result.outcome, "updated");
+  assert.equal(result.messageText, historicalText);
+  assert.equal(state.read()?.messageFingerprint, fingerprintMessage(historicalText));
+  assert.ok(renderApprovalSummary(result).includes(`\`\`\`text\n${historicalText}\n\`\`\``));
+  assert.doesNotMatch(renderApprovalSummary(result), /### Internal map/);
+});
+
+test("operator map is separate from exact message and unsafe map values are not rendered", async () => {
+  const mapUrl = "https://www.google.com/maps?q=41.4784,12.8168";
+  const result = await applyManualApproval(id, "approve", memory({ ...base, mapUrl }).store);
+  assert.equal(result.mapUrl, mapUrl);
+  assert.ok(renderApprovalSummary(result).includes(`\`\`\`text\n${messageText}\n\`\`\`\n\n### Internal map\n\n${mapUrl}`));
+  assert.doesNotMatch(renderApprovalSummary({ ...result, mapUrl: "https://evil.example\n# FAKE" }), /evil|FAKE|### Internal map/);
+});

@@ -20,7 +20,7 @@ export async function main(): Promise<void> {
       { actor: process.env.GITHUB_ACTOR });
   } catch {
     result = { publicationId, requestedAction: action as ApprovalAction, previousStatus: null,
-      finalStatus: null, decision: null, messageText: null, outcome: "storage_error",
+      finalStatus: null, decision: null, messageText: null, mapUrl: null, outcome: "storage_error",
       reason: "Supabase approval configuration is unavailable or invalid." };
   }
   await mkdir("artifacts", { recursive: true });

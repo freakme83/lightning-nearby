@@ -83,6 +83,7 @@ export function buildPublicationRecord(result: DryRunResult,
     provider: "xweather", enrichmentStatus: status as PublicationRecord["enrichmentStatus"],
     providerEventId, providerEventType, locationLabel: label, messageFingerprint,
     decision: result.publishDecision.decision, recordedAt,
+    mapUrl: status === "cg_verified" ? result.message.mapUrl : null,
   };
   return { ok: true, record: publicationRecord };
 }

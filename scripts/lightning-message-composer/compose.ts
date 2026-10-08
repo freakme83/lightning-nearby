@@ -64,6 +64,7 @@ export function composeLightningMessage(input: ComposerInput, options: ComposerO
   if (!status || !supportedStatuses.has(status)) return error("invalid_enrichment", "An enrichment state is required.");
 
   let mapUrl: string | null = null;
+  let coordinateText: string | null = null;
   if (status === "cg_verified") {
     const match = input.enrichment.match;
     if (match?.type !== "cg" || typeof match.latitude !== "number" || typeof match.longitude !== "number" ||
@@ -72,15 +73,16 @@ export function composeLightningMessage(input: ComposerInput, options: ComposerO
       return error("missing_cg_match", "A selected CG match with valid coordinates is required.");
     }
     mapUrl = `https://www.google.com/maps?q=${match.latitude},${match.longitude}`;
+    coordinateText = `${match.latitude.toFixed(3)}, ${match.longitude.toFixed(3)}`;
   }
 
   const hashtag = status === "cg_verified" ? "#YILDIRIM" : "#ŞİMŞEK";
   const dateTimeText = formatDateTime(eventTimeMs);
   const eventText = `${locationText} civarında ${status === "cg_verified" ? "yere ulaşan yıldırım" : "şimşek"} ${verbForIncident(input.incident.id)}.`;
-  const text = [hashtag, dateTimeText, eventText, ...(mapUrl ? [mapUrl] : [])].join("\n");
+  const text = [hashtag, dateTimeText, eventText, ...(coordinateText ? ["", coordinateText] : [])].join("\n");
   const characterCount = [...text].length;
   if (characterCount > maxCharacters) {
     return { ok: false, error: { code: "message_too_long", message: "Message exceeds the configured character budget." }, characterCount };
   }
-  return { ok: true, text, hashtag, dateTimeText, locationText, eventText, mapUrl, characterCount, eventKind: status };
+  return { ok: true, text, hashtag, dateTimeText, locationText, eventText, mapUrl, coordinateText, characterCount, eventKind: status };
 }

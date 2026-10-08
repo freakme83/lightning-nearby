@@ -8,7 +8,7 @@ const id = `pub_${"a".repeat(32)}`;
 const text = "#ŞİMŞEK\nExact message\n";
 const config = { url: "https://example.supabase.co", serviceRoleKey: "SECRET_DO_NOT_LEAK" };
 const row = { publication_id: id, decision: "WOULD_PUBLISH", platform_post_id: null,
-  approval_status: "pending", message_fingerprint: fingerprintMessage(text), message_text: text };
+  approval_status: "pending", message_fingerprint: fingerprintMessage(text), message_text: text, map_url: null };
 const record: PublicationRecord = { publicationId: id, runId: "1", incidentId: "i-000001",
   incidentReferenceTime: "2026-10-08T10:00:00Z", incidentLatitude: 41.5, incidentLongitude: 12.8,
   provider: "xweather", enrichmentStatus: "no_match", providerEventId: null, providerEventType: null,
