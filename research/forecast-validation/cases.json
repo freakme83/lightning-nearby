@@ -23,7 +23,8 @@
         "cinJPerKg": 4,
         "qualitativeRisk": "low",
         "evidenceSource": "cape-precip-fallback",
-        "evidenceQuality": "ingredients"
+        "evidenceQuality": "ingredients",
+        "evidenceType": "app_debug_snapshot"
       },
       "ensemble": {
         "model": "ICON-EU EPS",
@@ -90,7 +91,8 @@
         "cinJPerKg": 0,
         "qualitativeRisk": "elevated",
         "evidenceSource": "cape-precip-fallback",
-        "evidenceQuality": "ingredients"
+        "evidenceQuality": "ingredients",
+        "evidenceType": "app_debug_snapshot"
       },
       "ensemble": {
         "model": "ICON global EPS",
@@ -149,7 +151,8 @@
         "cinJPerKg": 41,
         "qualitativeRisk": "low",
         "evidenceSource": "cape-precip-fallback",
-        "evidenceQuality": "ingredients"
+        "evidenceQuality": "ingredients",
+        "evidenceType": "app_debug_snapshot"
       },
       "ensemble": {
         "model": "ICON-EU EPS",
@@ -210,7 +213,8 @@
         "cinJPerKg": 11,
         "qualitativeRisk": "high",
         "evidenceSource": "direct-thunderstorm-code",
-        "evidenceQuality": "direct"
+        "evidenceQuality": "direct",
+        "evidenceType": "app_debug_snapshot"
       },
       "ensemble": {
         "model": "ICON-EU EPS",
