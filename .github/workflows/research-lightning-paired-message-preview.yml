@@ -1,0 +1,204 @@
+name: Research Lightning Paired Message Preview
+run-name: Paired message dry-run (source run ${{ inputs.pairedRunId }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      pairedRunId:
+        description: Numeric run ID of a successful Research Lightning CG Paired Validation run in this repository
+        required: true
+        type: string
+      locationLabel:
+        description: Exact displayLabel copied from Research Lightning Location Naming Live Lookup
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preview:
+    name: Preview one real paired artifact without provider calls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out selected repository revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate source paired-validation run and artifact
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAIRED_RUN_ID: ${{ inputs.pairedRunId }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+
+          const runId = process.env.PAIRED_RUN_ID ?? "";
+          if (!/^\d+$/.test(runId) || !Number.isSafeInteger(Number(runId)) || Number(runId) <= 0) {
+            throw new Error("pairedRunId must be the numeric run ID of a successful Research Lightning CG Paired Validation workflow run.");
+          }
+
+          const repository = process.env.GH_REPOSITORY;
+          const headers = {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${process.env.GH_TOKEN}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+          };
+          const api = `https://api.github.com/repos/${repository}/actions`;
+          const runResponse = await fetch(`${api}/runs/${runId}`, { headers });
+          if (!runResponse.ok) throw new Error(`Could not read source workflow run ${runId} (${runResponse.status}).`);
+          const run = await runResponse.json();
+          if (run.repository?.full_name !== repository || run.path !== ".github/workflows/research-lightning-cg-paired-validation.yml") {
+            throw new Error(`Run ${runId} is not a Research Lightning CG Paired Validation run from this repository.`);
+          }
+          if (run.status !== "completed" || run.conclusion !== "success") {
+            throw new Error(`Source paired-validation run ${runId} must be completed successfully; got ${run.status}/${run.conclusion ?? "no conclusion"}.`);
+          }
+
+          const artifactName = `lightning-cg-paired-validation-${runId}`;
+          const artifactResponse = await fetch(`${api}/runs/${runId}/artifacts?per_page=100`, { headers });
+          if (!artifactResponse.ok) throw new Error(`Could not list artifacts for source run ${runId} (${artifactResponse.status}).`);
+          const artifactList = await artifactResponse.json();
+          const matching = (artifactList.artifacts ?? []).filter((artifact) => artifact.name === artifactName && !artifact.expired);
+          if (matching.length !== 1) {
+            throw new Error(matching.length === 0
+              ? `Source run ${runId} has no available ${artifactName} artifact.`
+              : `Source run ${runId} has ${matching.length} artifacts named ${artifactName}; expected exactly one.`);
+          }
+
+          appendFileSync(process.env.GITHUB_OUTPUT, `artifact_name=${artifactName}\n`);
+          console.log(`Verified successful paired-validation run ${runId} and its artifact ${artifactName}.`);
+          NODE
+
+      - name: Download paired-validation artifact from the selected run
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.source.outputs.artifact_name }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.pairedRunId }}
+          path: artifacts/paired-source
+
+      - name: Locate the unique real paired result
+        id: paired_artifact
+        run: |
+          mapfile -d '' candidates < <(find artifacts/paired-source -type f -name 'lightning-cg-paired-result.json' -print0)
+          if [ "${#candidates[@]}" -ne 1 ]; then
+            if [ "${#candidates[@]}" -eq 0 ]; then
+              echo "The downloaded paired-validation artifact does not contain lightning-cg-paired-result.json." >&2
+            else
+              echo "The downloaded artifact contains ${#candidates[@]} files named lightning-cg-paired-result.json; expected exactly one." >&2
+            fi
+            exit 1
+          fi
+          printf 'path=%s\n' "${candidates[0]}" >> "$GITHUB_OUTPUT"
+          echo "Located one real paired result artifact."
+
+      - name: Run existing paired-message-preview adapter
+        id: compose
+        env:
+          PAIRED_ARTIFACT_PATH: ${{ steps.paired_artifact.outputs.path }}
+          LOCATION_LABEL: ${{ inputs.locationLabel }}
+          PAIRED_RUN_ID: ${{ inputs.pairedRunId }}
+          ARTIFACT_NAME: ${{ steps.source.outputs.artifact_name }}
+        run: |
+          if [ -z "$LOCATION_LABEL" ]; then
+            echo "locationLabel must be the exact non-empty displayLabel from the location-naming workflow." >&2
+            exit 1
+          fi
+          mkdir -p artifacts
+          set +e
+          node --experimental-strip-types scripts/lightning-message-preview/runner.ts \
+            --artifact="$PAIRED_ARTIFACT_PATH" \
+            --location="$LOCATION_LABEL" \
+            > artifacts/paired-message-preview-adapter-result.json
+          adapter_status=$?
+          set -e
+          if [ ! -s artifacts/paired-message-preview-adapter-result.json ]; then
+            echo "The paired-message-preview CLI produced no structured result." >&2
+            exit 1
+          fi
+          PAIRED_RUN_ID="$PAIRED_RUN_ID" ARTIFACT_NAME="$ARTIFACT_NAME" LOCATION_LABEL="$LOCATION_LABEL" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const preview = JSON.parse(readFileSync("artifacts/paired-message-preview-adapter-result.json", "utf8"));
+          const result = {
+            source: {
+              repository: process.env.GITHUB_REPOSITORY,
+              pairedWorkflowRunId: process.env.PAIRED_RUN_ID,
+              pairedArtifactName: process.env.ARTIFACT_NAME,
+            },
+            input: { locationLabel: process.env.LOCATION_LABEL },
+            preview,
+          };
+          writeFileSync("artifacts/paired-message-preview-result.json", `${JSON.stringify(result, null, 2)}\n`);
+          NODE
+          if [ "$adapter_status" -ne 0 ]; then
+            echo "The existing adapter rejected this artifact or label; no public message was produced." >&2
+            exit "$adapter_status"
+          fi
+
+      - name: Upload structured preview result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-paired-message-preview-${{ github.run_id }}
+          path: artifacts/paired-message-preview-result.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Summarize dry-run message
+        if: always()
+        env:
+          RESULT_PATH: artifacts/paired-message-preview-result.json
+          PAIRED_RUN_ID: ${{ inputs.pairedRunId }}
+        run: |
+          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { existsSync, readFileSync } from "node:fs";
+
+          console.log("## Paired message dry-run\n");
+          if (!existsSync(process.env.RESULT_PATH)) {
+            console.log(`No preview result was produced for source paired run ${process.env.PAIRED_RUN_ID}. Check the failing workflow step above.`);
+            process.exit(0);
+          }
+
+          const result = JSON.parse(readFileSync(process.env.RESULT_PATH, "utf8"));
+          const preview = result.preview;
+          if (!preview?.ok || typeof preview.text !== "string") {
+            console.log("The existing adapter did not produce a usable paired message.\n");
+            console.log(`Adapter error: ${preview?.error?.code ?? "missing_result"} — ${preview?.error?.message ?? "No public message was created."}`);
+            process.exit(0);
+          }
+
+          const longestRun = Math.max(0, ...Array.from(preview.text.matchAll(/`+/g), ([run]) => run.length));
+          const fence = "`".repeat(Math.max(3, longestRun + 1));
+          console.log(`${fence}text\n${preview.text}\n${fence}\n`);
+
+          let mapCoordinates = "not available";
+          if (preview.mapUrl) {
+            try { mapCoordinates = new URL(preview.mapUrl).searchParams.get("q") ?? "not available"; }
+            catch { mapCoordinates = "included; coordinates unavailable"; }
+          }
+          const diagnostics = [
+            ["Source paired run ID", result.source.pairedWorkflowRunId],
+            ["Incident ID", preview.incidentId ?? "not available"],
+            ["Enrichment state / event kind", `${preview.enrichmentStatus ?? "not available"} / ${preview.composer?.eventKind ?? "not available"}`],
+            ["Final location label", result.input.locationLabel],
+            ["Character count", preview.characterCount],
+            ["Map link included", preview.mapUrl ? "yes" : "no"],
+            ["Selected map coordinates", mapCoordinates],
+          ];
+          console.log("### Diagnostics\n\n| Item | Value |\n|---|---|");
+          for (const [label, value] of diagnostics) {
+            const safe = String(value ?? "not available").replaceAll("|", "\\|").replaceAll("\n", " ");
+            console.log(`| ${label} | ${safe} |`);
+          }
+          console.log("\nThis is a dry-run preview only. Nothing was published and no lightning or location provider was queried.");
+          NODE
