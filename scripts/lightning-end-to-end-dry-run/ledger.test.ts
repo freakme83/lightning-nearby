@@ -18,14 +18,15 @@ async function completed(name: keyof typeof PAIRED_ARTIFACT_FIXTURES = "cg_verif
 }
 function store(history: PublicationRecord[] = []) {
   const written: PublicationRecord[] = [];
+  const messages: string[] = [];
   const storage: LedgerStore = { loadRelevantPublicationHistory: async () => history,
-    insertPublicationRecord: async record => { written.push(record); return "inserted"; } };
-  return { storage, written };
+    insertPublicationRecord: async (record, exactMessageText) => { written.push(record); messages.push(exactMessageText); return "inserted"; } };
+  return { storage, written, messages };
 }
 
 test("first candidate persists final WOULD_PUBLISH and keeps exact composer text", async () => {
   const result = await completed();
-  const { storage, written } = store();
+  const { storage, written, messages } = store();
   const final = await applyPersistentLedger(result, context, storage, { runId: "run-1" });
   assert.equal(final.publishDecision?.decision, "WOULD_PUBLISH");
   assert.equal(final.status, "message_preview_ready");
@@ -34,7 +35,10 @@ test("first candidate persists final WOULD_PUBLISH and keeps exact composer text
   assert.equal(final.ledger?.recordPersisted, true);
   assert.equal(written[0].decision, "WOULD_PUBLISH");
   assert.equal(written[0].runId, "run-1");
+  assert.equal(messages[0], result.message?.text);
+  assert.equal(final.ledger?.approvalStatus, "pending");
   assert.match(renderEndToEndSummary(final), /## Publication ledger[\s\S]*Dry run only\. Nothing was published\./);
+  assert.match(renderEndToEndSummary(final), /## Manual approval[\s\S]*Approval status: pending/);
 });
 
 test("stored WOULD_PUBLISH and PUBLISHED block; stored HOLD cannot block either path", async () => {
@@ -49,6 +53,7 @@ test("stored WOULD_PUBLISH and PUBLISHED block; stored HOLD cannot block either 
       assert.equal(final.publishDecision?.decision, decision === "HOLD" ? "WOULD_PUBLISH" : "HOLD");
       assert.equal(final.ledger?.duplicateMatch?.duplicate, decision !== "HOLD");
       assert.equal(next.written[0].decision, final.publishDecision?.decision);
+      assert.equal(final.ledger?.approvalStatus, decision === "HOLD" ? "pending" : null);
       if (decision !== "HOLD") assert.ok(final.publishDecision?.reasonCodes.includes("duplicate_incident"));
     }
   }

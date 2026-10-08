@@ -113,6 +113,13 @@ export function renderEndToEndSummary(result: DryRunResult): string {
       `- Storage status: ${ledger.storageStatus}`,
       ...(ledger.reason ? [`- Storage detail: ${value(ledger.reason)}`] : []));
   }
+  if (result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.recordPersisted &&
+      result.ledger.approvalStatus === "pending") {
+    rows.push("", "## Manual approval", "",
+      "- Approval status: pending",
+      `- Publication ID: ${value(result.ledger.persistedPublicationId)}`,
+      "- Action required: approve or skip using Research Lightning Manual Approval.");
+  }
   rows.push("", "Dry run only. Nothing was published.", "");
   return rows.join("\n");
 }
