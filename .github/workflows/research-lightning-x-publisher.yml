@@ -1,0 +1,66 @@
+name: Research Lightning X Publisher
+run-name: Lightning X publisher (${{ inputs.publicationId }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      publicationId:
+        description: Approved publication ID (pub_...) from the persistent ledger
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightning-x-publisher-${{ inputs.publicationId }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish one manually approved record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out selected repository revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish approved record once
+        id: publisher
+        continue-on-error: true
+        env:
+          PUBLICATION_ID: ${{ inputs.publicationId }}
+          X_PUBLISHING_ENABLED: ${{ vars.X_PUBLISHING_ENABLED }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_KEY_SECRET: ${{ secrets.X_API_KEY_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: node --experimental-strip-types scripts/lightning-x-publisher/runner.ts
+
+      - name: Upload structured publisher result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-x-publisher-${{ github.run_id }}
+          path: artifacts/lightning-x-publisher-result.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize publisher outcome
+        if: always()
+        run: node --experimental-strip-types scripts/lightning-x-publisher/summary-runner.ts >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark rejected or uncertain publication
+        if: steps.publisher.outcome == 'failure'
+        run: exit 1
