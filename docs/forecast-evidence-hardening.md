@@ -138,3 +138,8 @@ deterministic, neighborhood inputs, direct probability, and ensemble support at
 aligned timestamps. Record requested and returned coordinates, sample coverage,
 displacement, cost, and timing before proposing classifier-v2 rules. Keep primary
 classification unchanged until that evidence supports a separate decision.
+
+
+## Manually curated validation cases
+
+The initial, non-representative case corpus is documented in [Forecast validation corpus](forecast-validation-corpus.md). It records observed cases separately from diagnostic evidence and research hypotheses; it does not change classifier behavior.
