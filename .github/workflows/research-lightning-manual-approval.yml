@@ -1,0 +1,65 @@
+name: Research Lightning Manual Approval
+run-name: Lightning manual approval (${{ inputs.action }} / ${{ inputs.publicationId }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      publicationId:
+        description: Publication ID (pub_...) from the end-to-end dry-run Job Summary
+        required: true
+        type: string
+      action:
+        description: Human decision; no social post is sent
+        required: true
+        type: choice
+        options:
+          - approve
+          - skip
+
+permissions:
+  contents: read
+
+jobs:
+  approval:
+    name: Update human approval state only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out selected repository revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply manual approval
+        id: approval
+        continue-on-error: true
+        env:
+          PUBLICATION_ID: ${{ inputs.publicationId }}
+          APPROVAL_ACTION: ${{ inputs.action }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node --experimental-strip-types scripts/lightning-publication-ledger/approval-runner.ts
+
+      - name: Upload structured approval result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-manual-approval-${{ github.run_id }}
+          path: artifacts/lightning-manual-approval-result.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Summarize manual approval
+        if: always()
+        run: node --experimental-strip-types scripts/lightning-publication-ledger/approval-summary-runner.ts >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark rejected or operationally failed approval
+        if: steps.approval.outcome == 'failure'
+        run: exit 1

@@ -1,8 +1,10 @@
 import type { PublicationRecord } from "../types.ts";
+import { fingerprintMessage } from "../record.ts";
+import type { ApprovalCandidate, ApprovalStore } from "../approval.ts";
 
 export type LedgerStore = {
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
-  insertPublicationRecord(record: PublicationRecord): Promise<"inserted" | "already_present">;
+  insertPublicationRecord(record: PublicationRecord, exactMessageText: string): Promise<"inserted" | "already_present">;
 };
 
 const columns = ["publication_id", "run_id", "incident_id", "incident_reference_time", "incident_latitude",
@@ -37,7 +39,10 @@ function fromRow(row: Row): PublicationRecord {
   };
 }
 
-function toRow(record: PublicationRecord): Row {
+function toRow(record: PublicationRecord, exactMessageText: string): Row {
+  if (!exactMessageText || fingerprintMessage(exactMessageText) !== record.messageFingerprint) {
+    throw new Error("Exact composer text does not match its stored fingerprint.");
+  }
   return {
     publication_id: record.publicationId, run_id: record.runId, incident_id: record.incidentId,
     incident_reference_time: record.incidentReferenceTime, incident_latitude: record.incidentLatitude,
@@ -46,11 +51,13 @@ function toRow(record: PublicationRecord): Row {
     provider_event_type: record.providerEventType, location_label: record.locationLabel,
     message_fingerprint: record.messageFingerprint, decision: record.decision,
     recorded_at: record.recordedAt, platform_post_id: record.platformPostId ?? null,
+    message_text: exactMessageText,
+    approval_status: record.decision === "WOULD_PUBLISH" ? "pending" : null,
+    approval_updated_at: null, approval_actor: null,
   };
 }
 
-export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: string },
-  fetcher: typeof fetch = fetch): LedgerStore {
+export function supabaseConnection(config: { url?: string; serviceRoleKey?: string }) {
   if (!config.url || !config.serviceRoleKey) throw new Error("Supabase ledger configuration is incomplete.");
   let endpoint: URL;
   try {
@@ -58,6 +65,12 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
     if (endpoint.protocol !== "https:" || !new URL(config.url).hostname.endsWith(".supabase.co")) throw new Error();
   } catch { throw new Error("Supabase ledger URL is invalid."); }
   const headers = { apikey: config.serviceRoleKey, Authorization: `Bearer ${config.serviceRoleKey}` };
+  return { endpoint, headers };
+}
+
+export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: string },
+  fetcher: typeof fetch = fetch): LedgerStore {
+  const { endpoint, headers } = supabaseConnection(config);
   async function query(filters: Record<string, string>): Promise<PublicationRecord[]> {
     const url = new URL(endpoint);
     url.searchParams.set("select", columns.join(","));
@@ -86,16 +99,63 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
       }
       return [...byId.values()];
     },
-    async insertPublicationRecord(record) {
+    async insertPublicationRecord(record, exactMessageText) {
       const url = new URL(endpoint);
       url.searchParams.set("on_conflict", "publication_id");
       const response = await fetcher(url, { method: "POST", headers: {
         ...headers, "Content-Type": "application/json", Prefer: "resolution=ignore-duplicates,return=representation",
-      }, body: JSON.stringify(toRow(record)), signal: AbortSignal.timeout(10_000) });
+      }, body: JSON.stringify(toRow(record, exactMessageText)), signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new Error(`Publication record write failed (HTTP ${response.status}).`);
       const rows: unknown = await response.json();
       if (!Array.isArray(rows) || rows.length > 1) throw new Error("Invalid publication record write response.");
       return rows.length ? "inserted" : "already_present";
+    },
+  };
+}
+
+const approvalColumns = "publication_id,decision,platform_post_id,approval_status,message_fingerprint,message_text";
+function approvalRow(row: Row): ApprovalCandidate {
+  if (typeof row.publication_id !== "string" || typeof row.message_fingerprint !== "string" ||
+      !["WOULD_PUBLISH", "HOLD", "PUBLISHED"].includes(String(row.decision)) ||
+      (row.message_text !== null && typeof row.message_text !== "string") ||
+      (row.platform_post_id !== null && typeof row.platform_post_id !== "string") ||
+      (row.approval_status !== null && !["pending", "approved", "skipped"].includes(String(row.approval_status)))) {
+    throw new Error("Invalid approval record response.");
+  }
+  return { publicationId: row.publication_id, decision: row.decision as ApprovalCandidate["decision"],
+    platformPostId: row.platform_post_id as string | null,
+    approvalStatus: row.approval_status as ApprovalCandidate["approvalStatus"],
+    messageFingerprint: row.message_fingerprint, messageText: row.message_text as string | null };
+}
+
+export function createSupabaseApprovalStore(config: { url?: string; serviceRoleKey?: string },
+  fetcher: typeof fetch = fetch): ApprovalStore {
+  const { endpoint, headers } = supabaseConnection(config);
+  async function request(url: URL, init: RequestInit): Promise<ApprovalCandidate | null> {
+    const response = await fetcher(url, { ...init, headers: { ...headers, ...init.headers }, signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`Approval storage request failed (HTTP ${response.status}).`);
+    const rows: unknown = await response.json();
+    if (!Array.isArray(rows) || rows.length > 1) throw new Error("Invalid approval storage response.");
+    return rows.length ? approvalRow(rows[0] as Row) : null;
+  }
+  return {
+    getPublicationForApproval(publicationId) {
+      const url = new URL(endpoint);
+      url.searchParams.set("select", approvalColumns);
+      url.searchParams.set("publication_id", `eq.${publicationId}`);
+      url.searchParams.set("limit", "1");
+      return request(url, { method: "GET" });
+    },
+    transitionPendingApproval(publicationId, status, actor, updatedAt) {
+      const url = new URL(endpoint);
+      url.searchParams.set("select", approvalColumns);
+      url.searchParams.set("publication_id", `eq.${publicationId}`);
+      url.searchParams.set("approval_status", "eq.pending");
+      url.searchParams.set("decision", "eq.WOULD_PUBLISH");
+      url.searchParams.set("platform_post_id", "is.null");
+      return request(url, { method: "PATCH", headers: {
+        "Content-Type": "application/json", Prefer: "return=representation",
+      }, body: JSON.stringify({ approval_status: status, approval_updated_at: updatedAt, approval_actor: actor }) });
     },
   };
 }

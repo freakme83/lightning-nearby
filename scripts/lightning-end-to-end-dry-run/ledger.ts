@@ -13,6 +13,7 @@ export type LedgerDiagnostics = {
   recordPersisted: boolean;
   persistedPublicationId: string | null;
   writeDisposition: "inserted" | "already_present" | null;
+  approvalStatus: "pending" | null;
   storageStatus: "ok" | "not_configured" | "read_failed" | "write_failed" | "invalid_candidate";
   reason: string | null;
 };
@@ -23,7 +24,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
-    recordPersisted: false, persistedPublicationId: null, writeDisposition: null,
+    recordPersisted: false, persistedPublicationId: null, writeDisposition: null, approvalStatus: null,
     storageStatus: "not_configured", reason: null };
   const finish = (extra: Partial<DecisionContext>, status: LedgerDiagnostics["storageStatus"], reason: string | null) => ({
     ...result, ledger: { ...diagnostics, storageStatus: status, reason },
@@ -47,13 +48,15 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
   }) };
   const finalBuilt = buildPublicationRecord(final, { runId: options.runId });
   if (!finalBuilt.ok) return finish({ publicationRecordAvailable: false }, "invalid_candidate", finalBuilt.message);
+  const exactMessageText = result.message?.ok ? result.message.text : "";
   try {
-    const disposition = await store.insertPublicationRecord(finalBuilt.record);
+    const disposition = await store.insertPublicationRecord(finalBuilt.record, exactMessageText);
     diagnostics.writeDisposition = disposition;
     diagnostics.persistedPublicationId = finalBuilt.record.publicationId;
     if (disposition === "inserted") {
       diagnostics.recordPersisted = true;
       diagnostics.storageStatus = "ok";
+      diagnostics.approvalStatus = finalBuilt.record.decision === "WOULD_PUBLISH" ? "pending" : null;
     } else {
       // Immutable row already existed under this ID. It is an idempotent write,
       // but do not claim a fresh WOULD_PUBLISH or a new HOLD audit was recorded.
@@ -90,7 +93,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
     const held = buildPublicationRecord(final, { runId: options.runId });
     if (held.ok) {
       try {
-        const disposition = await store.insertPublicationRecord(held.record);
+        const disposition = await store.insertPublicationRecord(held.record, exactMessageText);
         diagnostics.writeDisposition = disposition;
         diagnostics.recordPersisted = disposition === "inserted";
         diagnostics.persistedPublicationId = held.record.publicationId;
