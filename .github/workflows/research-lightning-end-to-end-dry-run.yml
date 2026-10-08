@@ -86,6 +86,8 @@ jobs:
           INCIDENT_PROFILE: ${{ inputs.incidentProfile }}
           XWEATHER_CLIENT_ID: ${{ secrets.XWEATHER_CLIENT_ID }}
           XWEATHER_CLIENT_SECRET: ${{ secrets.XWEATHER_CLIENT_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node --experimental-strip-types scripts/lightning-end-to-end-dry-run/runner.ts
 
       - name: Upload structured result and paired diagnostics

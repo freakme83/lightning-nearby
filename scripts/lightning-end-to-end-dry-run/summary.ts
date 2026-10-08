@@ -96,7 +96,23 @@ export function renderEndToEndSummary(result: DryRunResult): string {
       `- Source health at trigger: ${value(decision.sourceHealthAtTrigger)}`,
       `- Known same-incident duplicate: ${decision.duplicateIncident === null ? "not checked" : decision.duplicateIncident ? "yes" : "no"}`,
     ] : []),
-    "Persistent duplicate history: not enabled in v1A.");
+    result.ledger ? `Persistent duplicate history: ${result.ledger.historyChecked ? "checked" : "unavailable"}.` :
+      "Persistent duplicate history: not enabled in v1A.");
+  if (result.ledger) {
+    const ledger = result.ledger;
+    rows.push("", "## Publication ledger", "",
+      `- Persistence: ${ledger.persistenceEnabled ? "enabled" : "unavailable"}`,
+      `- History checked: ${ledger.historyChecked ? "yes" : "no"}`,
+      `- Records examined: ${ledger.recordsExamined}`,
+      `- Duplicate: ${ledger.duplicateMatch ? (ledger.duplicateMatch.duplicate ? "yes" : "no") : "not checked"}`,
+      `- Match reason: ${value(ledger.duplicateMatch?.reason)}`,
+      `- Matched publication: ${value(ledger.duplicateMatch?.matchedPublicationId)}`,
+      `- Record persisted: ${ledger.recordPersisted ? "yes" : "no"}`,
+      `- Write disposition: ${value(ledger.writeDisposition)}`,
+      `- Publication ID: ${value(ledger.persistedPublicationId)}`,
+      `- Storage status: ${ledger.storageStatus}`,
+      ...(ledger.reason ? [`- Storage detail: ${value(ledger.reason)}`] : []));
+  }
   rows.push("", "Dry run only. Nothing was published.", "");
   return rows.join("\n");
 }

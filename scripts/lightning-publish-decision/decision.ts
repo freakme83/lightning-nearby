@@ -11,7 +11,7 @@ export type PublishDecision = {
   sourceHealthy: boolean;
   sourceHealthAtTrigger: SourceHealth["state"] | null;
   duplicateIncident: boolean | null;
-  persistentHistoryEnabled: false;
+  persistentHistoryEnabled: boolean;
   capturedAt: string;
 };
 
@@ -19,6 +19,9 @@ export type DecisionContext = {
   sourceHealthAtTrigger?: SourceHealth["state"] | null;
   // Set by a storage-independent record matcher. The gate does not query storage.
   knownDuplicate?: boolean;
+  persistentHistoryEnabled?: boolean;
+  publicationHistoryAvailable?: boolean;
+  publicationRecordAvailable?: boolean;
   // Legacy run-scoped fixture context; raw incident IDs are not cross-run identities.
   previouslyPublishedIncidentIds?: ReadonlySet<string>;
   now?: () => string;
@@ -74,6 +77,8 @@ export function decidePublish(result: Pick<DryRunResult, "status" | "paired" | "
   else if (enrichment && !["cg_verified", "ic_only", "no_match"].includes(enrichment)) reasonCodes.push("invalid_decision_input");
   if (messageReady && !sourceHealthy) reasonCodes.push("source_unhealthy");
   if (duplicateIncident) reasonCodes.push("duplicate_incident");
+  if (context.publicationHistoryAvailable === false) reasonCodes.push("publication_history_unavailable");
+  if (context.publicationRecordAvailable === false) reasonCodes.push("publication_record_unavailable");
   if (messageReady && (!incidentId || paired.status !== "paired_result" ||
       !result.message?.ok || result.message.incidentId !== incidentId ||
       result.message.enrichmentStatus !== enrichment || !enrichment)) {
@@ -85,7 +90,7 @@ export function decidePublish(result: Pick<DryRunResult, "status" | "paired" | "
       ["message_ready", "location_usable", "supported_enrichment", "source_healthy",
         ...(duplicateIncident === false ? ["no_known_duplicate"] : [])],
     incidentId, messageReady, locationUsable, sourceHealthy, sourceHealthAtTrigger,
-    duplicateIncident, persistentHistoryEnabled: false,
+    duplicateIncident, persistentHistoryEnabled: context.persistentHistoryEnabled ?? false,
     capturedAt: (context.now ?? (() => new Date().toISOString()))(),
   };
 }
