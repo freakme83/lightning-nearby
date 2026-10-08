@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "corpusKind": "manual_forecast_validation",
+  "evidenceCaveat": "Manual validation corpus, not independently verified ground truth. Visual cross-checks do not establish exact event identity with Xweather Live events.",
+  "cases": [
+    {
+      "id": "saint-gilles-2026-10-07-low-false-negative",
+      "name": "Saint-Gilles / southern France",
+      "category": "false_low_candidate",
+      "coordinates": {
+        "latitude": 43.66,
+        "longitude": 4.17
+      },
+      "forecastLocalTime": "2026-10-07T21:00",
+      "forecastTimezone": "Europe/Paris",
+      "snapshotUtc": "2026-10-07T19:00:00.000Z",
+      "deterministic": {
+        "weatherCode": 3,
+        "weatherDescription": "No rain indicated",
+        "thunderstormProbabilityPercent": null,
+        "precipitationProbabilityPercent": 68,
+        "capeJPerKg": 290,
+        "cinJPerKg": 4,
+        "qualitativeRisk": "low",
+        "evidenceSource": "cape-precip-fallback",
+        "evidenceQuality": "ingredients"
+      },
+      "ensemble": {
+        "model": "ICON-EU EPS",
+        "supportingMembers": 0,
+        "availableMembers": 40,
+        "sampledLocations": 5,
+        "requestedLocations": 5,
+        "returnedLocations": 5,
+        "usableLocations": 5,
+        "uniqueEffectiveLocations": 5,
+        "spatialWindowKm": 13,
+        "temporalWindowPlusMinusHours": 1
+      },
+      "observations": [
+        {
+          "evidenceType": "user_observed_activity",
+          "detail": "Substantial lightning activity was manually observed across the broader Saint-Gilles / Nîmes / Mediterranean area during the relevant period; this is regional context, not exact-point verification."
+        },
+        {
+          "evidenceType": "manual_windy_ecmwf_check",
+          "detail": "Windy ECMWF Rain/Thunder view showed a thunder/lightning signal in the area for the relevant period. Manual visual cross-check only; it does not establish exact event identity."
+        }
+      ],
+      "expectedInterpretation": {
+        "classification": "false_low_candidate",
+        "summary": "Possible evidence gap rather than evidence that the 700 J/kg threshold alone is wrong.",
+        "candidateMechanisms": [
+          "low/moderate-CAPE convection",
+          "strong forcing with very low CIN",
+          "missing direct lightning/thunder evidence"
+        ],
+        "futureResearch": [
+          "ECMWF lightning density",
+          "secondary low-CAPE fallback"
+        ],
+        "productionChange": "None in this corpus task."
+      },
+      "researchTags": [
+        "false-low",
+        "low-cape",
+        "low-cin",
+        "direct-lightning-evidence-gap",
+        "ecmwf-lightning-density-candidate",
+        "zero-ensemble-support"
+      ]
+    },
+    {
+      "id": "villahermosa-2026-10-07-elevated-true-positive-zero-ensemble",
+      "name": "Villahermosa / La Palma, Tabasco",
+      "category": "true_positive",
+      "coordinates": {
+        "latitude": 17.98,
+        "longitude": -92.93
+      },
+      "forecastLocalTime": "2026-10-07T13:00",
+      "forecastTimezone": "America/Mexico_City",
+      "snapshotUtc": "2026-10-07T19:00:00.000Z",
+      "deterministic": {
+        "weatherCode": 51,
+        "weatherDescription": "Drizzle",
+        "thunderstormProbabilityPercent": null,
+        "precipitationProbabilityPercent": 60,
+        "capeJPerKg": 1640,
+        "cinJPerKg": 0,
+        "qualitativeRisk": "elevated",
+        "evidenceSource": "cape-precip-fallback",
+        "evidenceQuality": "ingredients"
+      },
+      "ensemble": {
+        "model": "ICON global EPS",
+        "supportingMembers": 0,
+        "availableMembers": 40,
+        "sampledLocations": 5,
+        "requestedLocations": 5,
+        "returnedLocations": 5,
+        "usableLocations": 5,
+        "uniqueEffectiveLocations": 5,
+        "spatialWindowKm": 26,
+        "temporalWindowPlusMinusHours": 1
+      },
+      "observations": [
+        {
+          "evidenceType": "app_live_observation",
+          "detail": "Lightning Nearby Live showed strong nearby current activity in the broader La Palma / Villahermosa area. One observed card reported 116 Xweather Flash events within 10 km / 5 minutes. This is a Flash-event count, not a count of cloud-to-ground strikes; Flash records may be CG, IC, or unknown."
+        },
+        {
+          "evidenceType": "manual_blitzortung_check",
+          "detail": "Blitzortung showed activity in the same broader area, with visually fewer plotted events. These products may differ in provider coverage, event unit, detection, and display; the count difference alone does not establish an error."
+        }
+      ],
+      "expectedInterpretation": {
+        "classification": "true_positive",
+        "summary": "The CAPE + precipitation fallback was useful in this case. The Live-selected location was close to, but not necessarily identical with, the forecast debug coordinate.",
+        "regressionNote": "0 / 40 ICON member support must not automatically downgrade deterministic Elevated or High. Member support is not a thunderstorm probability.",
+        "productionChange": "None in this corpus task."
+      },
+      "researchTags": [
+        "true-positive",
+        "cape-precip-fallback",
+        "high-cape",
+        "zero-cin",
+        "zero-ensemble-support",
+        "deterministic-positive-ensemble-zero"
+      ]
+    },
+    {
+      "id": "dosemealti-2026-10-08-spatial-false-low",
+      "name": "Döşemealtı / Antalya",
+      "category": "false_low_candidate",
+      "coordinates": {
+        "latitude": 37.18,
+        "longitude": 30.66
+      },
+      "forecastLocalTime": "2026-10-08T00:00",
+      "forecastTimezone": "Europe/Istanbul",
+      "snapshotUtc": "2026-10-07T21:00:00.000Z",
+      "deterministic": {
+        "weatherCode": 3,
+        "weatherDescription": "No rain indicated",
+        "thunderstormProbabilityPercent": null,
+        "precipitationProbabilityPercent": 10,
+        "capeJPerKg": 550,
+        "cinJPerKg": 41,
+        "qualitativeRisk": "low",
+        "evidenceSource": "cape-precip-fallback",
+        "evidenceQuality": "ingredients"
+      },
+      "ensemble": {
+        "model": "ICON-EU EPS",
+        "supportingMembers": 0,
+        "availableMembers": 40,
+        "sampledLocations": 5,
+        "requestedLocations": 5,
+        "returnedLocations": 5,
+        "usableLocations": 5,
+        "uniqueEffectiveLocations": 5,
+        "spatialWindowKm": 13,
+        "temporalWindowPlusMinusHours": 1
+      },
+      "observations": [
+        {
+          "evidenceType": "app_live_observation",
+          "detail": "Lightning Nearby Live showed nearby activity. One manual Live check reported nearest activity about 2.9 km southwest and 8 Xweather Flash events within 10 km / 5 minutes. Flash events are not asserted to be ground strikes."
+        },
+        {
+          "evidenceType": "manual_windy_ecmwf_check",
+          "detail": "Windy ECMWF Rain/Thunder showed a thunder/lightning field immediately adjacent to the selected point, especially toward the south/east. Manual visual evidence suggests a boundary or displacement case, not a strong exact-point deterministic signal."
+        }
+      ],
+      "expectedInterpretation": {
+        "classification": "false_low_candidate",
+        "summary": "Lowering CAPE alone from 700 to 500 J/kg would not rescue this case because exact-point precipitation probability was 10%. A deterministic spatial miss or model displacement is a candidate explanation.",
+        "futureResearch": [
+          "debug-only deterministic neighborhood sampling at center and nearby N/E/S/W points within roughly 10–15 km"
+        ],
+        "researchConstraint": "Keep neighborhood sampling research-only until validated.",
+        "productionChange": "None in this corpus task."
+      },
+      "researchTags": [
+        "false-low",
+        "spatial-displacement",
+        "exact-point-miss",
+        "deterministic-neighborhood-candidate",
+        "zero-ensemble-support"
+      ]
+    },
+    {
+      "id": "ponza-2026-10-08-canonical-high-true-positive",
+      "name": "Ponza, Italy",
+      "category": "canonical_true_positive",
+      "coordinates": {
+        "latitude": 40.89,
+        "longitude": 12.95
+      },
+      "forecastLocalTime": "2026-10-08T08:00",
+      "forecastTimezone": "Europe/Rome",
+      "snapshotUtc": "2026-10-08T06:00:00.000Z",
+      "deterministic": {
+        "weatherCode": 95,
+        "weatherDescription": "Thunderstorm signal",
+        "thunderstormProbabilityPercent": null,
+        "precipitationProbabilityPercent": 83,
+        "capeJPerKg": 1030,
+        "cinJPerKg": 11,
+        "qualitativeRisk": "high",
+        "evidenceSource": "direct-thunderstorm-code",
+        "evidenceQuality": "direct"
+      },
+      "ensemble": {
+        "model": "ICON-EU EPS",
+        "supportingMembers": 29,
+        "availableMembers": 40,
+        "sampledLocations": 5,
+        "requestedLocations": 5,
+        "returnedLocations": 5,
+        "usableLocations": 5,
+        "uniqueEffectiveLocations": 5,
+        "spatialWindowKm": 13,
+        "temporalWindowPlusMinusHours": 1
+      },
+      "observations": [
+        {
+          "evidenceType": "app_live_observation",
+          "detail": "Lightning Nearby Live later showed nearby activity during the forecast High period. A manual check around 09:30 local reported nearest event about 9.4 km east, age about 2 minutes, and 1 Xweather Flash event within 10 km / 5 minutes."
+        },
+        {
+          "evidenceType": "manual_blitzortung_check",
+          "detail": "Blitzortung showed nearby lightning detections in the broader Ponza area. The Xweather Live event and Blitzortung detections are not claimed to be the same physical event."
+        }
+      ],
+      "expectedInterpretation": {
+        "classification": "canonical_true_positive",
+        "summary": "Direct WMO thunderstorm code correctly yielded High; CAPE, precipitation, low CIN, and 29 / 40 ICON-EU EPS supporting members were also supportive. This is a do-not-break case for future classifier experiments.",
+        "productionChange": "None in this corpus task."
+      },
+      "researchTags": [
+        "canonical-true-positive",
+        "direct-thunderstorm-code",
+        "high",
+        "strong-ensemble-support",
+        "broad-agreement",
+        "regression-guard"
+      ]
+    }
+  ]
+}
