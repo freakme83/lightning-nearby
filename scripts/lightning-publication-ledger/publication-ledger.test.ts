@@ -101,6 +101,25 @@ test("same Xweather event wins across runs and different local incident IDs", as
   assert.equal(sameRun.reason, "same_provider_event");
 });
 
+test("only WOULD_PUBLISH and PUBLISHED history can block the same provider event", async () => {
+  const original = await built();
+  const candidate: PublicationRecord = { ...original, publicationId: "pub_candidate", runId: "run-2",
+    incidentId: "i-000001", decision: "WOULD_PUBLISH" };
+  const hold: PublicationRecord = { ...original, publicationId: "pub_hold", decision: "HOLD" };
+  const shadow: PublicationRecord = { ...original, publicationId: "pub_shadow", decision: "WOULD_PUBLISH" };
+  const published: PublicationRecord = { ...original, publicationId: "pub_published", decision: "PUBLISHED" };
+  const noDuplicate = { duplicate: false, reason: "no_duplicate", matchedPublicationId: null };
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold]), noDuplicate);
+  assert.deepEqual(matchPublicationDuplicate(candidate, [shadow]),
+    { duplicate: true, reason: "same_provider_event", matchedPublicationId: shadow.publicationId });
+  assert.deepEqual(matchPublicationDuplicate(candidate, [published]),
+    { duplicate: true, reason: "same_provider_event", matchedPublicationId: published.publicationId });
+  const unrelated = { ...shadow, publicationId: "pub_unrelated", providerEventId: "different-event" };
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold, unrelated]), noDuplicate);
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold, shadow]),
+    { duplicate: true, reason: "same_provider_event", matchedPublicationId: shadow.publicationId });
+});
+
 test("same local incident ID in different runs with different provider event IDs is not enough", async () => {
   const prior = await built();
   const different: PublicationRecord = { ...prior, publicationId: "pub_different", runId: "run-2",
@@ -125,6 +144,24 @@ test("strict no-ID observation match requires text, at most two seconds, and at 
   assert.equal(matchPublicationDuplicate({ ...close, incidentLatitude: prior.incidentLatitude + 0.00216 }, [prior]).duplicate, true);
   assert.equal(matchPublicationDuplicate({ ...close, incidentLatitude: prior.incidentLatitude + 0.00234 }, [prior]).duplicate, false);
   assert.equal(matchPublicationDuplicate({ ...close, incidentLatitude: prior.incidentLatitude + 0.018 }, [prior]).duplicate, false);
+});
+
+test("HOLD history cannot block the strict observation fingerprint fallback", async () => {
+  const original = await built(fixtures.no_match);
+  const candidate: PublicationRecord = { ...original, publicationId: "pub_later", runId: "run-2",
+    incidentId: "i-000001", decision: "WOULD_PUBLISH" };
+  const hold: PublicationRecord = { ...original, publicationId: "pub_hold", decision: "HOLD" };
+  const shadow: PublicationRecord = { ...original, publicationId: "pub_shadow", decision: "WOULD_PUBLISH" };
+  const unrelated: PublicationRecord = { ...shadow, publicationId: "pub_unrelated",
+    incidentReferenceTime: new Date(Date.parse(original.incidentReferenceTime) + 120_000).toISOString() };
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold]),
+    { duplicate: false, reason: "no_duplicate", matchedPublicationId: null });
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold, unrelated]),
+    { duplicate: false, reason: "no_duplicate", matchedPublicationId: null });
+  assert.deepEqual(matchPublicationDuplicate(candidate, [shadow]),
+    { duplicate: true, reason: "same_observation_fingerprint", matchedPublicationId: shadow.publicationId });
+  assert.deepEqual(matchPublicationDuplicate(candidate, [hold, shadow]),
+    { duplicate: true, reason: "same_observation_fingerprint", matchedPublicationId: shadow.publicationId });
 });
 
 test("nearby storm activity, shared label, district, status and hashtag are not duplicate identity", async () => {

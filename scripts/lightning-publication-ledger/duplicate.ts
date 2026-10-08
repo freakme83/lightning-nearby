@@ -18,15 +18,20 @@ function firstMatch(records: readonly PublicationRecord[], predicate: (prior: Pu
   return records.filter(predicate).sort((a, b) => a.publicationId.localeCompare(b.publicationId))[0] ?? null;
 }
 
+function blocksFuturePublication(record: PublicationRecord): boolean {
+  return record.decision === "WOULD_PUBLISH" || record.decision === "PUBLISHED";
+}
+
 export function matchPublicationDuplicate(candidate: PublicationRecord,
   priorRecords: readonly PublicationRecord[]): DuplicateMatchResult {
+  const publicationHistory = priorRecords.filter(blocksFuturePublication);
   if (candidate.providerEventId) {
-    const sameEvent = firstMatch(priorRecords, prior => prior.provider === candidate.provider &&
+    const sameEvent = firstMatch(publicationHistory, prior => prior.provider === candidate.provider &&
       prior.providerEventId === candidate.providerEventId);
     if (sameEvent) return { duplicate: true, reason: "same_provider_event", matchedPublicationId: sameEvent.publicationId };
   }
   const candidateTime = Date.parse(candidate.incidentReferenceTime);
-  const sameObservation = firstMatch(priorRecords, prior => {
+  const sameObservation = firstMatch(publicationHistory, prior => {
     // Distinct selected provider IDs are stronger evidence than a generic message.
     if (candidate.providerEventId && prior.providerEventId) return false;
     const priorTime = Date.parse(prior.incidentReferenceTime);
