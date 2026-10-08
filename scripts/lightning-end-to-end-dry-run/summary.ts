@@ -87,6 +87,16 @@ export function renderEndToEndSummary(result: DryRunResult): string {
   } else {
     rows.push(`No final message: **${value(result.status)}** — ${value(result.reason ?? (result.message?.ok === false ? result.message.error.message : null))}.`);
   }
+  const decision = result.publishDecision;
+  rows.push("", "## Publish decision (shadow only)", "",
+    `**${decision?.decision ?? "not evaluated"}**`, "",
+    ...(decision ? [
+      ...decision.reasonCodes.map(code => `- ${value(code)}`),
+      "",
+      `- Source health at trigger: ${value(decision.sourceHealthAtTrigger)}`,
+      `- Known same-incident duplicate: ${decision.duplicateIncident === null ? "not checked" : decision.duplicateIncident ? "yes" : "no"}`,
+    ] : []),
+    "Persistent duplicate history: not enabled in v1A.");
   rows.push("", "Dry run only. Nothing was published.", "");
   return rows.join("\n");
 }
