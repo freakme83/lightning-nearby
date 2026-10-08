@@ -167,8 +167,9 @@ jobs:
         env:
           RESULT_PATH: artifacts/lightning-location-naming-result.json
         run: |
-          node --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          node --experimental-strip-types --input-type=module >> "$GITHUB_STEP_SUMMARY" <<'NODE'
           import { readFileSync } from "node:fs";
+          import { formatCopyableDisplayLabel } from "./scripts/lightning-location-naming/summary.ts";
           const fields = ["neighbourhood", "quarter", "suburb", "city", "town", "village", "hamlet", "municipality", "city_district", "district", "county", "state_district", "province", "state", "region", "country"];
           const localFields = ["neighborhood", "locality", "localityKind", "district", "province", "country", "rawType", "displayLabel"];
           const cell = (value) => String(value ?? "not returned").replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -190,6 +191,7 @@ jobs:
             console.log(result.status === "unresolved"
               ? "\n**Lookup completed — no usable place label was returned.**\n"
               : "\n**Lookup succeeded — manual hierarchy review required.**\n");
+            console.log(`\n${formatCopyableDisplayLabel(result.normalized?.displayLabel)}\n`);
           }
           console.log("One lookup was requested. This result is not an automatic quality PASS; review hierarchy and label manually.");
           NODE

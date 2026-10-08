@@ -56,6 +56,7 @@ test("outside Ankara ignores hyper-local details and uses district-like parent p
 test("outside Ankara retains meaningful towns and villages with the closest useful broader parent", () => {
   assert.equal(normalizeAndLabel(payload({ town: "Rochefort", county: "Charente-Maritime", state: "Nouvelle-Aquitaine" })).displayLabel, "Rochefort, Charente-Maritime");
   assert.equal(normalizeAndLabel(payload({ village: "Bors-de-Montmoreau", county: "Charente", state: "Nouvelle-Aquitaine" })).displayLabel, "Bors-de-Montmoreau, Charente");
+  assert.equal(normalizeAndLabel(payload({ town: "Cisterna di Latina", hamlet: "Olmobello", county: "Latina", state: "Lazio" })).displayLabel, "Cisterna di Latina, Latina");
 });
 
 test("real-style France hierarchy keeps village over hamlet and municipality", () => {

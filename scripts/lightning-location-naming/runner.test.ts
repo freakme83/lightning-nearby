@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatDiagnosticResult, formatLookupFailure, parseArgs } from "./runner.ts";
+import { formatCopyableDisplayLabel } from "./summary.ts";
 import { ReverseGeocodeError } from "./nominatim.ts";
 
 test("CLI parses coordinates and optional output/provider flags", () => {
@@ -41,4 +42,18 @@ test("unresolved and provider failure JSON stay explicit", () => {
   assert.equal(formatLookupFailure("sample", 39, 32, "nominatim", new ReverseGeocodeError("network", "offline")).errorType, "network_failure");
   assert.equal(formatLookupFailure("sample", 39, 32, "nominatim", new ReverseGeocodeError("malformed", "invalid JSON")).errorType, "malformed_response");
   assert.equal(formatLookupFailure("sample", 39, 32, "nominatim", new ReverseGeocodeError("http", "429", 429)).errorType, "rate_limit");
+});
+
+test("copyable display label summary contains only the exact label in a plain-text fence", () => {
+  const summary = formatCopyableDisplayLabel("Cisterna di Latina, Latina");
+  assert.equal(summary, "## Copyable display label\n\n```text\nCisterna di Latina, Latina\n```");
+  assert.match(formatCopyableDisplayLabel("Bors-de-Montmoreau, Charente"), /```text\nBors-de-Montmoreau, Charente\n```/);
+});
+
+test("null or empty display labels show a note without an empty copyable fence", () => {
+  for (const label of [null, undefined, ""]) {
+    const summary = formatCopyableDisplayLabel(label);
+    assert.match(summary, /No usable display label was produced\./);
+    assert.doesNotMatch(summary, /```/);
+  }
 });
