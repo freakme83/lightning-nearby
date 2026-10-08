@@ -9,15 +9,19 @@ import type { XPostResult } from "./x-adapter.ts";
 const id = "pub_" + "a".repeat(32);
 const text = "#YILDIRIM\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.\n\n39.901, 32.859";
 const attemptId = "12345678-1234-4123-8123-123456789abc";
+const nextAttemptId = "12345678-1234-4123-8123-123456789abd";
 function candidate(patch: Partial<PublishRow> = {}): PublishRow {
   return { publicationId: id, enrichmentStatus: "cg_verified", decision: "WOULD_PUBLISH", approvalStatus: "approved",
     platformPostId: null, messageText: text, messageFingerprint: fingerprintMessage(text),
-    publishAttemptId: null, publishedAt: null, ...patch };
+    publishAttemptId: null, publishedAt: null, mapUrl: "https://www.google.com/maps?q=39.901,32.859", ...patch };
 }
 function harness(initial = candidate(), xResult: XPostResult = { outcome: "confirmed_success", postId: "987654321" }) {
   let row: PublishRow = initial;
   let xCalls = 0;
   let claims = 0;
+  let releases = 0;
+  let xOutcome = xResult;
+  let attemptNumber = 0;
   const store: PublisherStore = {
     async get() { return { ...row }; },
     async claim(expected, token) {
@@ -28,6 +32,14 @@ function harness(initial = candidate(), xResult: XPostResult = { outcome: "confi
       row = { ...row, publishAttemptId: token };
       return { ...row };
     },
+    async releaseClaim(publicationId, token) {
+      releases++;
+      if (publicationId !== id || row.decision !== "WOULD_PUBLISH" ||
+          row.approvalStatus !== "approved" || row.platformPostId !== null ||
+          row.publishedAt !== null || row.publishAttemptId !== token) return null;
+      row = { ...row, publishAttemptId: null };
+      return { ...row };
+    },
     async finalize(publicationId, token, postId, publishedAt) {
       if (publicationId !== id || row.decision !== "WOULD_PUBLISH" ||
           row.approvalStatus !== "approved" || row.platformPostId !== null ||
@@ -36,12 +48,14 @@ function harness(initial = candidate(), xResult: XPostResult = { outcome: "confi
       return { ...row };
     },
   };
-  const x = { async createPost(value: string) { xCalls++; assert.equal(value, initial.messageText); return xResult; } };
+  const x = { async createPost(value: string) { xCalls++; assert.equal(value, initial.messageText); return xOutcome; } };
   const run = (options: Partial<{ enabled: boolean; credentialsPresent: boolean }> = {}) =>
     publishApproved(id, store, x, { enabled: true, credentialsPresent: true,
-      attemptId: () => attemptId, now: () => "2026-10-08T18:00:00.000Z", ...options });
-  return { store, x, run, get row() { return row; }, get xCalls() { return xCalls; }, get claims() { return claims; },
-    setRow(value: PublishRow) { row = value; } };
+      attemptId: () => attemptNumber++ === 0 ? attemptId : nextAttemptId,
+      now: () => "2026-10-08T18:00:00.000Z", ...options });
+  return { store, x, run, get row() { return row; }, get xCalls() { return xCalls; },
+    get claims() { return claims; }, get releases() { return releases; },
+    setRow(value: PublishRow) { row = value; }, setXOutcome(value: XPostResult) { xOutcome = value; } };
 }
 
 test("approved persisted text posts once, stores ID and timestamp, and rerun is idempotent", async () => {
@@ -49,6 +63,15 @@ test("approved persisted text posts once, stores ID and timestamp, and rerun is 
   const first = await h.run();
   assert.equal(first.outcome, "published");
   assert.equal(first.postId, "987654321");
+  assert.equal(first.previousDecision, "WOULD_PUBLISH");
+  assert.equal(first.finalDecision, "PUBLISHED");
+  assert.equal(first.approvalStatus, "approved");
+  assert.equal(first.messageText, text);
+  assert.equal(first.mapUrl, "https://www.google.com/maps?q=39.901,32.859");
+  assert.equal(first.publishedAt, "2026-10-08T18:00:00.000Z");
+  assert.equal(JSON.parse(JSON.stringify(first)).messageText, text);
+  assert.match(renderPublisherSummary(first), /## X publication result/);
+  assert.ok(renderPublisherSummary(first).includes("### Exact candidate message\n\n```text\n" + text + "\n```"));
   assert.equal(h.row.decision, "PUBLISHED");
   assert.equal(h.row.platformPostId, "987654321");
   assert.equal(h.row.publishedAt, "2026-10-08T18:00:00.000Z");
@@ -85,9 +108,12 @@ test("legacy URL text and non-CG coordinate text are rejected despite matching f
 });
 
 test("non-CG persisted composer text is passed unchanged and remains URL-free", async () => {
-  const value = "#ŞİMŞEK\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında şimşek kaydedildi.";
+  const value = "#ŞİMŞEK\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında şimşek kaydedildi.  \n";
   const h = harness(candidate({ messageText: value, messageFingerprint: fingerprintMessage(value), enrichmentStatus: "ic_only" }));
-  assert.equal((await h.run()).outcome, "published");
+  const result = await h.run();
+  assert.equal(result.outcome, "published");
+  assert.equal(result.messageText, value);
+  assert.ok(renderPublisherSummary(result).includes("```text\n" + value + "```"));
   assert.equal(h.xCalls, 1);
 });
 
@@ -107,13 +133,38 @@ test("ambiguous X outcome keeps the claim and blocks a blind later retry", async
   assert.equal(h.row.decision, "WOULD_PUBLISH");
   assert.equal((await h.run()).outcome, "publication_uncertain");
   assert.equal(h.xCalls, 1);
+  assert.equal(h.releases, 0);
 });
 
-test("definite 4xx remains distinct and reserved for deliberate operator action", async () => {
-  const h = harness(candidate(), { outcome: "definite_failure", status: 403 });
-  assert.equal((await h.run()).outcome, "definite_failure");
-  assert.equal((await h.run()).outcome, "publication_uncertain");
-  assert.equal(h.xCalls, 1);
+test("401, 403, and 429 release the exact claim, allowing a later manual retry", async () => {
+  for (const status of [401, 403, 429]) {
+    const h = harness(candidate(), { outcome: "definite_failure", status });
+    const first = await h.run();
+    assert.equal(first.outcome, "definite_failure");
+    assert.equal(first.attemptId, attemptId);
+    assert.equal(h.row.publishAttemptId, null);
+    assert.equal(h.releases, 1);
+    assert.equal(h.xCalls, 1);
+    h.setXOutcome({ outcome: "confirmed_success", postId: "987654321" });
+    assert.equal((await h.run()).outcome, "published");
+    assert.equal(h.row.publishAttemptId, nextAttemptId);
+    assert.equal(h.xCalls, 2); // One request per separate manual run.
+  }
+});
+
+test("release conflict or uncertain release response requires reconciliation without a second X call", async () => {
+  for (const failure of ["conflict", "transport"] as const) {
+    const h = harness(candidate(), { outcome: "definite_failure", status: 403 });
+    h.store.releaseClaim = async (_id, token) => {
+      assert.equal(token, attemptId);
+      if (failure === "transport") throw new Error("response lost");
+      h.setRow({ ...h.row, publishAttemptId: nextAttemptId });
+      return null;
+    };
+    assert.equal((await h.run()).outcome, "publication_uncertain");
+    assert.equal((await h.run()).outcome, "publication_uncertain");
+    assert.equal(h.xCalls, 1);
+  }
 });
 
 test("confirmed X success and failed ledger finalization exposes post ID without resending", async () => {
@@ -126,6 +177,7 @@ test("confirmed X success and failed ledger finalization exposes post ID without
   assert.match(renderPublisherSummary(first), /X post ID: 987654321/);
   assert.match(renderPublisherSummary(first), /Manual reconciliation required/);
   assert.equal(h.row.publishAttemptId, attemptId);
+  assert.equal(h.releases, 0);
   assert.equal((await h.run()).outcome, "publication_uncertain");
   assert.equal(h.xCalls, 1);
 });

@@ -30,6 +30,13 @@ test("OAuth 1.0a signs a JSON create-post request with exact persisted text and 
   assert.equal(oauthHeader(credentials, "1000", "nonce"), oauthHeader(credentials, "1000", "nonce"));
 });
 
+test("OAuth fixed vector matches independently calculated HMAC-SHA1 signature", () => {
+  // Calculated separately with Python urllib.parse.quote, hmac and hashlib over
+  // POST&https%3A%2F%2Fapi.x.com%2F2%2Ftweets&oauth_consumer_key%3Dconsumer%26oauth_nonce%3Dnonce%26oauth_signature_method%3DHMAC-SHA1%26oauth_timestamp%3D1000%26oauth_token%3Dtoken%26oauth_version%3D1.0
+  assert.equal(oauthHeader(credentials, "1000", "nonce"),
+    'OAuth oauth_consumer_key="consumer", oauth_nonce="nonce", oauth_signature="zLJv7sCxbh4OXS6L4sjb%2BQazrpY%3D", oauth_signature_method="HMAC-SHA1", oauth_timestamp="1000", oauth_token="token", oauth_version="1.0"');
+});
+
 test("confirmed 4xx is definite; 408 and 5xx are conservatively uncertain", async () => {
   for (const [status, expected] of [[400, "definite_failure"], [401, "definite_failure"],
     [403, "definite_failure"], [429, "definite_failure"], [408, "publication_uncertain"],

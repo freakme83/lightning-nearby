@@ -31,7 +31,8 @@ export async function main(): Promise<void> {
     });
   } catch {
     result = { publicationId, outcome: "storage_error", reason: "Publisher configuration is unavailable or invalid.",
-      postId: null, attemptId: null };
+      postId: null, attemptId: null, previousDecision: null, finalDecision: null,
+      approvalStatus: null, messageText: null, mapUrl: null, publishedAt: null };
   }
   await mkdir("artifacts", { recursive: true });
   await writeFile(resultPath, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });

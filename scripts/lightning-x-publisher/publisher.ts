@@ -9,6 +9,7 @@ export type PublishRow = {
   approvalStatus: "pending" | "approved" | "skipped" | null;
   platformPostId: string | null;
   messageText: string | null;
+  mapUrl: string | null;
   messageFingerprint: string;
   publishAttemptId: string | null;
   publishedAt: string | null;
@@ -28,6 +29,7 @@ function safePublicText(row: PublishRow): boolean {
 export type PublisherStore = {
   get(publicationId: string): Promise<PublishRow | null>;
   claim(row: PublishRow, attemptId: string): Promise<PublishRow | null>;
+  releaseClaim(publicationId: string, attemptId: string): Promise<PublishRow | null>;
   finalize(publicationId: string, attemptId: string, postId: string, publishedAt: string): Promise<PublishRow | null>;
 };
 export type PublisherResult = {
@@ -38,19 +40,37 @@ export type PublisherResult = {
   postId: string | null;
   attemptId: string | null;
   reason: string | null;
+  previousDecision: PublishRow["decision"] | null;
+  finalDecision: PublishRow["decision"] | null;
+  approvalStatus: PublishRow["approvalStatus"];
+  messageText: string | null;
+  mapUrl: string | null;
+  publishedAt: string | null;
 };
 
 export async function publishApproved(publicationId: string, store: PublisherStore,
   x: { createPost(text: string): Promise<XPostResult> },
   options: { enabled: boolean; credentialsPresent: boolean; now?: () => string; attemptId?: () => string }): Promise<PublisherResult> {
+  let observed: PublishRow | null = null;
   const result = (outcome: PublisherResult["outcome"], reason: string | null = null,
-    postId: string | null = null, attemptId: string | null = null): PublisherResult =>
-    ({ publicationId, outcome, reason, postId, attemptId });
+    postId: string | null = null, attemptId: string | null = null,
+    final: PublishRow | null = null): PublisherResult =>
+    ({ publicationId, outcome, reason,
+      postId: postId ?? observed?.platformPostId ?? null,
+      attemptId: attemptId ?? observed?.publishAttemptId ?? null,
+      previousDecision: observed?.decision ?? null,
+      finalDecision: final?.decision ?? (["publication_uncertain", "ledger_update_failed", "storage_error", "transition_conflict"].includes(outcome)
+        ? null : observed?.decision ?? null),
+      approvalStatus: observed?.approvalStatus ?? null,
+      messageText: observed?.messageText ?? null,
+      mapUrl: observed?.mapUrl ?? null,
+      publishedAt: final?.publishedAt ?? observed?.publishedAt ?? null });
   if (!/^pub_[0-9a-f]{32}$/.test(publicationId)) return result("not_eligible", "Invalid publication ID.");
   let row: PublishRow | null;
   try { row = await store.get(publicationId); }
   catch { return result("storage_error", "Publication record read failed."); }
   if (!row) return result("not_found", "Publication record was not found.");
+  observed = row;
   if (row.publicationId !== publicationId) return result("storage_error", "Publication record identity mismatch.");
   if (row.decision === "PUBLISHED" && row.platformPostId) return result("already_published", null, row.platformPostId);
   if (row.publishAttemptId) return result("publication_uncertain", "A prior attempt is reserved; manual reconciliation required.", row.platformPostId, row.publishAttemptId);
@@ -78,7 +98,16 @@ export async function publishApproved(publicationId: string, store: PublisherSto
   try { posted = await x.createPost(row.messageText); }
   catch { return result("publication_uncertain", "X transport failed; manual reconciliation required.", null, attemptId); }
   if (posted.outcome === "definite_failure") {
-    return result("definite_failure", "X rejected the request (HTTP " + posted.status + "); attempt remains reserved.", null, attemptId);
+    try {
+      const released = await store.releaseClaim(publicationId, attemptId);
+      if (released && released.publicationId === publicationId && released.publishAttemptId === null &&
+          released.decision === "WOULD_PUBLISH" && released.approvalStatus === "approved" &&
+          released.platformPostId === null && released.publishedAt === null &&
+          released.messageText === row.messageText && released.messageFingerprint === row.messageFingerprint) {
+        return result("definite_failure", "X rejected the request (HTTP " + posted.status + "); claim safely released for a later manual retry.", null, attemptId, released);
+      }
+    } catch { /* An uncertain release outcome needs manual reconciliation. */ }
+    return result("publication_uncertain", "X rejected the request (HTTP " + posted.status + "), but claim release failed or is unconfirmed; manual reconciliation required.", null, attemptId);
   }
   if (posted.outcome === "publication_uncertain") {
     return result("publication_uncertain", "X outcome is uncertain (" + posted.reason + "); manual reconciliation required.", null, attemptId);
@@ -93,7 +122,7 @@ export async function publishApproved(publicationId: string, store: PublisherSto
         updated.decision === "PUBLISHED" && updated.approvalStatus === "approved" &&
         updated.platformPostId === posted.postId && updated.publishedAt !== null &&
         Date.parse(updated.publishedAt) === Date.parse(publishedAt)) {
-      return result("published", null, posted.postId, attemptId);
+      return result("published", null, posted.postId, attemptId, updated);
     }
   } catch { /* The reserved attempt prevents another blind post. */ }
   return result("ledger_update_failed", "X post created, ledger update failed — manual reconciliation required", posted.postId, attemptId);

@@ -6,5 +6,5 @@ try {
   const result = JSON.parse(await readFile("artifacts/lightning-x-publisher-result.json", "utf8")) as PublisherResult;
   console.log(renderPublisherSummary(result));
 } catch {
-  console.log("## Research Lightning X Publisher\n\nNo structured result was produced. Inspect the reserved attempt before any retry.\n");
+  console.log("## X publication result\n\nNo structured result was produced. Inspect the ledger and X before any retry.\n");
 }
