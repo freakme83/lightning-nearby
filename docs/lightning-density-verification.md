@@ -7,3 +7,6 @@ The [ECMWF Open Data catalogue](https://www.ecmwf.int/en/forecasts/datasets/open
 The [Open-Meteo ECMWF endpoint](https://open-meteo.com/en/docs/ecmwf-api) lists “Lightning Density” among generic optional choices, but a listed schema field is not proof of model availability. Live 48-hour Ankara and Miami requests on 29 September 2026 for `hourly=lightning_density,weather_code&models=ecmwf_ifs` returned weather codes while all 48 density values were null. Ankara requests to the 0.25° model also returned null density values and an undefined unit. We found no documented, populated, low-complexity browser endpoint for this field at those points.
 
 **Decision:** defer lightning density. Milestone 1.5 uses Open-Meteo’s weather-code ensemble member series. Revisit a documented point API if a provider later exposes a populated field with suitable terms and practical request size; do not scrape chart layers or add GRIB infrastructure for this milestone.
+
+
+Related manual validation cases, including candidates for later lightning-density evaluation, are recorded in the [forecast validation corpus](forecast-validation-corpus.md). Those cases are hypotheses, not independent ground truth or a production integration decision.
