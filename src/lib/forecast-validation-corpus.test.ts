@@ -31,6 +31,10 @@ test("manual forecast corpus has unique expected cases and valid evidence fields
     assert.ok(item.ensemble.availableMembers > 0);
     assert.ok(item.ensemble.supportingMembers <= item.ensemble.availableMembers);
     assert.ok(!Object.keys(item.ensemble).some((key: string) => /probability/i.test(key)));
+    assert.equal(item.deterministic.evidenceType, "app_debug_snapshot");
     assert.ok(Array.isArray(item.observations) && item.observations.length > 0);
+    assert.ok(item.observations.every((observation: { evidenceType: string }) =>
+      ["app_live_observation", "manual_blitzortung_check", "manual_windy_ecmwf_check", "user_observed_activity"]
+        .includes(observation.evidenceType)));
   }
 });
