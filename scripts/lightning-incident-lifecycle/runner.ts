@@ -11,6 +11,7 @@ import { INCIDENT_POLICY_PROFILES, type IncidentPolicyProfile, type IncidentRepl
 import { pointInMonitoringArea } from "./monitoring-area.ts";
 import { readIncidentRunnerOptions } from "./options.ts";
 import { PairedValidationController } from "../lightning-cg-paired-validation/controller.ts";
+import { GateComparisonController } from "../lightning-xweather-gate-comparison/controller.ts";
 
 const config = readIncidentRunnerOptions(process.argv.slice(2));
 const profile = INCIDENT_POLICY_PROFILES.find(item => item.id === config.profileId)!;
@@ -48,6 +49,11 @@ const pairedValidation = config.pairedValidationOutput ? new PairedValidationCon
     emit("paired_validation_artifact_written", { status: artifact.status, path: config.pairedValidationOutput });
   },
 }) : null;
+const gateComparison = config.gateComparison ? new GateComparisonController({
+  maxXweatherCalls: config.maxXweatherCalls,
+  hypotheticalUserChecks: config.hypotheticalUserChecks,
+  emit: (kind, data) => emit(kind, data),
+}) : null;
 
 function emit(kind: string, data: Record<string, unknown> = {}) {
   const row = { kind, at: new Date().toISOString(), ...data };
@@ -61,9 +67,12 @@ function logDecision(decision: PublishDecision) {
   if (decision.action === "WOULD_PUBLISH") {
     emit("WOULD_PUBLISH", { incidentId: decision.incidentId, reason: decision.reason,
       events: lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId)?.totalEvents });
-    if (pairedValidation) {
+    if (pairedValidation || gateComparison) {
       const incident = lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId);
-      if (incident) pairedValidation.observeDecision(decision, incident, profile);
+      if (incident) {
+        pairedValidation?.observeDecision(decision, incident, profile);
+        gateComparison?.observeDecision(decision, incident);
+      }
     }
   } else {
     const key = `${decision.incidentId}:${decision.reason}`;
@@ -86,6 +95,11 @@ function processTransitions(transitions: IncidentTransition[]) {
       if (transition.type === "activity" && pairedValidation.observeActivity(transition.incident, profile)) {
         emit("paired_validation_reactivated", { incidentId: transition.incident.id });
       }
+    }
+  }
+  if (gateComparison) {
+    for (const transition of transitions) {
+      if (transition.type === "activity") gateComparison.observeActivity(transition.incident);
     }
   }
 }
@@ -155,6 +169,35 @@ function summary(nowMs: number, kind: string) {
     sourceHealth: sourceHealth.state, sourceHealthInterruptions: sourceHealth.interruptions,
     retainedReplaySignals: replaySignals.length, replaySignalsDropped: signalsDropped,
     note: "WOULD_PUBLISH is a synthetic research decision; no message is created or sent." });
+  if (gateComparison && kind === "periodic_summary") emit("gate_periodic_summary", gateComparison.snapshot());
+}
+
+function gateFinalSummary(nowMs: number) {
+  if (!gateComparison) return;
+  const state = pipeline.summary(nowMs);
+  const incident = lifecycle.snapshot();
+  const publish = publishPolicy.summary();
+  emit("gate_final_comparison_summary", {
+    durationSeconds: (nowMs - startedAtMs) / 1000,
+    areaSelection: config.areaSelection, box: config.box, monitoringArea: config.monitoringArea?.id ?? null,
+    incidentProfile: profile.id,
+    feed: { messages, decoded: state.decoded, unique: state.unique, duplicates: state.duplicates,
+      malformed: state.malformed, subscriptionBoxAccepted: state.insideSubscriptionBox,
+      strictLocalAreaAccepted: config.monitoringArea ? state.insideMonitoringArea : state.insideSubscriptionBox,
+      freshLocallyAccepted: config.monitoringArea ? state.insideMonitoringAreaFresh : state.insideSubscriptionBoxFresh,
+      staleLocallyAccepted: config.monitoringArea ? state.insideMonitoringAreaStale : state.insideSubscriptionBoxStale,
+      futureLocallyAccepted: config.monitoringArea ? state.insideMonitoringAreaFuture : state.insideSubscriptionBoxFuture,
+      sourceInterruptions: sourceHealth.interruptions },
+    incidents: { clustersObserved: incident.metrics.clustersObserved,
+      candidatesCreated: incident.metrics.incidentCandidatesCreated,
+      candidatesExpired: incident.metrics.candidatesExpired,
+      promotions: incident.metrics.incidentsPromoted,
+      wouldPublish: publish.publishCandidatesGenerated,
+      alreadyActiveSuppressions: publish.suppressionsByReason.already_published_active_incident ?? 0,
+      nearbyCooldownSuppressions: publish.nearbyRepeatSuppressions },
+    gate: gateComparison.snapshot(),
+    interpretation: "Planning floor/ceiling are not measured counterfactual outcomes or recall equivalence; endpoints differ, cost can change, and feed absence cannot prove no lightning.",
+  });
 }
 
 function stop(reason: string) {
@@ -175,7 +218,10 @@ emit("run_start", { endpoint, box: config.box, areaSelection: config.areaSelecti
   monitoringArea: config.monitoringArea?.id ?? null, clusterParameters: config.parameters,
   incidentProfile: profile, comparisonProfiles: INCIDENT_POLICY_PROFILES.map(item => item.id),
   durationMinutes: config.durationMs / 60_000, cookies: false, customOrigin: false,
-  maxRetainedReplaySignals: maxSignals, persistence: false });
+  maxRetainedReplaySignals: maxSignals, persistence: false,
+  gateComparison: gateComparison ? { maxXweatherCalls: config.maxXweatherCalls,
+    maxIncidentAgeMs: gateComparison.snapshot().maxIncidentAgeMs,
+    hypotheticalUserChecks: config.hypotheticalUserChecks ?? null } : null });
 
 async function connectOnce(): Promise<void> {
   const openingAt = Date.now();
@@ -244,8 +290,10 @@ while (!stopping) {
 }
 
 await pairedValidation?.waitForCompletion();
+await gateComparison?.waitForCompletion();
 const endedAtMs = Date.now();
 summary(endedAtMs, "run_summary");
+gateFinalSummary(endedAtMs);
 const comparisons = compareIncidentProfiles(replaySignals, INCIDENT_POLICY_PROFILES, endedAtMs);
 emit("same_sequence_policy_comparison", { replaySignals: replaySignals.length, signalsDropped,
   inputActivityEvents: replaySignals.filter(item => item.kind === "activity").length, results: comparisons });

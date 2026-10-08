@@ -3,8 +3,8 @@ import test from "node:test";
 import { greatCircleDistanceKm } from "./lightning/distance.ts";
 import { compassDirection, initialBearingDegrees } from "./lightning/bearing.ts";
 import { handleLiveLightningRequest } from "./lightning/handler.ts";
-import { summarizeRecentActivity } from "./lightning/summary.ts";
-import { EMPTY_PROVIDER_DIAGNOSTICS, LIGHTNING_QUERY_RADIUS_KM, type LiveStrike } from "./lightning/types.ts";
+import { summarizeCurrentFlashes, summarizeRecentActivity } from "./lightning/summary.ts";
+import { EMPTY_PROVIDER_DIAGNOSTICS, LIGHTNING_QUERY_RADIUS_KM, LIVE_CURRENT_EVENT_LIMIT, type LiveStrike } from "./lightning/types.ts";
 import { buildXweatherLiveUrls, parseXweatherSummaryPayload } from "./lightning/xweather-live.ts";
 import { createXweatherProvider, parseXweatherLightningPayload } from "./lightning/xweather.ts";
 
@@ -238,6 +238,7 @@ test("quiet Summary makes exactly one upstream request and does not request Flas
   if (handlerResult.body.ok) {
     assert.equal(handlerResult.body.summary.recentArea.totalDetections, 0);
     assert.equal(handlerResult.body.summary.current.status, "not-requested");
+    assert.equal("events" in handlerResult.body.summary.current, false);
   }
   const serialized = JSON.stringify(handlerResult.body);
   assert.equal(serialized.includes("private-test-id"), false);
@@ -321,6 +322,7 @@ test("Flash failure after positive Summary preserves partial regional context", 
   if (!result.body.ok) return;
   assert.equal(result.body.summary.recentArea.totalDetections, 4);
   assert.equal(result.body.summary.current.status, "unavailable");
+  assert.equal("events" in result.body.summary.current, false);
   if (result.body.summary.current.status === "unavailable") assert.equal(result.body.summary.current.failureStatus, "provider-unavailable");
 });
 
@@ -332,7 +334,89 @@ test("positive Summary with healthy-zero Flash is recent but currently clear", a
       : response({ success: true, error: { code: "warn_no_data" } }),
   });
   assert.equal(result.body.ok, true);
-  if (result.body.ok) assert.equal(result.body.summary.current.status, "clear");
+  if (result.body.ok) {
+    assert.equal(result.body.summary.current.status, "clear");
+    if (result.body.summary.current.status === "clear") assert.deepEqual(result.body.summary.current.events, []);
+  }
+});
+
+test("successful Flash exposes every usable event below the cap, nearest-first, with only public fields", () => {
+  const events = [eventAt(14, 4, "unknown"), eventAt(3, 2), eventAt(8, 1, "IC")];
+  const original = events.map(event => ({ ...event }));
+  const summary = summarizeCurrentFlashes(events, 0, 0, now, 2, EMPTY_PROVIDER_DIAGNOSTICS, false);
+  assert.deepEqual(summary.events, [events[1], events[2], events[0]]);
+  assert.deepEqual(events, original);
+  assert.ok(Math.abs(summary.nearestKm! - 3) < 1e-7);
+  assert.equal(summary.nearestDirection, "E");
+  assert.equal(summary.nearestAgeMinutes, 2);
+  assert.equal(summary.latestEventAt, now - 60_000);
+  assert.equal(summary.totalFlashes, 3);
+  assert.equal(summary.rejectedEventCount, 2);
+  assert.ok(summary.events.every(event => Object.keys(event).sort().join(",") === "latitude,longitude,observedAtMs,type"));
+});
+
+test("nearest 12 are bounded deterministically while all Flash records contribute to summary metrics", () => {
+  const distances = [...Array.from({ length: 16 }, (_, i) => i + 1), 26, 39];
+  const events = distances.map(km => eventAt(km, km === 39 ? 0.5 : 2));
+  const summary = summarizeCurrentFlashes([...events].reverse(), 0, 0, now, 3, EMPTY_PROVIDER_DIAGNOSTICS, true);
+  assert.equal(LIVE_CURRENT_EVENT_LIMIT, 12);
+  assert.equal(summary.events.length, 12);
+  assert.deepEqual(summary.events, events.slice(0, 12));
+  assert.deepEqual(summary.events, summarizeCurrentFlashes(events, 0, 0, now, 3, EMPTY_PROVIDER_DIAGNOSTICS, true).events);
+  assert.equal(summary.totalFlashes, 18);
+  assert.deepEqual(summary.counts, { within5Km: 5, within10Km: 10, within25Km: 16, within40Km: 18 });
+  assert.equal(summary.latestEventAt, events[17].observedAtMs);
+  assert.equal(summary.nearestAgeMinutes, 2);
+  assert.equal(summary.nearestDirection, "E");
+  assert.equal(summary.rejectedEventCount, 3);
+  assert.equal(summary.mayBeTruncated, true);
+});
+
+test("equal-distance public events use newer time, latitude, longitude and type ties independent of provider order", () => {
+  const step = pointAtDistanceKm(1).longitude;
+  const older = { ...eventAt(1, 4), type: "unknown" as const };
+  const tied: LiveStrike[] = [
+    { observedAtMs: now, latitude: -step, longitude: 0, type: "CG" },
+    { observedAtMs: now, latitude: 0, longitude: -step, type: "CG" },
+    { observedAtMs: now, latitude: 0, longitude: step, type: "CG" },
+    { observedAtMs: now, latitude: 0, longitude: step, type: "IC" },
+    { observedAtMs: now, latitude: step, longitude: 0, type: "CG" },
+  ];
+  const summarize = (events: LiveStrike[]) => summarizeCurrentFlashes(events, 0, 0, now, 0, EMPTY_PROVIDER_DIAGNOSTICS, false);
+  const summary = summarize([older, ...tied].reverse());
+  assert.deepEqual(summary.events, [...tied, older]);
+  assert.deepEqual(summarize([older, ...tied]).events, summary.events);
+  // Existing nearest-summary tie behavior remains based on the full input, not on the UI ordering.
+  assert.equal(summarize([older, ...tied]).nearestAgeMinutes, 4);
+});
+
+test("handler exposes only normalized and currently usable Flash events, excluding rejected and filtered records", async () => {
+  const paths: string[] = [];
+  const records = [
+    xweatherRecord({ longitude: pointAtDistanceKm(2).longitude, type: "ic" }),
+    xweatherRecord({ longitude: pointAtDistanceKm(1).longitude, type: "unsupported" }),
+    xweatherRecord({ latitude: 999 }),
+    { loc: { lat: 0, long: 0 }, ob: {} },
+    xweatherRecord({ longitude: pointAtDistanceKm(3).longitude, timestamp: now / 1000 - 301 }),
+    xweatherRecord({ longitude: pointAtDistanceKm(41).longitude }),
+    xweatherRecord({ timestamp: now / 1000 + 61 }),
+  ];
+  const result = await handleLiveLightningRequest(origin, {
+    clientId: "id", clientSecret: "secret", now: () => now,
+    fetcher: async input => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return response(path === "/lightning/summary/closest" ? summaryPayload(9) : { success: true, error: null, response: records });
+    },
+  });
+  assert.deepEqual(paths, ["/lightning/summary/closest", "/lightning/flash/closest"]);
+  assert.ok(result.body.ok);
+  if (!result.body.ok || result.body.summary.current.status !== "active") assert.fail("expected active Flash result");
+  const current = result.body.summary.current;
+  assert.deepEqual(current.events, [eventAt(1, 0, "unknown"), eventAt(2, 0, "IC")]);
+  assert.equal(current.rejectedEventCount, 2);
+  assert.equal(current.totalFlashes, 2);
+  assert.equal(JSON.stringify(current.events).includes("private-upstream-id"), false);
 });
 
 test("network failure is unavailable rather than zero activity", async () => {

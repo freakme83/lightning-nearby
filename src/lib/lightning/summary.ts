@@ -5,6 +5,7 @@ import {
   LIGHTNING_WINDOW_MINUTES,
   LIVE_CURRENT_RADIUS_KM,
   LIVE_CURRENT_WINDOW_MINUTES,
+  LIVE_CURRENT_EVENT_LIMIT,
   type CurrentLightningAvailable,
   type LiveStrike,
   type ProviderDiagnostics,
@@ -83,8 +84,16 @@ export function summarizeCurrentFlashes(
   const nearest = recent.reduce<(typeof recent)[number] | null>((best, item) => !best || item.distanceKm < best.distanceKm ? item : best, null);
   const latestEventAt = recent.reduce<number | null>((latest, { event }) => latest === null || event.observedAtMs > latest ? event.observedAtMs : latest, null);
   const within = (radiusKm: number) => recent.filter(({ distanceKm }) => distanceKm <= radiusKm + RADIUS_EPSILON_KM).length;
+  // Public map subset only. Summary metrics and the existing nearest-event tie behavior use the full set.
+  const representativeEvents = [...recent].sort((a, b) => a.distanceKm - b.distanceKm ||
+    b.event.observedAtMs - a.event.observedAtMs || a.event.latitude - b.event.latitude ||
+    a.event.longitude - b.event.longitude || (a.event.type < b.event.type ? -1 : a.event.type > b.event.type ? 1 : 0))
+    .slice(0, LIVE_CURRENT_EVENT_LIMIT)
+    .map(({ event }) => ({ observedAtMs: event.observedAtMs, latitude: event.latitude,
+      longitude: event.longitude, type: event.type }));
   return {
     status: recent.length > 0 ? "active" : "clear",
+    events: representativeEvents,
     windowMinutes: LIVE_CURRENT_WINDOW_MINUTES,
     radiusKm: LIVE_CURRENT_RADIUS_KM,
     latestEventAt,

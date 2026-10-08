@@ -18,12 +18,18 @@
     "research:lightning-clustering": "node --experimental-strip-types scripts/live-lightning-clustering/runner.ts",
     "test:research:lightning-clustering": "node --experimental-strip-types --test scripts/live-lightning-clustering/*.test.ts",
     "research:lightning-incidents": "node --experimental-strip-types scripts/lightning-incident-lifecycle/runner.ts",
+    "research:lightning-gate-compare": "node --experimental-strip-types scripts/lightning-incident-lifecycle/runner.ts --gate-comparison=true --format=jsonl",
+    "test:research:lightning-gate-compare": "node --experimental-strip-types --test scripts/lightning-xweather-gate-comparison/*.test.ts",
     "test:research:lightning-incidents": "node --experimental-strip-types --test scripts/lightning-incident-lifecycle/*.test.ts",
     "research:reverse-geocode": "node --experimental-strip-types scripts/lightning-location-naming/runner.ts",
     "test:research:lightning-location-naming": "node --experimental-strip-types --test scripts/lightning-location-naming/*.test.ts",
     "research:cg-enrichment": "node --experimental-strip-types scripts/lightning-cg-enrichment/runner.ts",
     "test:research:lightning-cg-enrichment": "node --experimental-strip-types --test scripts/lightning-cg-enrichment/*.test.ts",
-    "test:research:lightning-cg-paired-validation": "node --experimental-strip-types --test scripts/lightning-cg-paired-validation/*.test.ts"
+    "test:research:lightning-cg-paired-validation": "node --experimental-strip-types --test scripts/lightning-cg-paired-validation/*.test.ts",
+    "research:lightning-message-compose": "node --experimental-strip-types scripts/lightning-message-composer/runner.ts",
+    "test:research:lightning-message-composer": "node --experimental-strip-types --test scripts/lightning-message-composer/*.test.ts",
+    "research:paired-message-preview": "node --experimental-strip-types scripts/lightning-message-preview/runner.ts",
+    "test:research:paired-message-preview": "node --experimental-strip-types --test scripts/lightning-message-preview/*.test.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
