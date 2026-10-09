@@ -1,0 +1,175 @@
+name: Research Lightning Fly Shadow Deploy
+run-name: Research Lightning Fly Shadow Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      fly_org:
+        description: Fly organization slug used only if the app must be created
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lightning-fly-shadow-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy passive Ankara shadow worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out deploy source
+        uses: actions/checkout@v4
+        with:
+          ref: merge-ready
+
+      - name: Resolve deployed source commit
+        id: deploy-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployed_source_sha="$(git rev-parse HEAD)"
+          echo "sha=$deployed_source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Read Fly app name from config
+        id: fly-config
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="$(sed -nE 's/^app[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' fly.ankara-worker.toml | head -n 1)"
+          if [[ -z "$app_name" || ! "$app_name" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::Could not read a valid app name from fly.ankara-worker.toml."
+            exit 1
+          fi
+          echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
+
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+
+      - name: Validate Fly API token
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [[ -z "${FLY_API_TOKEN:-}" ]]; then
+            echo "::error::The FLY_API_TOKEN repository secret is missing."
+            exit 1
+          fi
+          echo "FLY_API_TOKEN is configured."
+
+      - name: Detect app and check existing Machine count
+        shell: bash
+        env:
+          APP_NAME: ${{ steps.fly-config.outputs.app_name }}
+          FLY_ORG: ${{ inputs.fly_org }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DEPLOYED_SOURCE_SHA: ${{ steps.deploy-source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          app="$APP_NAME"
+          apps_json="$(fly apps list --json)"
+          app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+
+          if (( app_count > 1 )); then
+            echo "::error::Fly listed the app $app more than once; refusing deployment for manual review."
+            exit 1
+          elif (( app_count == 0 )); then
+            if [[ -z "${FLY_ORG:-}" ]]; then
+              echo "::error::The app $app is not present in the authenticated Fly app list. Supply the Fly organization slug in the fly_org dispatch input to create it safely."
+              exit 1
+            fi
+
+            echo "App $app is absent from the successful Fly app listing; creating it in organization $FLY_ORG."
+            if create_output="$(fly apps create "$app" --org "$FLY_ORG" --yes 2>&1)"; then
+              echo "Created app $app in the requested organization."
+            else
+              create_status=$?
+              if grep -Eqi 'already exists|already been taken|name[^[:cntrl:]]*taken' <<< "$create_output"; then
+                apps_json="$(fly apps list --json)"
+                app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+                if (( app_count == 1 )); then
+                  echo "The app was created concurrently and is now confirmed in the Fly app listing."
+                else
+                  printf '%s\n' "$create_output"
+                  echo "::error::Fly reported that the app already exists, but the subsequent successful listing did not confirm it."
+                  exit 1
+                fi
+              else
+                printf '%s\n' "$create_output"
+                echo "::error::Failed to create Fly app $app in organization $FLY_ORG."
+                exit "$create_status"
+              fi
+            fi
+          else
+            machines_json="$(fly machine list --app "$app" --json)"
+            machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+            if (( machine_count > 1 )); then
+              echo "::error::Found $machine_count Machines in $app before deployment. No deployment or Machine changes were made; review and resolve the count manually."
+              exit 1
+            fi
+            echo "App exists; preflight Machine count: $machine_count"
+          fi
+
+      - name: Deploy existing passive worker configuration
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: fly deploy --config fly.ankara-worker.toml --remote-only --yes
+
+      - name: Verify one Machine and set restart policy
+        shell: bash
+        env:
+          APP_NAME: ${{ steps.fly-config.outputs.app_name }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          app="$APP_NAME"
+          machines_json="$(fly machine list --app "$app" --json)"
+          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+          if (( machine_count != 1 )); then
+            echo "::error::Expected exactly one Machine in $app after deployment, found $machine_count. No Machines were destroyed or scaled; manual review is required."
+            exit 1
+          fi
+          machine_id="$(jq -er '.[0].id // .[0].ID // empty' <<< "$machines_json")"
+          if [[ -z "$machine_id" ]]; then
+            echo "::error::Could not resolve the Machine ID from fly machine list output."
+            exit 1
+          fi
+
+          fly machine update "$machine_id" -a "$app" --restart always --autostart=false --autostop=off --yes
+
+          final_json="$(fly machine list --app "$app" --json)"
+          final_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$final_json")"
+          if (( final_count != 1 )); then
+            echo "::error::Expected exactly one Machine after the restart-policy update, found $final_count. No Machines were destroyed or scaled; manual review is required."
+            exit 1
+          fi
+          final_id="$(jq -er '.[0].id // .[0].ID // empty' <<< "$final_json")"
+          if [[ "$final_id" != "$machine_id" ]]; then
+            echo "::error::Machine ID changed during verification; manual review is required."
+            exit 1
+          fi
+
+          region="$(jq -r '.[0].region // .[0].Region // "unknown"' <<< "$final_json")"
+          state="$(jq -r '.[0].state // .[0].State // "unknown"' <<< "$final_json")"
+          restart_policy="$(jq -r '.[0].config.restart.policy // .[0].restart.policy // "not exposed"' <<< "$final_json")"
+          {
+            echo "## Fly shadow deployment"
+            echo
+            echo "- App: `$app`"
+            echo "- Machine ID: `$machine_id`"
+            echo "- Region: `$region`"
+            echo "- State: `$state`"
+            echo "- Restart policy: `$restart_policy`"
+            echo "- Workflow registration branch: `main`"
+            echo "- Deploy source branch: `merge-ready`"
+            echo "- Deploy source commit SHA: `$DEPLOYED_SOURCE_SHA`"
+            echo "- GitHub workflow/run SHA: `${{ github.sha }}`"
+            echo "- Mode: passive shadow mode."
+            echo
+            echo "This worker does not create incidents or publication records, approve, or publish."
+          } >> "$GITHUB_STEP_SUMMARY"
