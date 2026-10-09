@@ -10,12 +10,34 @@ function display(value: string | number | boolean | null): string {
 }
 
 export function renderMonitorSummary(result: MonitorResult): string {
+  const manualRun = result.githubEventName === "workflow_dispatch";
+  const scheduledSlot = manualRun ? "not applicable" : result.scheduledSlotAt ?? "unavailable";
+  const scheduleDelay = manualRun ? "not applicable" : result.scheduleDelaySeconds === null || result.scheduleDelayMinutes === null
+    ? "unavailable" : `${result.scheduleDelaySeconds} seconds (${result.scheduleDelayMinutes.toFixed(2)} minutes)`;
   const rows = [
     "## Ankara monitor result",
     "",
     "- Monitor mode: Ankara",
     `- Run start: ${display(result.runStartedAt)}`,
     `- Run end: ${display(result.runEndedAt)}`,
+    "",
+    "### Schedule timing",
+    `- Event: ${display(result.githubEventName)}`,
+    `- GitHub run ID: ${display(result.githubRunId)}`,
+    `- GitHub run attempt: ${display(result.githubRunAttempt)}`,
+    `- Scheduled slot: ${scheduledSlot}`,
+    `- Actual start: ${display(result.runStartedAt)}`,
+    `- Delay: ${scheduleDelay}`,
+    `- Monitor window start: ${display(result.runStartedAt)}`,
+    `- Monitor window end: ${display(result.runEndedAt)}`,
+    `- Monitor duration: ${result.monitorDurationSeconds === null ? "unavailable" : `${result.monitorDurationSeconds} seconds`}`,
+    ...(result.githubEventName === "schedule" && result.scheduledSlotAt === null
+      ? ["- Schedule telemetry unavailable: safe cron slot could not be determined from the event metadata."] : []),
+    ...(result.githubEventName === "schedule" && result.githubEventName !== null && result.scheduleDelaySeconds === null && result.scheduledSlotAt !== null
+      ? ["- Schedule delay unavailable: timing calculation could not be completed safely."] : []),
+    ...(result.githubEventName !== "schedule" && result.githubEventName !== "workflow_dispatch"
+      ? ["- Schedule telemetry unavailable: GitHub event type was not recognized as scheduled or manual."] : []),
+    "",
     `- Outcome: ${result.outcome}`,
     `- Source health: ${display(result.sourceHealth)}`,
     `- Candidate found: ${result.candidateFound ? "yes" : "no"}`,

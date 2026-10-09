@@ -13,6 +13,14 @@ export type MonitorOutcome = "candidate_persisted" | "duplicate" | "held" | "no_
 export type MonitorResult = {
   mode: "ankara";
   outcome: MonitorOutcome;
+  githubEventName: string | null;
+  githubRunId: string | null;
+  githubRunAttempt: string | null;
+  scheduledSlotAt: string | null;
+  scheduleDelaySeconds: number | null;
+  scheduleDelayMinutes: number | null;
+  monitorDurationSeconds: number | null;
+  // Wrapper entry time; it is also the actual start and monitor-window start.
   runStartedAt: string;
   runEndedAt: string;
   sourceHealth: string | null;
@@ -32,6 +40,55 @@ export type MonitorResult = {
 
 type MonitorEnv = Record<string, string | undefined>;
 type Clock = () => string;
+
+export function resolveScheduleTelemetry(input: {
+  githubEventName?: string;
+  githubRunId?: string;
+  githubRunAttempt?: string;
+  scheduleExpression?: string | null;
+  runStartedAt: string;
+  runEndedAt: string;
+}): Pick<MonitorResult, "githubEventName" | "githubRunId" | "githubRunAttempt" | "scheduledSlotAt" |
+  "scheduleDelaySeconds" | "scheduleDelayMinutes" | "monitorDurationSeconds"> {
+  const startedMs = Date.parse(input.runStartedAt);
+  const endedMs = Date.parse(input.runEndedAt);
+  const monitorDurationSeconds = Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
+    ? Math.round((endedMs - startedMs) / 1000) : null;
+  let scheduledSlotAt: string | null = null;
+  let scheduleDelaySeconds: number | null = null;
+  let scheduleDelayMinutes: number | null = null;
+
+  if (input.githubEventName === "schedule" && input.scheduleExpression === "*/15 * * * *" && Number.isFinite(startedMs)) {
+    const slotMs = Math.floor(startedMs / (15 * 60 * 1000)) * (15 * 60 * 1000);
+    const delaySeconds = Math.floor((startedMs - slotMs) / 1000);
+    if (delaySeconds >= 0) {
+      scheduledSlotAt = new Date(slotMs).toISOString();
+      scheduleDelaySeconds = delaySeconds;
+      scheduleDelayMinutes = Math.round((delaySeconds / 60) * 100) / 100;
+    }
+  }
+
+  return {
+    githubEventName: input.githubEventName || null,
+    githubRunId: input.githubRunId || null,
+    githubRunAttempt: input.githubRunAttempt || null,
+    scheduledSlotAt,
+    scheduleDelaySeconds,
+    scheduleDelayMinutes,
+    monitorDurationSeconds,
+  };
+}
+
+async function readScheduleExpression(env: MonitorEnv): Promise<string | null> {
+  if (env.GITHUB_EVENT_SCHEDULE) return env.GITHUB_EVENT_SCHEDULE;
+  if (!env.GITHUB_EVENT_PATH) return null;
+  try {
+    const event = asRecord(JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8")));
+    return typeof event.schedule === "string" ? event.schedule : null;
+  } catch {
+    return null;
+  }
+}
 
 export function missingConfiguration(env: MonitorEnv): string | null {
   const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "XWEATHER_CLIENT_ID", "XWEATHER_CLIENT_SECRET"];
@@ -58,6 +115,10 @@ export function buildMonitorResult(input: {
   pipelineExitCode: number;
   runStartedAt: string;
   runEndedAt: string;
+  githubEventName?: string;
+  githubRunId?: string;
+  githubRunAttempt?: string;
+  scheduleExpression?: string | null;
   sourceHealthLog?: string;
   reason?: string | null;
 }): MonitorResult {
@@ -78,6 +139,14 @@ export function buildMonitorResult(input: {
     (sawLiveSource ? "live during window" : typeof paired.sourceHealth === "string" ? paired.sourceHealth : null);
   const candidateFound = Boolean(incident.incidentId) || result?.status === "message_preview_ready";
   const publicationId = ledger?.persistedPublicationId ?? null;
+  const scheduleTelemetry = resolveScheduleTelemetry({
+    githubEventName: input.githubEventName,
+    githubRunId: input.githubRunId,
+    githubRunAttempt: input.githubRunAttempt,
+    scheduleExpression: input.scheduleExpression,
+    runStartedAt: input.runStartedAt,
+    runEndedAt: input.runEndedAt,
+  });
   let outcome: MonitorOutcome = "operational_failure";
   let reason = input.reason ?? null;
 
@@ -117,6 +186,7 @@ export function buildMonitorResult(input: {
 
   return {
     mode: "ankara", outcome, runStartedAt: input.runStartedAt, runEndedAt: input.runEndedAt,
+    ...scheduleTelemetry,
     sourceHealth: sourceHealth ?? null, candidateFound,
     publicationId,
     decision: decision?.decision ?? null,
@@ -156,6 +226,7 @@ export async function runMonitor(options: {
   const env = options.env ?? process.env;
   const now = options.now ?? (() => new Date().toISOString());
   const runStartedAt = now();
+  const scheduleExpression = await readScheduleExpression(env);
   await mkdir("artifacts", { recursive: true });
   let pipeline: DryRunResult | null = null;
   let pipelineExitCode = 1;
@@ -171,7 +242,9 @@ export async function runMonitor(options: {
     }
   }
   const sourceHealthLog = await readFile(artifacts[2], "utf8").catch(() => "");
-  const result = buildMonitorResult({ pipeline, pipelineExitCode, runStartedAt, runEndedAt: now(), sourceHealthLog, reason });
+  const result = buildMonitorResult({ pipeline, pipelineExitCode, runStartedAt, runEndedAt: now(),
+    githubEventName: env.GITHUB_EVENT_NAME, githubRunId: env.GITHUB_RUN_ID,
+    githubRunAttempt: env.GITHUB_RUN_ATTEMPT, scheduleExpression, sourceHealthLog, reason });
   await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
   return result;
 }

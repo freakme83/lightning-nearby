@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { DryRunResult } from "../lightning-end-to-end-dry-run/orchestrate.ts";
-import { buildMonitorResult, missingConfiguration, monitorExitCode, monitorRunnerArgs, pipelineEnvironment } from "./runner.ts";
+import { buildMonitorResult, missingConfiguration, monitorExitCode, monitorRunnerArgs, pipelineEnvironment,
+  resolveScheduleTelemetry } from "./runner.ts";
 import { renderMonitorSummary } from "./summary.ts";
 
 const exactMessage = "#YILDIRIM\n9 Ekim 2026, 10:00 TSİ\nAşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.\n\n39.901, 32.859";
@@ -23,6 +24,85 @@ function e2e(patch: Record<string, unknown> = {}): DryRunResult {
 }
 
 const common = { pipelineExitCode: 0, runStartedAt: "start", runEndedAt: "end" };
+const cron = "*/15 * * * *";
+
+test("scheduled telemetry resolves an exact UTC cron boundary to zero delay", () => {
+  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
+    runStartedAt: "2026-10-09T10:15:00.000Z", runEndedAt: "2026-10-09T10:25:01.000Z" });
+  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
+  assert.equal(telemetry.scheduleDelaySeconds, 0);
+  assert.equal(telemetry.scheduleDelayMinutes, 0);
+  assert.equal(telemetry.monitorDurationSeconds, 601);
+});
+
+test("scheduled telemetry measures a 4m42s start delay", () => {
+  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
+    runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:42.000Z" });
+  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
+  assert.equal(telemetry.scheduleDelaySeconds, 282);
+  assert.equal(telemetry.scheduleDelayMinutes, 4.7);
+});
+
+test("scheduled telemetry resolves slots across an hour boundary", () => {
+  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
+    runStartedAt: "2026-10-09T11:00:15.000Z", runEndedAt: "2026-10-09T11:10:15.000Z" });
+  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T11:00:00.000Z");
+  assert.equal(telemetry.scheduleDelaySeconds, 15);
+});
+
+test("scheduled telemetry resolves slots across midnight UTC", () => {
+  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
+    runStartedAt: "2026-10-10T00:07:30.000Z", runEndedAt: "2026-10-10T00:17:30.000Z" });
+  assert.equal(telemetry.scheduledSlotAt, "2026-10-10T00:00:00.000Z");
+  assert.equal(telemetry.scheduleDelaySeconds, 450);
+  assert.equal(telemetry.scheduleDelayMinutes, 7.5);
+});
+
+test("manual telemetry has no scheduled slot or delay", () => {
+  const telemetry = resolveScheduleTelemetry({ githubEventName: "workflow_dispatch", scheduleExpression: cron,
+    githubRunId: "1234", githubRunAttempt: "2", runStartedAt: "2026-10-09T10:19:42.000Z",
+    runEndedAt: "2026-10-09T10:29:42.000Z" });
+  assert.equal(telemetry.scheduledSlotAt, null);
+  assert.equal(telemetry.scheduleDelaySeconds, null);
+  assert.equal(telemetry.scheduleDelayMinutes, null);
+  assert.equal(telemetry.githubRunId, "1234");
+  assert.equal(telemetry.githubRunAttempt, "2");
+});
+
+test("missing and malformed schedule metadata yield unavailable telemetry", () => {
+  for (const scheduleExpression of [null, "not-a-cron-expression"]) {
+    const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression,
+      runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:42.000Z" });
+    assert.equal(telemetry.scheduledSlotAt, null);
+    assert.equal(telemetry.scheduleDelaySeconds, null);
+    assert.equal(telemetry.scheduleDelayMinutes, null);
+    assert.equal(telemetry.monitorDurationSeconds, 600);
+  }
+});
+
+test("telemetry availability does not change candidate or operational outcomes", () => {
+  const withMissingSchedule = buildMonitorResult({ ...common, pipeline: e2e(), githubEventName: "schedule" });
+  const baseline = buildMonitorResult({ ...common, pipeline: e2e() });
+  assert.equal(withMissingSchedule.outcome, baseline.outcome);
+  assert.equal(withMissingSchedule.approvalStatus, "pending");
+  const failed = buildMonitorResult({ ...common, pipeline: null, pipelineExitCode: 1, githubEventName: "schedule" });
+  assert.equal(failed.outcome, "operational_failure");
+});
+
+test("structured result contains run identity, slot, delay, and monitor duration", () => {
+  const result = buildMonitorResult({ pipeline: e2e(), pipelineExitCode: 0,
+    githubEventName: "schedule", githubRunId: "999", githubRunAttempt: "1", scheduleExpression: cron,
+    runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:43.000Z" });
+  assert.equal(result.githubEventName, "schedule");
+  assert.equal(result.githubRunId, "999");
+  assert.equal(result.githubRunAttempt, "1");
+  assert.equal(result.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
+  assert.equal(result.scheduleDelaySeconds, 282);
+  assert.equal(result.scheduleDelayMinutes, 4.7);
+  assert.equal(result.runStartedAt, "2026-10-09T10:19:42.000Z");
+  assert.equal(result.runEndedAt, "2026-10-09T10:29:43.000Z");
+  assert.equal(result.monitorDurationSeconds, 601);
+});
 
 test("monitor invokes only the existing ten-minute Ankara profile-B paired pipeline", () => {
   assert.deepEqual(monitorRunnerArgs, ["--experimental-strip-types", "scripts/lightning-end-to-end-dry-run/runner.ts"]);
@@ -137,6 +217,39 @@ test("summary reports persisted composer text verbatim and never rebuilds it", (
   assert.ok(summary.includes("Approval status: pending"));
   assert.ok(summary.includes("No social post was sent."));
   assert.equal(result.messageText, exactMessage);
+});
+
+test("summary renders scheduled slot and delay timing", () => {
+  const result = buildMonitorResult({ pipeline: e2e(), pipelineExitCode: 0,
+    githubEventName: "schedule", githubRunId: "999", githubRunAttempt: "1", scheduleExpression: cron,
+    runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:43.000Z" });
+  const summary = renderMonitorSummary(result);
+  assert.ok(summary.includes("### Schedule timing"));
+  assert.ok(summary.includes("- Event: schedule"));
+  assert.ok(summary.includes("- GitHub run ID: 999"));
+  assert.ok(summary.includes("- GitHub run attempt: 1"));
+  assert.ok(summary.includes("- Scheduled slot: 2026-10-09T10:15:00.000Z"));
+  assert.ok(summary.includes("- Actual start: 2026-10-09T10:19:42.000Z"));
+  assert.ok(summary.includes("- Delay: 282 seconds (4.70 minutes)"));
+  assert.ok(summary.includes("- Monitor duration: 601 seconds"));
+});
+
+test("summary renders manual timing as not applicable and unavailable cron timing clearly", () => {
+  const manual = buildMonitorResult({ pipeline: e2e(), pipelineExitCode: 0,
+    githubEventName: "workflow_dispatch", runStartedAt: "2026-10-09T10:19:42.000Z",
+    runEndedAt: "2026-10-09T10:29:42.000Z" });
+  const manualSummary = renderMonitorSummary(manual);
+  assert.ok(manualSummary.includes("- Event: workflow_dispatch"));
+  assert.ok(manualSummary.includes("- Scheduled slot: not applicable"));
+  assert.ok(manualSummary.includes("- Delay: not applicable"));
+  assert.ok(manualSummary.includes("- Monitor duration: 600 seconds"));
+
+  const unavailable = buildMonitorResult({ pipeline: e2e(), pipelineExitCode: 0,
+    githubEventName: "schedule", runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:42.000Z" });
+  const unavailableSummary = renderMonitorSummary(unavailable);
+  assert.ok(unavailableSummary.includes("- Scheduled slot: unavailable"));
+  assert.ok(unavailableSummary.includes("- Delay: unavailable"));
+  assert.ok(unavailableSummary.includes("Schedule telemetry unavailable"));
 });
 
 test("manual approval and X Publisher remain outside the monitor runner and workflow", async () => {
