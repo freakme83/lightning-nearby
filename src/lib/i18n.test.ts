@@ -52,6 +52,7 @@ test("the same forecast and observation decisions have natural text in both lang
   for (const risk of ["low", "elevated", "high"] as const) {
     assert.notEqual(forecastHeadline("tr", risk), forecastHeadline("en", risk));
     assert.equal(riskLabel("tr", risk), { low: "Düşük", elevated: "Artmış", high: "Yüksek" }[risk]);
+    assert.equal(riskLabel("en", risk), { low: "Low", elevated: "Elevated", high: "High" }[risk]);
   }
   assert.match(summarizeSignal(null, "", "tr"), /Tahmin saatlerinde/);
   assert.match(summarizeSignal({ risk: "high", start: 1, end: 2 }, "12:00–13:00", "tr"), /En güçlü dönem: 12:00–13:00/);
@@ -61,11 +62,11 @@ test("the same forecast and observation decisions have natural text in both lang
   } as LiveLightningSummary;
   assert.equal(liveActivityCopy(summary, "tr"), "Son 30 dakikada 50 km içinde de aktivite tespit edildi.");
   assert.equal(liveActivityCopy(summary, "en"), "Activity also detected within 50 km during the last 30 minutes.");
-  assert.equal(liveEventCountCopy(1, 10, "tr"), "Son 5 dakikada 10 km içinde 1 yıldırım olayı");
+  assert.equal(liveEventCountCopy(1, 10, "tr"), "Son 5 dakikada 10 km içinde 1 şimşek/yıldırım olayı");
   assert.equal(liveEventCountCopy(8, 10, "en"), "8 recent lightning events within 10 km · last 5 min");
-  assert.equal(liveSeverityLabel("high", "tr"), "Yüksek");
-  assert.equal(liveSeverityLabel("elevated", "en"), "Elevated");
-  assert.equal(liveSeverityLabel("nearby", "tr"), "Yakında aktivite");
+  assert.equal(liveSeverityLabel("high", "tr"), "Çok yakın");
+  assert.equal(liveSeverityLabel("elevated", "en"), "Nearby");
+  assert.equal(liveSeverityLabel("nearby", "tr"), "Çevrede");
   assert.equal(directionLabel("tr", "SE"), "güneydoğu");
   assert.equal(directionLabel("en", "SE"), "southeast");
 });

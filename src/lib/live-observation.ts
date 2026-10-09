@@ -7,9 +7,9 @@ export type CurrentSeverity = RiskLevel | "nearby";
 
 /** Human-readable label for the live observation alone. */
 export function liveSeverityLabel(severity: LiveSeverity | null, locale: Locale = "en"): string | null {
-  if (severity === "high") return t(locale, "high");
-  if (severity === "elevated") return t(locale, "elevated");
-  if (severity === "nearby") return t(locale, "nearbyActivity");
+  if (severity === "high") return t(locale, "liveVeryClose");
+  if (severity === "elevated") return t(locale, "liveNearby");
+  if (severity === "nearby") return t(locale, "liveInArea");
   return null;
 }
 
@@ -38,23 +38,39 @@ export function isCurrentLiveRequest(requestId: number, latestId: number, reques
   return !signal.aborted && requestId === latestId && requestLocation === currentLocation;
 }
 
-export function liveActivityCopy(summary: LiveLightningSummary, locale: Locale = "en"): string {
+export type LiveCopySegment = { text: string; emphasize?: boolean };
+
+/** Only a clear current window with positive broader-area evidence emphasizes detection. */
+export function liveActivitySegments(summary: LiveLightningSummary, locale: Locale = "en"): LiveCopySegment[] {
   const hasRecentAreaActivity = summary.recentArea.totalDetections > 0;
   if (summary.current.status === "unavailable") {
-    return hasRecentAreaActivity
-      ? t(locale, "recentUnavailable")
-      : t(locale, "noRecent");
+    return [{ text: t(locale, hasRecentAreaActivity ? "recentUnavailable" : "noRecent") }];
   }
   if (summary.current.status === "clear" || summary.current.status === "not-requested") {
-    return hasRecentAreaActivity
-      ? t(locale, "recentClear")
-      : t(locale, "noRecent");
+    return hasRecentAreaActivity ? [
+      { text: t(locale, "recentClearBefore") },
+      { text: t(locale, "recentClearDetected"), emphasize: true },
+      { text: t(locale, "recentClearAfter") },
+    ] : [{ text: t(locale, "noRecent") }];
   }
-  return hasRecentAreaActivity
-    ? t(locale, "recentActive")
-    : t(locale, "activityNearby");
+  return [{ text: t(locale, hasRecentAreaActivity ? "recentActive" : "activityNearby") }];
+}
+
+export function liveActivityCopy(summary: LiveLightningSummary, locale: Locale = "en"): string {
+  return liveActivitySegments(summary, locale).map(segment => segment.text).join("");
 }
 
 export function liveEventCountCopy(count: number, radiusKm: number, locale: Locale = "en"): string {
   return t(locale, count === 1 ? "eventOne" : "eventMany", { count, radius: radiusKm });
+}
+
+/** Both requests start on the same manual action; neither awaits the other. */
+export function requestLiveCheck(
+  origin: "automatic" | "manual-check" | "manual-refresh",
+  checkActivity: () => Promise<void>,
+  refreshForecast?: () => void,
+): Promise<void> {
+  const liveRequest = checkActivity();
+  if (origin === "manual-refresh") refreshForecast?.();
+  return liveRequest;
 }

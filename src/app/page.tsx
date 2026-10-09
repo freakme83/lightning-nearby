@@ -420,7 +420,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
       {loading && <div className="loading-state" role="status">{t(locale, "gettingForecast")}</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>{t(locale, "forecastUnavailable")}</strong><p>{t(locale, "forecastError")}</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>{t(locale, "tryAgain")}</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} onManualRefresh={refreshForecast} />
       {forecast && !loading && <>
         <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} locale={locale} />
         <section className="timeline-section" aria-labelledby="timeline-title">
