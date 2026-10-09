@@ -50,6 +50,9 @@ jobs:
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
 
+      - name: Validate Fly CLI installation
+        run: flyctl version
+
       - name: Validate Fly API token
         shell: bash
         env:
@@ -70,8 +73,8 @@ jobs:
         run: |
           set -euo pipefail
           app="$APP_NAME"
-          apps_json="$(fly apps list --json)"
-          app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+          apps_json="$(flyctl apps list --json)"
+          app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from flyctl apps list") end' <<< "$apps_json")"
 
           if (( app_count > 1 )); then
             echo "::error::Fly listed the app $app more than once; refusing deployment for manual review."
@@ -83,13 +86,13 @@ jobs:
             fi
 
             echo "App $app is absent from the successful Fly app listing; creating it in organization $FLY_ORG."
-            if create_output="$(fly apps create "$app" --org "$FLY_ORG" --yes 2>&1)"; then
+            if create_output="$(flyctl apps create "$app" --org "$FLY_ORG" --yes 2>&1)"; then
               echo "Created app $app in the requested organization."
             else
               create_status=$?
               if grep -Eqi 'already exists|already been taken|name[^[:cntrl:]]*taken' <<< "$create_output"; then
-                apps_json="$(fly apps list --json)"
-                app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+                apps_json="$(flyctl apps list --json)"
+                app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from flyctl apps list") end' <<< "$apps_json")"
                 if (( app_count == 1 )); then
                   echo "The app was created concurrently and is now confirmed in the Fly app listing."
                 else
@@ -104,8 +107,8 @@ jobs:
               fi
             fi
           else
-            machines_json="$(fly machine list --app "$app" --json)"
-            machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+            machines_json="$(flyctl machine list --app "$app" --json)"
+            machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from flyctl machine list") end' <<< "$machines_json")"
             if (( machine_count > 1 )); then
               echo "::error::Found $machine_count Machines in $app before deployment. No deployment or Machine changes were made; review and resolve the count manually."
               exit 1
@@ -117,7 +120,7 @@ jobs:
         shell: bash
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: fly deploy --config fly.ankara-worker.toml --remote-only --yes
+        run: flyctl deploy --config fly.ankara-worker.toml --remote-only --yes
 
       - name: Verify one Machine and set restart policy
         shell: bash
@@ -128,22 +131,22 @@ jobs:
         run: |
           set -euo pipefail
           app="$APP_NAME"
-          machines_json="$(fly machine list --app "$app" --json)"
-          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+          machines_json="$(flyctl machine list --app "$app" --json)"
+          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from flyctl machine list") end' <<< "$machines_json")"
           if (( machine_count != 1 )); then
             echo "::error::Expected exactly one Machine in $app after deployment, found $machine_count. No Machines were destroyed or scaled; manual review is required."
             exit 1
           fi
           machine_id="$(jq -er '.[0].id // .[0].ID // empty' <<< "$machines_json")"
           if [[ -z "$machine_id" ]]; then
-            echo "::error::Could not resolve the Machine ID from fly machine list output."
+            echo "::error::Could not resolve the Machine ID from flyctl machine list output."
             exit 1
           fi
 
-          fly machine update "$machine_id" -a "$app" --restart always --autostart=false --autostop=off --yes
+          flyctl machine update "$machine_id" -a "$app" --restart always --autostart=false --autostop=off --yes
 
-          final_json="$(fly machine list --app "$app" --json)"
-          final_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$final_json")"
+          final_json="$(flyctl machine list --app "$app" --json)"
+          final_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from flyctl machine list") end' <<< "$final_json")"
           if (( final_count != 1 )); then
             echo "::error::Expected exactly one Machine after the restart-policy update, found $final_count. No Machines were destroyed or scaled; manual review is required."
             exit 1
