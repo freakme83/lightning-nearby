@@ -230,8 +230,9 @@ export class AnkaraFlyPipeline {
     }).finally(() => {
       this.candidateWork.delete(incidentId);
       this.triggerHealthByIncident.delete(incidentId);
-      const incident = this.lifecycle.incidents.find(item => item.id === incidentId);
-      if (incident?.status === "closed") this.controllers.delete(incidentId);
+      // A completed paired run has claimed its one attempt; no further activity can use
+      // its controller, even if the incident itself remains active.
+      this.controllers.delete(incidentId);
     });
   }
 
