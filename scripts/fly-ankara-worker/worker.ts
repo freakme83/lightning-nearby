@@ -83,6 +83,7 @@ function acceptFrame(data: unknown) {
 function stop(reason: string) {
   if (stopping) return;
   stopping = true;
+  sourceHealthy = false;
   clearInterval(summaryTimer);
   if (sleepTimer) clearTimeout(sleepTimer);
   resolveSleep?.();
@@ -111,10 +112,12 @@ async function connectOnce(): Promise<void> {
   await new Promise<void>(resolve => {
     let settled = false;
     let watchdog: ReturnType<typeof setInterval> | null = null;
+    let watchdogTriggered = false;
     let lastFrameOnConnection = Date.now();
     const finish = () => {
       if (settled) return;
       settled = true;
+      sourceHealthy = false;
       clearTimeout(openTimer);
       if (watchdog) clearInterval(watchdog);
       socket = null;
@@ -142,7 +145,15 @@ async function connectOnce(): Promise<void> {
       emit("connected", { connectionNumber: counters.connections, handshakeMs: Date.now() - openingAt });
       ws.send(subscription(box, counters.connections > 1 ? lastIds : {}));
       watchdog = setInterval(() => {
-        if (Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
+        if (!watchdogTriggered && Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
+          watchdogTriggered = true;
+          const previousLastFrameAt = lastFrameAt;
+          sourceHealthy = false;
+          emit("source_health", {
+            to: "stale",
+            reason: "90s without any frames",
+            lastFrameAt: previousLastFrameAt === null ? null : new Date(previousLastFrameAt).toISOString(),
+          });
           emit("connection_error", { reason: "90s without any frames" });
           ws.close();
         }
@@ -154,6 +165,7 @@ async function connectOnce(): Promise<void> {
     });
     ws.addEventListener("error", () => emit("connection_error", { reason: "WebSocket error" }));
     ws.addEventListener("close", event => {
+      sourceHealthy = false;
       emit("disconnected", { code: event.code, reason: event.reason, clean: event.wasClean });
       finish();
     });
