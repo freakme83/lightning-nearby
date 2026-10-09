@@ -1,0 +1,88 @@
+name: Research Lightning Ankara Monitor
+run-name: Ankara lightning monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lightning-ankara-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monitor Ankara for one bounded window
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out selected repository revision
+        uses: actions/checkout@v4
+
+      # Scheduled events run from the default branch. Until this implementation is
+      # present on that ref, stop before installing dependencies or contacting sources.
+      - name: Check monitor implementation on the checked-out ref
+        id: implementation
+        shell: bash
+        run: |
+          if [[ -f scripts/lightning-ankara-monitor/runner.ts ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ankara monitor implementation is not present on the checked-out ref; no monitoring was performed."
+          fi
+
+      - name: Set up Node.js
+        if: steps.implementation.outputs.available == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.implementation.outputs.available == 'true'
+        run: npm ci
+
+      - name: Run research-only Ankara monitor
+        id: monitor
+        if: steps.implementation.outputs.available == 'true'
+        continue-on-error: true
+        env:
+          XWEATHER_CLIENT_ID: ${{ secrets.XWEATHER_CLIENT_ID }}
+          XWEATHER_CLIENT_SECRET: ${{ secrets.XWEATHER_CLIENT_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node --experimental-strip-types scripts/lightning-ankara-monitor/runner.ts
+
+      - name: Upload structured monitor result
+        if: always() && steps.implementation.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightning-ankara-monitor-${{ github.run_id }}
+          path: artifacts/lightning-ankara-monitor-result.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Summarize monitor skipped on this ref
+        if: always() && steps.implementation.outputs.available != 'true'
+        shell: bash
+        run: |
+          {
+            echo "## Ankara monitor result"
+            echo
+            echo "- Outcome: implementation unavailable on the checked-out ref"
+            echo "- No monitoring or provider calls were performed."
+            echo
+            echo "No social post was sent."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize monitor result
+        if: always() && steps.implementation.outputs.available == 'true'
+        run: node --experimental-strip-types scripts/lightning-ankara-monitor/summary-runner.ts >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark operational failures
+        if: steps.implementation.outputs.available == 'true' && steps.monitor.outcome == 'failure'
+        run: exit 1
