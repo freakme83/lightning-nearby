@@ -67,7 +67,6 @@ jobs:
           APP_NAME: ${{ steps.fly-config.outputs.app_name }}
           FLY_ORG: ${{ inputs.fly_org }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          DEPLOYED_SOURCE_SHA: ${{ steps.deploy-source.outputs.sha }}
         run: |
           set -euo pipefail
           app="$APP_NAME"
@@ -125,6 +124,7 @@ jobs:
         env:
           APP_NAME: ${{ steps.fly-config.outputs.app_name }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DEPLOYED_SOURCE_SHA: ${{ steps.deploy-source.outputs.sha }}
         run: |
           set -euo pipefail
           app="$APP_NAME"
