@@ -1,0 +1,42 @@
+name: Diagnostic Schedule Probe
+run-name: Diagnostic schedule probe
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    name: Record scheduled trigger
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Print diagnostic timing
+        shell: bash
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "run_id=${{ github.run_id }}"
+          echo "run_attempt=${{ github.run_attempt }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
+          echo "started_at=$(date -u +%FT%TZ)"
+
+      - name: Write diagnostic summary
+        shell: bash
+        run: |
+          {
+            echo "## Diagnostic schedule probe"
+            echo
+            echo "- Event: \`${{ github.event_name }}\`"
+            echo "- GitHub run ID: \`${{ github.run_id }}\`"
+            echo "- GitHub run attempt: \`${{ github.run_attempt }}\`"
+            echo "- Ref: \`${{ github.ref }}\`"
+            echo "- SHA: \`${{ github.sha }}\`"
+            echo "- Runner UTC time: \`$(date -u +%FT%TZ)\`"
+            echo
+            echo "This workflow performs no checkout, provider calls, secret access, persistence, or publishing."
+          } >> "$GITHUB_STEP_SUMMARY"
