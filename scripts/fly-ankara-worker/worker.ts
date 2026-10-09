@@ -1,17 +1,14 @@
-// Continuous, passive shadow observer. No incident writes, provider enrichment, or publishing.
-import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
-import { BoundedDedupe, backoffMs, eventKey, parseFrame, subscription } from "../live-lightning-listener/core.ts";
+// Continuous Ankara observer and pending-publication preparer. It has no X publisher.
+import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitoring-area.ts";
+import { backoffMs, parseFrame, subscription } from "../live-lightning-listener/core.ts";
+import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 
 const endpoint = "wss://live2.lightningmaps.org/";
 const box = ANKARA_MONITORING_AREA.bounds;
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
-const dedupe = new BoundedDedupe(20_000);
 const lastIds: Record<string, number> = {};
-const counters = {
-  messages: 0, decoded: 0, unique: 0, duplicates: 0, malformed: 0,
-  insideSubscriptionBounds: 0, insideAnkaraPolygon: 0, connections: 0, reconnects: 0,
-};
+const counters = { messages: 0, decoded: 0, connections: 0, reconnects: 0, malformed: 0 };
 const startedAt = Date.now();
 let stopping = false;
 let sourceHealthy = false;
@@ -25,6 +22,20 @@ function emit(kind: string, fields: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ kind, at: new Date().toISOString(), ...fields }));
 }
 
+let runtime: AnkaraFlyPipeline;
+try {
+  const store = createFlyPipelineStore(process.env);
+  runtime = new AnkaraFlyPipeline({ store, emit });
+} catch (error) {
+  if (error instanceof FlyPipelineConfigurationError) {
+    emit("configuration_error", { missing: error.missing });
+  } else {
+    emit("configuration_error", { reason: "Supabase ledger configuration is invalid" });
+  }
+  process.exitCode = 1;
+  throw error;
+}
+
 function summary(reason = "periodic") {
   emit("summary", {
     reason,
@@ -33,6 +44,7 @@ function summary(reason = "periodic") {
     sourceHealthy,
     lastFrameAt: lastFrameAt === null ? null : new Date(lastFrameAt).toISOString(),
     ...counters,
+    ...runtime.summary(Date.now()),
   });
 }
 
@@ -45,38 +57,35 @@ function resumeId(sourceEventKey: string | undefined) {
 
 function acceptFrame(data: unknown) {
   counters.messages++;
-  lastFrameAt = Date.now();
+  const receivedAt = Date.now();
+  lastFrameAt = receivedAt;
   if (typeof data !== "string") {
     counters.malformed++;
+    runtime.recordMalformed();
     emit("malformed_frame", { reason: "non-text frame" });
     return;
   }
-  const frame = parseFrame(data, lastFrameAt);
+  const frame = parseFrame(data, receivedAt);
   if (frame.kind === "malformed") {
     counters.malformed++;
+    runtime.recordMalformed();
     emit("malformed_frame", { reason: frame.reason });
     return;
   }
   if (!sourceHealthy) {
     sourceHealthy = true;
-    emit("source_health", { to: "live", firstFrameAt: new Date(lastFrameAt).toISOString() });
+    runtime.recordFrame(receivedAt);
+    emit("source_health", { to: "live", firstFrameAt: new Date(receivedAt).toISOString() });
+  } else {
+    runtime.recordFrame(receivedAt);
   }
   if (frame.kind !== "events") return;
   counters.malformed += frame.rejected;
+  runtime.recordMalformed(frame.rejected);
   for (const event of frame.events) {
     counters.decoded++;
     resumeId(event.sourceEventKey);
-    if (dedupe.seen(eventKey(event))) {
-      counters.duplicates++;
-      continue;
-    }
-    counters.unique++;
-    const withinBounds = event.latitude <= box.north && event.latitude >= box.south &&
-      event.longitude <= box.east && event.longitude >= box.west;
-    if (withinBounds) {
-      counters.insideSubscriptionBounds++;
-      if (pointInMonitoringArea([event.longitude, event.latitude])) counters.insideAnkaraPolygon++;
-    }
+    runtime.acceptEvent(event, receivedAt);
   }
 }
 
@@ -84,6 +93,7 @@ function stop(reason: string) {
   if (stopping) return;
   stopping = true;
   sourceHealthy = false;
+  runtime.recordDisconnected(Date.now(), true);
   clearInterval(summaryTimer);
   if (sleepTimer) clearTimeout(sleepTimer);
   resolveSleep?.();
@@ -100,15 +110,15 @@ emit("worker_start", {
   area: ANKARA_MONITORING_AREA.id,
   subscriptionBounds: box,
   polygonFilter: true,
-  persistence: false,
-  xweather: false,
-  approval: false,
-  publishing: false,
+  incidentProfile: "B",
+  freshnessLimitMs: 240_000,
+  ...runtime.capabilities,
 });
 
 async function connectOnce(): Promise<void> {
   const openingAt = Date.now();
   sourceHealthy = false;
+  runtime.markConnecting(openingAt);
   await new Promise<void>(resolve => {
     let settled = false;
     let watchdog: ReturnType<typeof setInterval> | null = null;
@@ -118,6 +128,7 @@ async function connectOnce(): Promise<void> {
       if (settled) return;
       settled = true;
       sourceHealthy = false;
+      runtime.recordDisconnected(Date.now());
       clearTimeout(openTimer);
       if (watchdog) clearInterval(watchdog);
       socket = null;
@@ -134,7 +145,7 @@ async function connectOnce(): Promise<void> {
       socket = ws;
     } catch (error) {
       clearTimeout(openTimer);
-      emit("connection_error", { reason: String(error) });
+      emit("connection_error", { reason: error instanceof Error ? error.name : "WebSocket construction failed" });
       finish();
       return;
     }
@@ -194,4 +205,5 @@ try {
   }
 } finally {
   summary("shutdown");
+  await runtime.drainCandidateWork();
 }

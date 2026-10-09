@@ -1,34 +1,44 @@
-# Fly.io Ankara shadow worker — initial stage
+# Fly.io Ankara continuous shadow worker
 
-This is a passive, continuous observer for a parallel reliability test. The existing GitHub Actions Ankara monitor remains enabled on its 15-minute schedule and remains the only path that can run candidate enrichment and write pending approval records.
+The Fly worker is the continuous owner of LightningMaps source collection for the Ankara operational area. It reuses the repository’s existing Ankara polygon, dedupe and clustering pipeline, incident lifecycle Profile B, fresh-trigger guard, Xweather adapter, Nominatim location naming, Composer, publish-decision gate, and persistent publication ledger. The worker keeps one long-lived websocket and its incident/lifecycle state in memory; candidate enrichment and ledger work runs off the websocket message handler.
 
-## Worker boundary
+The worker stops at a pending publication record. A newly actionable row is stored in `public.publication_records` with `decision = WOULD_PUBLISH` and `approval_status = pending`. Duplicate/history checks use the existing ledger matcher and rules. A location or provider failure follows existing safe-HOLD behavior and does not stop source monitoring.
 
-The Fly process connects to the existing LightningMaps live WebSocket, subscribes to the bounding box derived from `ANKARA_MONITORING_AREA`, then applies the same Ankara polygon locally. It keeps a bounded dedupe set and reconnects with capped exponential backoff. It emits connection and five-minute aggregate summaries to Fly logs.
+## Runtime secrets and publishing boundary
 
-The observer does not emit individual events or coordinates. It does not call Xweather, Nominatim, or Supabase; it does not create incidents or ledger rows; it cannot approve or publish. GitHub Actions Manual Approval and X Publisher remain unchanged and are still the only approval and publishing paths.
+Configure these four Fly app secrets before deploying Phase 2:
 
-This first stage compares connection uptime, reconnects, malformed frames, dedupe, and aggregate events in the Ankara polygon against the existing scheduled monitor. It does not claim candidate-level parity: the scheduled monitor still owns clustering, lifecycle, enrichment, and pending-candidate persistence. Do not interpret no detected events as evidence that there was no lightning; feed gaps and source limitations remain possible.
+- `XWEATHER_CLIENT_ID`
+- `XWEATHER_CLIENT_SECRET`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
-## Billing and trial limits
+The process validates that each value is present at startup, without logging values. X/Twitter credentials remain only in GitHub Actions and are not required or read by this worker. The Fly worker cannot approve its own row, write `platform_post_id`, mark a row `PUBLISHED`, invoke the X Publisher, or send a social post. Manual Approval remains the human approval path, and the existing GitHub X Publisher remains the only X-writing component.
 
-Fly bills running Machines by the second. The current published reference for the configured `shared-cpu-1x`, 256 MB preset is **$2.19/month** when running for a full month; region pricing, root filesystem storage, and egress can change the total. See [Fly Machine pricing](https://fly.io/docs/about/pricing/).
+## Operational verification
 
-A new-account free trial includes two total VM hours or seven days, whichever comes first, and trial Machines automatically stop after five minutes. That is not enough for a continuous shadow period. Adding a payment method ends the trial and starts billable usage. Do not add billing details or start an always-on Machine until the user has set an acceptable monthly spending limit.
+After a separately authorized manual deploy, inspect `fly logs -a lightning-nearby-ankara-shadow`. Useful markers are:
+
+- `worker_start`: should report `persistence: true`, `xweather: true`, `approval: false`, and `publishing: false`.
+- `connected`, `source_health`, `disconnected`, and `reconnect_wait`: websocket and watchdog behavior.
+- `summary`: five-minute source, filtering, clustering, lifecycle, and candidate counts.
+- `incident_candidate`, `candidate_rejected_stale`, `location_resolved`, and `enrichment_complete`: candidate preparation stages.
+- `duplicate_detected` or `publication_pending`: persistent-history decision or a new pending row.
+- `candidate_outcome` and `candidate_processing_error`: safe non-pending outcomes and isolated pipeline failures.
+- `out_of_bounds_event`: a limited sample of decoded feed points outside the Ankara subscription bounds, with approximate distance.
+
+Do not use log absence as evidence that no lightning occurred: source gaps and provider limitations remain possible. Check Supabase read/write status through structured candidate outcomes; never paste secret values into logs or reports.
 
 ## Build and deployment
 
-The image uses Node 22's built-in WebSocket and type stripping; it installs no app dependencies and copies only the observer and its two required source modules. The Fly app has no public service or inbound port. One Machine is intended for the shadow test.
+The image uses Node 22 built-in WebSocket/fetch and TypeScript stripping. It copies the complete `scripts/` tree because the continuous worker imports the existing research pipeline modules; it does not copy secrets or production app assets. The Fly config remains one Machine in `ams`, shared CPU 1x, 256 MB, no public service, no autostop, and restart policy `always`. Supabase is the durable store; the worker needs no volume.
 
-Before the first deployment:
+The scheduled GitHub Ankara Monitor remains unchanged during this phase. Retire it only after pending candidate persistence has been validated with real qualifying events and an explicit operational decision.
 
-1. Confirm the Fly account can provision the selected region and that the app name is available. If the name is already taken, change `app` in `fly.ankara-worker.toml`.
-2. From the repository root, run `fly launch --config fly.ankara-worker.toml --no-deploy`, then `fly deploy --config fly.ankara-worker.toml`.
-3. Confirm exactly one Machine exists, then set its restart policy to always with `fly machine update <machine-id> --restart always`. Fly Proxy autostop is not configured because this process has no service.
-4. Inspect `fly logs -a lightning-nearby-ankara-shadow` and confirm `worker_start`, `connected`, `source_health`, and periodic `summary` records.
+## Rollback
 
-No secrets are needed for this passive stage. Do not add Xweather, Supabase, or X credentials to Fly. Keep the Actions cron running during the observation period. Compare time-bounded summaries and treat disconnect/reconnect intervals as unknown coverage, never as zero lightning.
+If Phase 2 behaves unexpectedly, stop the Fly Machine and redeploy the previously validated passive-worker image from the prior passive-worker commit. Do not delete publication history or alter its schema. The GitHub monitor and manual approval/publisher workflows remain independent. Confirm the passive image reports `persistence: false`, `xweather: false`, `approval: false`, and `publishing: false` before resuming the shadow period.
 
-## Stop and rollback
+## Billing and trial limits
 
-Stop the Machine with `fly machine stop <machine-id>`; remove the Fly app only if the shadow test is being abandoned. GitHub Actions continues to operate independently. Remove the Fly config, Dockerfile, worker, and this note from the feature branch if the test is rejected.
+Fly bills running Machines by the second. Region pricing, storage, and egress can change the total; check current Fly pricing before operating continuously. Trial limits may stop Machines automatically; do not alter billing or resource settings as part of this code change.

@@ -1,9 +1,10 @@
 FROM node:22-slim
 WORKDIR /app
 
-COPY scripts/live-lightning-listener/core.ts scripts/live-lightning-listener/core.ts
-COPY scripts/lightning-incident-lifecycle/monitoring-area.ts scripts/lightning-incident-lifecycle/monitoring-area.ts
-COPY scripts/fly-ankara-worker/worker.ts scripts/fly-ankara-worker/worker.ts
+# The worker imports the research clustering, lifecycle, enrichment, location,
+# composer, decision, and ledger modules directly. Keep the complete scripts tree
+# so transitive source imports remain available without copying app assets.
+COPY scripts/ ./scripts/
 
 ENV NODE_ENV=production
 CMD ["node", "--experimental-strip-types", "scripts/fly-ankara-worker/worker.ts"]
