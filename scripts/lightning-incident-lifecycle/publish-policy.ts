@@ -17,6 +17,7 @@ export class DryRunPublishPolicy {
   constructor(profile: IncidentPolicyProfile) { this.profile = { ...profile }; }
 
   onPromotion(incident: LightningIncident, nowMs: number): PublishDecision {
+    this.pruneClosed(nowMs);
     const cutoffMs = this.profile.nearbyCooldownMinutes * 60_000;
     const related = cutoffMs <= 0 ? undefined : this.publishedClosed
       .map(item => ({ item, elapsed: nowMs - item.closedAtMs,
@@ -44,9 +45,27 @@ export class DryRunPublishPolicy {
   }
 
   onClosed(incident: LightningIncident): void {
-    if (!this.wouldPublish.has(incident.id) || incident.closedAtMs === undefined) return;
-    this.publishedClosed.push({ incidentId: incident.id, latitude: incident.representativeLatitude,
-      longitude: incident.representativeLongitude, closedAtMs: incident.closedAtMs });
+    if (this.wouldPublish.has(incident.id) && incident.closedAtMs !== undefined) {
+      this.publishedClosed.push({ incidentId: incident.id, latitude: incident.representativeLatitude,
+        longitude: incident.representativeLongitude, closedAtMs: incident.closedAtMs });
+    }
+    this.wouldPublish.delete(incident.id);
+    this.cooldownSuppressed.delete(incident.id);
+  }
+
+  /** Profile B's exact nearby cooldown is the full relevance window for these closed records. */
+  pruneClosed(referenceTimeMs: number): number {
+    if (!Number.isFinite(referenceTimeMs)) throw new Error("invalid publish-policy pruning time");
+    const cutoffMs = this.profile.nearbyCooldownMinutes * 60_000;
+    let removed = 0;
+    for (let index = this.publishedClosed.length - 1; index >= 0; index--) {
+      const ageMs = referenceTimeMs - this.publishedClosed[index].closedAtMs;
+      if (ageMs > cutoffMs) {
+        this.publishedClosed.splice(index, 1);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   summary() {

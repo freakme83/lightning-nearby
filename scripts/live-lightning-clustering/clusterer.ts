@@ -27,6 +27,7 @@ type InternalCluster = LightningCluster & {
   latitudeSum: number;
   longitudeSinSum: number;
   longitudeCosSum: number;
+  closedAtMs?: number;
 };
 
 export const DEFAULT_CLUSTER_PARAMETERS: ClusterParameters = {
@@ -85,6 +86,15 @@ function makeCluster(id: string, event: LightningEvent): InternalCluster {
   };
 }
 
+function publicCluster(cluster: InternalCluster): LightningCluster {
+  return {
+    id: cluster.id, firstEventTimeMs: cluster.firstEventTimeMs, lastEventTimeMs: cluster.lastEventTimeMs,
+    eventCount: cluster.eventCount, centerLatitude: cluster.centerLatitude, centerLongitude: cluster.centerLongitude,
+    minLatitude: cluster.minLatitude, maxLatitude: cluster.maxLatitude, minLongitude: cluster.minLongitude,
+    maxLongitude: cluster.maxLongitude, status: cluster.status, recentEvents: cluster.recentEvents,
+  };
+}
+
 type Match = { cluster: InternalCluster; distanceKm: number; matchedEventTimeMs: number };
 
 export class OnlineLightningClusterer {
@@ -98,7 +108,7 @@ export class OnlineLightningClusterer {
     this.recentEventLimit = recentEventLimit;
   }
   get clusters(): LightningCluster[] {
-    return this.clustersInternal.map(({ latitudeSum: _lat, longitudeSinSum: _sin, longitudeCosSum: _cos, ...cluster }) => cluster);
+    return this.clustersInternal.map(publicCluster);
   }
   advance(referenceTimeMs: number): LightningCluster[] {
     const newlyClosed: InternalCluster[] = [];
@@ -106,10 +116,31 @@ export class OnlineLightningClusterer {
     for (const cluster of this.clustersInternal) {
       if (cluster.status === "active" && referenceTimeMs - cluster.lastEventTimeMs >= closeAfterMs) {
         cluster.status = "closed";
+        cluster.closedAtMs = referenceTimeMs;
         newlyClosed.push(cluster);
       }
     }
-    return newlyClosed.map(({ latitudeSum: _lat, longitudeSinSum: _sin, longitudeCosSum: _cos, ...cluster }) => cluster);
+    return newlyClosed.map(publicCluster);
+  }
+  /** Closed clusters cannot participate in association after their close transition is delivered. */
+  pruneClosed(referenceTimeMs: number, retentionMs = 0): string[] {
+    if (!Number.isFinite(referenceTimeMs) || !Number.isFinite(retentionMs) || retentionMs < 0) {
+      throw new Error("invalid cluster pruning time or retention");
+    }
+    const removed: string[] = [];
+    for (let index = this.clustersInternal.length - 1; index >= 0; index--) {
+      const cluster = this.clustersInternal[index];
+      if (cluster.status !== "closed") continue;
+      // A closed cluster's recent events are never consulted by ingest; clear these as soon as
+      // the runtime has had an opportunity to deliver its close transition.
+      cluster.recentEvents.length = 0;
+      const ageMs = referenceTimeMs - (cluster.closedAtMs ?? referenceTimeMs);
+      if (cluster.closedAtMs !== undefined && (retentionMs === 0 ? ageMs >= 0 : ageMs > retentionMs)) {
+        removed.push(cluster.id);
+        this.clustersInternal.splice(index, 1);
+      }
+    }
+    return removed;
   }
   ingest(event: LightningEvent, referenceTimeMs = event.receivedAtMs): string {
     if (!validCoordinate(event.latitude, event.longitude)) throw new Error("invalid event coordinates");

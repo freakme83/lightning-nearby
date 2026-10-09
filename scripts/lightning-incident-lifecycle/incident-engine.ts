@@ -29,9 +29,15 @@ function safeCoordinates(value: ClusterObservation): void {
 }
 
 function snapshot(incident: InternalIncident): LightningIncident {
-  const { candidateOpenedAtMs: _candidate, lastActivityReceivedAtMs: _received,
-    eventTimesInPromotionWindow: _times, latitudeSum: _lat, longitudeSinSum: _sin, longitudeCosSum: _cos, ...plain } = incident;
-  return { ...plain, sourceClusterIds: [...incident.sourceClusterIds] };
+  return {
+    id: incident.id, sourceClusterIds: [...incident.sourceClusterIds], status: incident.status,
+    firstEventTimeMs: incident.firstEventTimeMs, lastActivityTimeMs: incident.lastActivityTimeMs,
+    ...(incident.promotedAtMs === undefined ? {} : { promotedAtMs: incident.promotedAtMs }),
+    ...(incident.closedAtMs === undefined ? {} : { closedAtMs: incident.closedAtMs }),
+    ...(incident.closeReason === undefined ? {} : { closeReason: incident.closeReason }),
+    totalEvents: incident.totalEvents, representativeLatitude: incident.representativeLatitude,
+    representativeLongitude: incident.representativeLongitude, publishCount: incident.publishCount,
+  };
 }
 
 export class IncidentLifecycleEngine {
@@ -41,6 +47,7 @@ export class IncidentLifecycleEngine {
   private readonly seenClusterIds = new Set<string>();
   private nextId = 1;
   private health: SourceHealth;
+  private readonly metricSampleLimit: number;
   readonly metrics = {
     clustersObserved: 0,
     incidentCandidatesCreated: 0,
@@ -54,8 +61,12 @@ export class IncidentLifecycleEngine {
     incidentDurationMs: [] as number[],
   };
 
-  constructor(profile: IncidentPolicyProfile, startedAtMs: number) {
+  constructor(profile: IncidentPolicyProfile, startedAtMs: number, options: { metricSampleLimit?: number } = {}) {
     validateProfile(profile);
+    const metricSampleLimit = options.metricSampleLimit ?? Number.POSITIVE_INFINITY;
+    if (!(metricSampleLimit === Number.POSITIVE_INFINITY ||
+      (Number.isSafeInteger(metricSampleLimit) && metricSampleLimit > 0))) throw new Error("invalid metricSampleLimit");
+    this.metricSampleLimit = metricSampleLimit;
     this.profile = { ...profile };
     this.health = { state: "disconnected", sinceMs: startedAtMs };
   }
@@ -109,8 +120,8 @@ export class IncidentLifecycleEngine {
         incident.status = "active";
         incident.promotedAtMs = observation.receivedAtMs;
         this.metrics.incidentsPromoted++;
-        this.metrics.eventsAtPromotion.push(incident.totalEvents);
-        this.metrics.timeToPromotionMs.push(Math.max(0, observation.receivedAtMs - incident.candidateOpenedAtMs));
+        this.recordMetricSample(this.metrics.eventsAtPromotion, incident.totalEvents);
+        this.recordMetricSample(this.metrics.timeToPromotionMs, Math.max(0, observation.receivedAtMs - incident.candidateOpenedAtMs));
         transitions.push({ type: "promoted", incident: snapshot(incident) });
       }
     } else {
@@ -131,7 +142,7 @@ export class IncidentLifecycleEngine {
         incident.closedAtMs = nowMs;
         incident.closeReason = "quiet_period";
         this.metrics.incidentsClosed++;
-        this.metrics.incidentDurationMs.push(Math.max(0, nowMs - (incident.promotedAtMs ?? nowMs)));
+        this.recordMetricSample(this.metrics.incidentDurationMs, Math.max(0, nowMs - (incident.promotedAtMs ?? nowMs)));
         transitions.push({ type: "closed", incident: snapshot(incident) });
       }
     }
@@ -150,6 +161,30 @@ export class IncidentLifecycleEngine {
     const incident = this.incidents.find(item => item.id === incidentId);
     if (!incident) throw new Error("unknown incident");
     incident.publishCount++;
+  }
+
+  /** Remove closed history only after its cluster references and cooldown relevance have ended. */
+  pruneClosed(referenceTimeMs: number, retainedClusterIds: ReadonlySet<string>, preserveIncidentIds: ReadonlySet<string> = new Set()): string[] {
+    if (!Number.isFinite(referenceTimeMs)) throw new Error("invalid incident pruning time");
+    const removed: string[] = [];
+    for (let index = this.incidents.length - 1; index >= 0; index--) {
+      const incident = this.incidents[index];
+      if (incident.status !== "closed" || preserveIncidentIds.has(incident.id)) continue;
+      if (incident.sourceClusterIds.some(id => retainedClusterIds.has(id))) continue;
+      if (incident.closeReason === "quiet_period") {
+        const ageMs = referenceTimeMs - (incident.closedAtMs ?? referenceTimeMs);
+        // Existing cooldown logic suppresses at <= the boundary. Retain through that instant,
+        // and also retain on clock rollback rather than risk dropping relevant state.
+        if (ageMs <= this.profile.nearbyCooldownMinutes * 60_000) continue;
+      }
+      this.incidents.splice(index, 1);
+      for (const clusterId of incident.sourceClusterIds) {
+        if (this.incidentByCluster.get(clusterId) === incident) this.incidentByCluster.delete(clusterId);
+        this.seenClusterIds.delete(clusterId);
+      }
+      removed.push(incident.id);
+    }
+    return removed;
   }
 
   snapshot() {
@@ -204,6 +239,11 @@ export class IncidentLifecycleEngine {
     incident.lastActivityReceivedAtMs = Math.max(incident.lastActivityReceivedAtMs, observation.receivedAtMs);
     incident.representativeLatitude = incident.latitudeSum / incident.totalEvents;
     incident.representativeLongitude = Math.atan2(incident.longitudeSinSum, incident.longitudeCosSum) / DEG;
+  }
+
+  private recordMetricSample(samples: number[], value: number): void {
+    samples.push(value);
+    if (samples.length > this.metricSampleLimit) samples.splice(0, samples.length - this.metricSampleLimit);
   }
 
   private expireCandidate(incident: InternalIncident, atMs: number): void {

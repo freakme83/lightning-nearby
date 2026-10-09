@@ -98,6 +98,28 @@ test("cluster closes once reference time reaches the configured interval", () =>
   assert.equal(c.advance(1_000 + 15 * minute)[0].status, "closed");
 });
 
+test("closed cluster retention is bounded while active clusters remain untouched", () => {
+  const c = clusterer();
+  for (let i = 0; i < 250; i++) {
+    const at = i * 30 * minute;
+    c.ingest(event(`closed-${i}`, at, 35 + (i % 50) * 0.1, 20 + (i % 100) * 0.1));
+    c.advance(at + 15 * minute);
+    c.pruneClosed(at + 15 * minute, 0);
+  }
+  assert.equal(c.clusters.length, 0);
+
+  c.ingest(event("active", 10_000 * minute));
+  const closed = c.advance(10_015 * minute);
+  assert.equal(closed.length, 1);
+  assert.equal(c.pruneClosed(10_015 * minute, 5 * minute).length, 0);
+  assert.deepEqual(c.clusters[0].recentEvents, []);
+  assert.equal(c.pruneClosed(10_020 * minute + 1, 5 * minute).length, 1);
+  c.ingest(event("still-active", 20_000 * minute));
+  c.pruneClosed(20_000 * minute + 1, 0);
+  assert.equal(c.clusters.length, 1);
+  assert.equal(c.clusters[0].status, "active");
+});
+
 test("ambiguous match resolves deterministically by most recent cluster activity", () => {
   const c = clusterer({ maxSpatialDistanceKm: 12 });
   c.ingest(event("left", 1_000, 39.9, 33));

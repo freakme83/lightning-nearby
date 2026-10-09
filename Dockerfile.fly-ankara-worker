@@ -1,9 +1,20 @@
 FROM node:22-slim
 WORKDIR /app
 
-COPY scripts/live-lightning-listener/core.ts scripts/live-lightning-listener/core.ts
-COPY scripts/lightning-incident-lifecycle/monitoring-area.ts scripts/lightning-incident-lifecycle/monitoring-area.ts
-COPY scripts/fly-ankara-worker/worker.ts scripts/fly-ankara-worker/worker.ts
+# Copy complete directories for the worker's transitive imports, while excluding
+# unrelated publisher code and application assets from the image.
+COPY scripts/fly-ankara-worker/ ./scripts/fly-ankara-worker/
+COPY scripts/live-lightning-listener/ ./scripts/live-lightning-listener/
+COPY scripts/live-lightning-clustering/ ./scripts/live-lightning-clustering/
+COPY scripts/lightning-incident-lifecycle/ ./scripts/lightning-incident-lifecycle/
+COPY scripts/lightning-cg-paired-validation/ ./scripts/lightning-cg-paired-validation/
+COPY scripts/lightning-cg-enrichment/ ./scripts/lightning-cg-enrichment/
+COPY scripts/lightning-location-naming/ ./scripts/lightning-location-naming/
+COPY scripts/lightning-message-preview/ ./scripts/lightning-message-preview/
+COPY scripts/lightning-message-composer/ ./scripts/lightning-message-composer/
+COPY scripts/lightning-publish-decision/ ./scripts/lightning-publish-decision/
+COPY scripts/lightning-end-to-end-dry-run/ ./scripts/lightning-end-to-end-dry-run/
+COPY scripts/lightning-publication-ledger/ ./scripts/lightning-publication-ledger/
 
 ENV NODE_ENV=production
 CMD ["node", "--experimental-strip-types", "scripts/fly-ankara-worker/worker.ts"]
