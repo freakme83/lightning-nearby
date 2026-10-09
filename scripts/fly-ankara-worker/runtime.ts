@@ -16,6 +16,7 @@ import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
+import type { PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
@@ -51,6 +52,7 @@ type RuntimeDependencies = {
   enrich?: PairedEnrichmentFunction;
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
   clusterParameters?: ClusterParameters;
+  notifyPending?: PendingPublicationNotifier;
 };
 
 export class AnkaraFlyPipeline {
@@ -70,6 +72,7 @@ export class AnkaraFlyPipeline {
   private readonly now: () => number;
   private readonly enrich?: PairedEnrichmentFunction;
   private readonly reverse?: RuntimeDependencies["reverse"];
+  private readonly notifyPending?: PendingPublicationNotifier;
   private outOfBoundsDebugCount = 0;
   private staleCandidateCount = 0;
   private candidateCount = 0;
@@ -81,6 +84,7 @@ export class AnkaraFlyPipeline {
     this.now = dependencies.now ?? Date.now;
     this.enrich = dependencies.enrich;
     this.reverse = dependencies.reverse;
+    this.notifyPending = dependencies.notifyPending;
     const startedAt = this.now();
     this.pipeline = new LightningClusteringPipeline(ANKARA_MONITORING_AREA.bounds,
       dependencies.clusterParameters ?? { ...DEFAULT_CLUSTER_PARAMETERS }, {
@@ -95,7 +99,8 @@ export class AnkaraFlyPipeline {
   }
 
   get capabilities() {
-    return { persistence: true, xweather: true, approval: false, publishing: false } as const;
+    return { persistence: true, xweather: true, telegram: Boolean(this.notifyPending),
+      approval: false, publishing: false } as const;
   }
 
   markConnecting(atMs = this.now()): void {
@@ -280,11 +285,33 @@ export class AnkaraFlyPipeline {
         this.emit("duplicate_detected", { incidentId, publicationId: result.ledger.duplicateMatch.matchedPublicationId,
           reason: result.ledger.duplicateMatch.reason });
       }
-      if (result.ledger?.approvalStatus === "pending" && result.ledger.recordPersisted) {
+      if (result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.approvalStatus === "pending" &&
+          result.ledger.recordPersisted && result.ledger.writeDisposition === "inserted" &&
+          !result.ledger.duplicateMatch?.duplicate) {
         this.pendingCount++;
         this.emit("publication_pending", { incidentId, publicationId: result.ledger.persistedPublicationId,
           approvalStatus: "pending", decision: result.publishDecision?.decision ?? null,
           messageText: result.message?.ok ? result.message.text : null });
+        if (this.notifyPending) {
+          const publicationId = result.ledger.persistedPublicationId;
+          if (!publicationId || !result.message?.ok || result.message.enrichmentStatus === "provider_unavailable") {
+            this.emit("telegram_notification_failed", { incidentId, publicationId,
+              reason: "candidate_metadata_unavailable" });
+          } else {
+            try {
+              const sent = await this.notifyPending({ publicationId,
+                hashtag: result.message.composer.hashtag, messageText: result.message.text,
+                locationLabel: result.message.locationDisplayLabel,
+                enrichmentStatus: result.message.enrichmentStatus });
+              this.emit(sent.ok ? "telegram_notification_sent" : "telegram_notification_failed", {
+                incidentId, publicationId, ...(sent.ok ? {} : { reason: sent.reason,
+                  ...(sent.httpStatus === undefined ? {} : { httpStatus: sent.httpStatus }) }),
+              });
+            } catch {
+              this.emit("telegram_notification_failed", { incidentId, publicationId, reason: "unexpected_error" });
+            }
+          }
+        }
       } else {
         this.emit("candidate_outcome", { incidentId, status: result.status,
           decision: result.publishDecision?.decision ?? null,

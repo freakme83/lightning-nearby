@@ -8,6 +8,7 @@ import type { PublicationRecord } from "../lightning-publication-ledger/types.ts
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
+import { createPendingPublicationNotifier, type PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { AnkaraFlyPipeline, validateFlyPipelineEnvironment } from "./runtime.ts";
 
 const baseNow = Date.parse("2026-10-09T12:00:00.000Z");
@@ -43,6 +44,7 @@ function setup(options: {
   store?: LedgerStore;
   enrich?: (reference: EnrichmentReference) => Promise<EnrichmentResult>;
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
+  notifyPending?: PendingPublicationNotifier;
 } = {}) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
   const memory = memoryStore();
@@ -51,6 +53,7 @@ function setup(options: {
     now: options.now ?? (() => baseNow),
     emit: (kind, fields) => events.push({ kind, fields }),
     enrich: options.enrich ?? (async reference => verifiedCg(reference)),
+    notifyPending: options.notifyPending,
     reverse: options.reverse ?? (async (latitude, longitude) => ({
       latitude, longitude, provider: "fixture", displayLabel: "Çankaya, Ankara", locality: "Çankaya", district: "Çankaya",
       province: "Ankara", country: "Türkiye",
@@ -124,6 +127,97 @@ test("fresh WOULD_PUBLISH candidate follows enrichment, existing composer, dupli
   assert.equal(events.some(row => row.kind === "publication_pending" && row.fields?.approvalStatus === "pending"), true);
 });
 
+test("a new pending row is notified exactly once, after Supabase insertion, using exact composer output", async () => {
+  const memory = memoryStore();
+  const sent: Array<{ publicationId: string; messageText: string }> = [];
+  const { runtime, events } = setup({ store: memory.store, notifyPending: async candidate => {
+    assert.equal(memory.records.length, 1);
+    assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
+    assert.equal(events.some(row => row.kind === "publication_pending"), true);
+    sent.push(candidate);
+    return { ok: true };
+  } });
+  assert.equal(runtime.capabilities.telegram, true);
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.equal(memory.writes, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].publicationId, memory.records[0].publicationId);
+  assert.equal(sent[0].messageText, events.find(row => row.kind === "publication_pending")?.fields?.messageText);
+  assert.equal(events.filter(row => row.kind === "telegram_notification_sent").length, 1);
+});
+
+test("duplicate, HOLD, already-present, and failed writes never notify", async () => {
+  let notificationCalls = 0;
+  const notifyPending: PendingPublicationNotifier = async () => { notificationCalls++; return { ok: true }; };
+  const memory = memoryStore();
+  const first = setup({ store: memory.store });
+  qualifyingEvents(first.runtime);
+  await first.runtime.drainCandidateWork();
+  const duplicate = setup({ store: memory.store, notifyPending });
+  qualifyingEvents(duplicate.runtime);
+  await duplicate.runtime.drainCandidateWork();
+  assert.equal(duplicate.events.some(row => row.kind === "duplicate_detected"), true);
+
+  const hold = setup({ notifyPending, enrich: async reference => ({
+    status: "provider_unavailable", provider: "xweather", reference,
+    thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error",
+  }) });
+  qualifyingEvents(hold.runtime);
+  await hold.runtime.drainCandidateWork();
+  assert.equal(hold.memory.records[0].decision, "HOLD");
+
+  const alreadyPresent = setup({ notifyPending, store: {
+    async loadRelevantPublicationHistory() { return []; },
+    async insertPublicationRecord() { return "already_present"; },
+  } });
+  qualifyingEvents(alreadyPresent.runtime);
+  await alreadyPresent.runtime.drainCandidateWork();
+  assert.equal(alreadyPresent.runtime.summary().pendingPublications, 0);
+
+  const failedWrite = setup({ notifyPending, store: {
+    async loadRelevantPublicationHistory() { return []; },
+    async insertPublicationRecord() { throw new Error("fixture write failure"); },
+  } });
+  qualifyingEvents(failedWrite.runtime);
+  await failedWrite.runtime.drainCandidateWork();
+  assert.equal(failedWrite.events.some(row => row.kind === "candidate_outcome"), true);
+  assert.equal(notificationCalls, 0);
+});
+
+test("Telegram failures never roll back a pending record or stop continuous intake", async () => {
+  const memory = memoryStore();
+  const { runtime, events } = setup({ store: memory.store, notifyPending: async () => ({
+    ok: false, reason: "http_error", httpStatus: 401,
+  }) });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
+  assert.equal(runtime.summary().pendingPublications, 1);
+  assert.equal(events.find(row => row.kind === "telegram_notification_failed")?.fields?.reason, "http_error");
+  assert.doesNotThrow(() => runtime.acceptEvent(event(12), baseNow));
+
+  const throwing = setup({ notifyPending: async () => { throw new Error("secret must not enter logs"); } });
+  qualifyingEvents(throwing.runtime);
+  await throwing.runtime.drainCandidateWork();
+  assert.equal(throwing.memory.records.length, 1);
+  assert.equal(throwing.events.find(row => row.kind === "telegram_notification_failed")?.fields?.reason, "unexpected_error");
+  assert.doesNotMatch(JSON.stringify(throwing.events), /secret must not enter logs/);
+});
+
+test("missing Telegram configuration reports disabled while candidate persistence remains operational", async () => {
+  const telegram = createPendingPublicationNotifier({});
+  assert.equal(telegram.notify, null);
+  const { runtime, memory, events } = setup();
+  assert.deepEqual(runtime.capabilities, { persistence: true, xweather: true, telegram: false,
+    approval: false, publishing: false });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
+  assert.equal(events.some(row => row.kind.startsWith("telegram_notification_")), false);
+});
+
 test("closed lifecycle state is retained until asynchronous candidate work completes", async () => {
   let resolveEnrichment!: (value: EnrichmentResult) => void;
   const pendingEnrichment = new Promise<EnrichmentResult>(resolve => { resolveEnrichment = resolve; });
@@ -164,14 +258,17 @@ test("the existing Supabase adapter writes an actionable Fly candidate as pendin
 
 test("stale WOULD_PUBLISH trigger is rejected before enrichment and persistence", async () => {
   let enrichCalls = 0;
+  let notifications = 0;
   const memory = memoryStore();
   const { runtime, events } = setup({ store: memory.store,
+    notifyPending: async () => { notifications++; return { ok: true }; },
     enrich: async reference => { enrichCalls++; return verifiedCg(reference); } });
   qualifyingEvents(runtime, baseNow - 5 * 60_000);
   await runtime.drainCandidateWork();
   assert.equal(enrichCalls, 0);
   assert.equal(memory.reads, 0);
   assert.equal(memory.writes, 0);
+  assert.equal(notifications, 0);
   assert.equal(events.some(row => row.kind === "candidate_rejected_stale"), true);
 });
 
@@ -192,12 +289,15 @@ test("a duplicate represented in persistent history does not create a second pen
 
 test("no usable location label does not persist", async () => {
   const memory = memoryStore();
+  let notifications = 0;
   const { runtime } = setup({ store: memory.store,
+    notifyPending: async () => { notifications++; return { ok: true }; },
     reverse: async (latitude, longitude) => ({ latitude, longitude, provider: "fixture", displayLabel: null }) });
   qualifyingEvents(runtime);
   await runtime.drainCandidateWork();
   assert.equal(memory.reads, 0);
   assert.equal(memory.writes, 0);
+  assert.equal(notifications, 0);
 });
 
 test("provider_unavailable follows the existing HOLD policy", async () => {
@@ -237,7 +337,7 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
   for (const directory of ["fly-ankara-worker", "live-lightning-listener", "live-lightning-clustering", "lightning-incident-lifecycle",
     "lightning-cg-paired-validation", "lightning-cg-enrichment", "lightning-location-naming",
     "lightning-message-preview", "lightning-message-composer", "lightning-publish-decision",
-    "lightning-end-to-end-dry-run", "lightning-publication-ledger"]) {
+    "lightning-end-to-end-dry-run", "lightning-publication-ledger", "lightning-telegram-notifier"]) {
     assert.match(dockerfile, new RegExp(`scripts/${directory}/`));
   }
   assert.doesNotMatch(dockerfile, /lightning-x-publisher|COPY scripts\/ \./);

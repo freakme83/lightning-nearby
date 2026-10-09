@@ -15,6 +15,7 @@ COPY scripts/lightning-message-composer/ ./scripts/lightning-message-composer/
 COPY scripts/lightning-publish-decision/ ./scripts/lightning-publish-decision/
 COPY scripts/lightning-end-to-end-dry-run/ ./scripts/lightning-end-to-end-dry-run/
 COPY scripts/lightning-publication-ledger/ ./scripts/lightning-publication-ledger/
+COPY scripts/lightning-telegram-notifier/ ./scripts/lightning-telegram-notifier/
 
 ENV NODE_ENV=production
 CMD ["node", "--experimental-strip-types", "scripts/fly-ankara-worker/worker.ts"]
