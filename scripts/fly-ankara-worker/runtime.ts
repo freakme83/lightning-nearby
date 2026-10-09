@@ -1,5 +1,6 @@
 // Continuous research pipeline for the Fly observer. All policy decisions are
 // delegated to the existing lifecycle, paired-validation, composer, and ledger.
+import { randomUUID } from "node:crypto";
 import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeline.ts";
 import { DEFAULT_CLUSTER_PARAMETERS, type ClusterParameters } from "../live-lightning-clustering/clusterer.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
@@ -59,6 +60,7 @@ export class AnkaraFlyPipeline {
   private processingQueue: Promise<void> = Promise.resolve();
   private readonly closedClusterIds = new Set<string>();
   private readonly store: LedgerStore;
+  private readonly runId = randomUUID();
   private readonly emit: (kind: string, fields?: Record<string, unknown>) => void;
   private readonly now: () => number;
   private readonly enrich?: PairedEnrichmentFunction;
@@ -253,7 +255,8 @@ export class AnkaraFlyPipeline {
         this.emit("candidate_processing_error", { incidentId, stage: "location", outcome: "no_usable_location_label" });
       }
       result = withPublishDecision(result, { sourceHealthAtTrigger: "live" });
-      result = await applyPersistentLedger(result, { sourceHealthAtTrigger: "live" }, this.store, { runId: null, configured: true });
+      result = await applyPersistentLedger(result, { sourceHealthAtTrigger: "live" }, this.store,
+        { runId: this.runId, configured: true });
       if (result.ledger?.duplicateMatch?.duplicate) {
         this.emit("duplicate_detected", { incidentId, publicationId: result.ledger.duplicateMatch.matchedPublicationId,
           reason: result.ledger.duplicateMatch.reason });

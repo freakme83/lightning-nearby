@@ -146,7 +146,8 @@ test("a duplicate represented in persistent history does not create a second pen
   const second = setup({ store: memory.store });
   qualifyingEvents(second.runtime);
   await second.runtime.drainCandidateWork();
-  assert.equal(memory.records.length, 1);
+  assert.equal(memory.records.filter(record => record.decision === "WOULD_PUBLISH").length, 1);
+  assert.equal(memory.records.at(-1)?.decision, "HOLD");
   assert.equal(second.events.some(row => row.kind === "duplicate_detected"), true);
   assert.equal(second.runtime.summary().pendingPublications, 0);
 });
