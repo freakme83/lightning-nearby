@@ -31,7 +31,7 @@ Do not use log absence as evidence that no lightning occurred: source gaps and p
 
 ## Build and deployment
 
-The image uses Node 22 built-in WebSocket/fetch and TypeScript stripping. It copies the complete `scripts/` tree because the continuous worker imports the existing research pipeline modules; it does not copy secrets or production app assets. The Fly config remains one Machine in `ams`, shared CPU 1x, 256 MB, no public service, no autostop, and restart policy `always`. Supabase is the durable store; the worker needs no volume.
+The image uses Node 22 built-in WebSocket/fetch and TypeScript stripping. It copies the complete source directories needed by the worker’s transitive research-pipeline imports, while excluding unrelated publisher code and production app assets. It does not copy secrets. The Fly config remains one Machine in `ams`, shared CPU 1x, 256 MB, no public service, no autostop, and restart policy `always`. Supabase is the durable store; the worker needs no volume.
 
 The scheduled GitHub Ankara Monitor remains unchanged during this phase. Retire it only after pending candidate persistence has been validated with real qualifying events and an explicit operational decision.
 

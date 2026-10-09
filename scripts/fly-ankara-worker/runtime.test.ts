@@ -188,10 +188,20 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
   validateFlyPipelineEnvironment({ XWEATHER_CLIENT_ID: "id", XWEATHER_CLIENT_SECRET: "secret",
     SUPABASE_URL: "https://example.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "key" });
   const worker = await readFile(new URL("./worker.ts", import.meta.url), "utf8");
+  const runtime = await readFile(new URL("./runtime.ts", import.meta.url), "utf8");
   assert.doesNotMatch(worker, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
+  assert.doesNotMatch(runtime, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
   assert.match(worker, /frameTimeoutMs\s*=\s*90_000/);
   assert.match(worker, /summaryEveryMs\s*=\s*5\s*\*\s*60_000/);
   assert.match(worker, /backoffMs\(attempt\+\+\)/);
+  const dockerfile = await readFile(new URL("../../Dockerfile.fly-ankara-worker", import.meta.url), "utf8");
+  for (const directory of ["live-lightning-listener", "live-lightning-clustering", "lightning-incident-lifecycle",
+    "lightning-cg-paired-validation", "lightning-cg-enrichment", "lightning-location-naming",
+    "lightning-message-preview", "lightning-message-composer", "lightning-publish-decision",
+    "lightning-end-to-end-dry-run", "lightning-publication-ledger"]) {
+    assert.match(dockerfile, new RegExp(`scripts/${directory}/`));
+  }
+  assert.doesNotMatch(dockerfile, /lightning-x-publisher|COPY scripts\/ \./);
 });
 
 test("startup validation names missing Fly pipeline settings without revealing values", () => {
