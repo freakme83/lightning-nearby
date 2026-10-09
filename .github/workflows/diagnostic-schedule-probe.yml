@@ -3,7 +3,7 @@ run-name: Diagnostic schedule probe
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: "8,23,38,53 * * * *"
   workflow_dispatch:
 
 permissions: {}
