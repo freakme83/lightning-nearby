@@ -75,7 +75,6 @@ function acceptFrame(data: unknown) {
   if (!sourceHealthy) {
     sourceHealthy = true;
     runtime.recordFrame(receivedAt);
-    emit("source_health", { to: "live", firstFrameAt: new Date(receivedAt).toISOString() });
   } else {
     runtime.recordFrame(receivedAt);
   }

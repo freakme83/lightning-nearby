@@ -124,6 +124,27 @@ test("fresh WOULD_PUBLISH candidate follows enrichment, existing composer, dupli
   assert.equal(events.some(row => row.kind === "publication_pending" && row.fields?.approvalStatus === "pending"), true);
 });
 
+test("closed lifecycle state is retained until asynchronous candidate work completes", async () => {
+  let resolveEnrichment!: (value: EnrichmentResult) => void;
+  const pendingEnrichment = new Promise<EnrichmentResult>(resolve => { resolveEnrichment = resolve; });
+  const { runtime } = setup({ enrich: async () => pendingEnrichment });
+  qualifyingEvents(runtime);
+  assert.equal(runtime.summary(baseNow).candidateProcessingInFlight, 1);
+
+  const closedAt = baseNow + 20 * 60_000;
+  runtime.recordFrame(closedAt);
+  runtime.summary(closedAt);
+  assert.equal(runtime.lifecycle.incidents[0].status, "closed");
+  runtime.recordFrame(closedAt + 21 * 60_000);
+  runtime.summary(closedAt + 21 * 60_000);
+  assert.equal(runtime.lifecycle.incidents.length, 1);
+  assert.equal(runtime.summary(closedAt + 21 * 60_000).candidateProcessingInFlight, 1);
+
+  resolveEnrichment(verifiedCg({ latitude: 39.9, longitude: 32.6, eventTimeMs: baseNow }));
+  await runtime.drainCandidateWork();
+  assert.equal(runtime.summary(closedAt + 21 * 60_000).candidateProcessingInFlight, 0);
+});
+
 test("the existing Supabase adapter writes an actionable Fly candidate as pending", async () => {
   const writes: Array<Record<string, unknown>> = [];
   const store = createSupabaseLedger({ url: "https://fixture.supabase.co", serviceRoleKey: "fixture-only" },
@@ -206,6 +227,7 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
     SUPABASE_URL: "https://example.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "key" });
   const worker = await readFile(new URL("./worker.ts", import.meta.url), "utf8");
   const runtime = await readFile(new URL("./runtime.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(worker, /emit\("source_health",\s*\{\s*to:\s*"live"/);
   assert.doesNotMatch(worker, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
   assert.doesNotMatch(runtime, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
   assert.match(worker, /frameTimeoutMs\s*=\s*90_000/);
@@ -232,6 +254,8 @@ test("startup validation names missing Fly pipeline settings without revealing v
 
 test("source-health connection transitions remain represented, and out-of-bounds diagnostics do not alter filtering", () => {
   const { runtime, events } = setup();
+  runtime.recordFrame(baseNow + 1);
+  assert.equal(events.filter(row => row.kind === "source_health" && row.fields?.to === "live").length, 1);
   const before = { ...runtime.pipeline.counters };
   const outside = event(20, { latitude: 41.5, longitude: 34.2 });
   const accepted = runtime.acceptEvent(outside, baseNow);

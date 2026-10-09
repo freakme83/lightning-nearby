@@ -4,6 +4,10 @@ The Fly worker is the continuous owner of LightningMaps source collection for th
 
 The worker stops at a pending publication record. A newly actionable row is stored in `public.publication_records` with `decision = WOULD_PUBLISH` and `approval_status = pending`. Duplicate/history checks use the existing ledger matcher and rules. A location or provider failure follows existing safe-HOLD behavior and does not stop source monitoring.
 
+## Long-running in-memory retention
+
+At each five-minute summary sweep, the runtime first delivers all pending cluster-close transitions, then removes closed cluster objects immediately (zero post-transition retention) and clears their `recentEvents`. Closed clusters cannot take part in association, and the lifecycle has already consumed the close event. Candidate-expired incidents are removed once none of their source clusters remain; quiet-period closed incidents and publish-policy cooldown records remain for the full Profile B 20-minute nearby cooldown, including the exact boundary used by the existing suppression rule. Active incidents, candidates, source-cluster references still represented by the clusterer, and candidate work currently being enriched or persisted are preserved. Per-process lifecycle metric samples retain only the latest 1,000 values per metric; aggregate counters remain cumulative. Durable duplicate history remains Supabase-authoritative and is not pruned.
+
 ## Runtime secrets and publishing boundary
 
 Configure these four Fly app secrets before deploying Phase 2:
@@ -22,6 +26,7 @@ After a separately authorized manual deploy, inspect `fly logs -a lightning-near
 - `worker_start`: should report `persistence: true`, `xweather: true`, `approval: false`, and `publishing: false`.
 - `connected`, `source_health`, `disconnected`, and `reconnect_wait`: websocket and watchdog behavior.
 - `summary`: five-minute source, filtering, clustering, lifecycle, and candidate counts.
+- `source_health`: one structured event per actual source-health transition (including the initial connecting-to-live transition).
 - `incident_candidate`, `candidate_rejected_stale`, `location_resolved`, and `enrichment_complete`: candidate preparation stages.
 - `duplicate_detected` or `publication_pending`: persistent-history decision or a new pending row.
 - `candidate_outcome` and `candidate_processing_error`: safe non-pending outcomes and isolated pipeline failures.

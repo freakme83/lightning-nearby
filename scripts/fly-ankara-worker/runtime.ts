@@ -8,7 +8,7 @@ import { INCIDENT_POLICY_PROFILES, type IncidentTransition } from "../lightning-
 import { IncidentLifecycleEngine } from "../lightning-incident-lifecycle/incident-engine.ts";
 import { DryRunPublishPolicy } from "../lightning-incident-lifecycle/publish-policy.ts";
 import { applyTransitions } from "../lightning-incident-lifecycle/experiment.ts";
-import { SourceHealthTracker } from "../lightning-incident-lifecycle/source-health.ts";
+import { SourceHealthTracker, type SourceHealth } from "../lightning-incident-lifecycle/source-health.ts";
 import { PairedValidationController, MAX_PAIRING_INCIDENT_AGE_MS } from "../lightning-cg-paired-validation/controller.ts";
 import type { PairedEnrichmentFunction, PairedValidationArtifact } from "../lightning-cg-paired-validation/types.ts";
 import { continueFromPairedArtifact, withPublishDecision } from "../lightning-end-to-end-dry-run/orchestrate.ts";
@@ -18,6 +18,9 @@ import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
+// The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
+const CLOSED_CLUSTER_RETENTION_MS = 0;
+const LIFECYCLE_METRIC_SAMPLE_LIMIT = 1_000;
 const requiredEnvironment = [
   "XWEATHER_CLIENT_ID", "XWEATHER_CLIENT_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
 ] as const;
@@ -57,6 +60,8 @@ export class AnkaraFlyPipeline {
   private readonly policy = new DryRunPublishPolicy(profile);
   private readonly controllers = new Map<string, PairedValidationController>();
   private readonly inFlight = new Set<string>();
+  private readonly candidateWork = new Set<string>();
+  private readonly triggerHealthByIncident = new Map<string, SourceHealth["state"]>();
   private processingQueue: Promise<void> = Promise.resolve();
   private readonly closedClusterIds = new Set<string>();
   private readonly store: LedgerStore;
@@ -85,7 +90,7 @@ export class AnkaraFlyPipeline {
           contains: event => pointInMonitoringArea([event.longitude, event.latitude]),
         },
       });
-    this.lifecycle = new IncidentLifecycleEngine(profile, startedAt);
+    this.lifecycle = new IncidentLifecycleEngine(profile, startedAt, { metricSampleLimit: LIFECYCLE_METRIC_SAMPLE_LIMIT });
     this.sourceHealth = new SourceHealthTracker(startedAt);
   }
 
@@ -146,6 +151,7 @@ export class AnkaraFlyPipeline {
     const state = this.pipeline.summary(nowMs);
     this.syncClosedClusters(nowMs);
     this.processTransitions(this.lifecycle.tick(nowMs));
+    this.pruneHistoricalState(nowMs);
     return {
       ...state,
       profile: { ...profile },
@@ -158,7 +164,7 @@ export class AnkaraFlyPipeline {
       freshCandidateTriggers: this.candidateCount,
       staleCandidateTriggers: this.staleCandidateCount,
       pendingPublications: this.pendingCount,
-      candidateProcessingInFlight: this.inFlight.size,
+      candidateProcessingInFlight: this.candidateWork.size,
     };
   }
 
@@ -185,16 +191,16 @@ export class AnkaraFlyPipeline {
         eventCount: incident.totalEvents, lastActivityAt: new Date(incident.lastActivityTimeMs).toISOString() });
       const controller = this.controllerFor(incident.id);
       const started = controller.observeDecision(decision, incident, { id: profile.id, name: profile.name });
-      if (started) this.observeCompletion(controller, incident.id);
+      if (started) this.beginCandidateWork(controller, incident.id);
     }
     for (const transition of transitions) {
       if (transition.type === "activity") {
         const controller = this.controllers.get(transition.incident.id);
         if (controller?.observeActivity(transition.incident, { id: profile.id, name: profile.name })) {
-          this.observeCompletion(controller, transition.incident.id);
+          this.beginCandidateWork(controller, transition.incident.id);
         }
       }
-      if (transition.type === "closed" && !this.inFlight.has(transition.incident.id)) {
+      if (transition.type === "closed" && !this.candidateWork.has(transition.incident.id)) {
         this.controllers.delete(transition.incident.id);
       }
     }
@@ -216,9 +222,16 @@ export class AnkaraFlyPipeline {
     return controller;
   }
 
-  private observeCompletion(controller: PairedValidationController, incidentId: string): void {
+  private beginCandidateWork(controller: PairedValidationController, incidentId: string): void {
+    this.candidateWork.add(incidentId);
+    this.triggerHealthByIncident.set(incidentId, this.sourceHealth.state.state);
     void controller.waitForCompletion().catch(() => {
       this.emit("candidate_processing_error", { incidentId, stage: "paired_validation" });
+    }).finally(() => {
+      this.candidateWork.delete(incidentId);
+      this.triggerHealthByIncident.delete(incidentId);
+      const incident = this.lifecycle.incidents.find(item => item.id === incidentId);
+      if (incident?.status === "closed") this.controllers.delete(incidentId);
     });
   }
 
@@ -230,7 +243,7 @@ export class AnkaraFlyPipeline {
     this.inFlight.add(incidentId);
     const task = this.processingQueue.then(async () => {
       try {
-        await this.processCandidate(incidentId, artifact);
+        await this.processCandidate(incidentId, artifact, this.triggerHealthByIncident.get(incidentId) ?? this.sourceHealth.state.state);
       } catch {
         this.emit("candidate_processing_error", { incidentId, stage: "unexpected" });
       } finally {
@@ -241,7 +254,12 @@ export class AnkaraFlyPipeline {
     return task;
   }
 
-  private async processCandidate(incidentId: string, artifact: PairedValidationArtifact): Promise<void> {
+  private async processCandidate(incidentId: string, artifact: PairedValidationArtifact,
+    sourceHealthAtTrigger: SourceHealth["state"]): Promise<void> {
+    if (artifact.status !== "paired_result") {
+      this.emit("candidate_outcome", { incidentId, status: artifact.status, reason: "no_paired_candidate" });
+      return;
+    }
     this.emit("enrichment_complete", { incidentId, status: artifact.enrichment?.status ?? "unknown",
       failure: artifact.enrichment?.failure ?? null });
     try {
@@ -254,8 +272,8 @@ export class AnkaraFlyPipeline {
       } else if (result.status === "no_usable_location_label") {
         this.emit("candidate_processing_error", { incidentId, stage: "location", outcome: "no_usable_location_label" });
       }
-      result = withPublishDecision(result, { sourceHealthAtTrigger: "live" });
-      result = await applyPersistentLedger(result, { sourceHealthAtTrigger: "live" }, this.store,
+      result = withPublishDecision(result, { sourceHealthAtTrigger });
+      result = await applyPersistentLedger(result, { sourceHealthAtTrigger }, this.store,
         { runId: this.runId, configured: true });
       if (result.ledger?.duplicateMatch?.duplicate) {
         this.emit("duplicate_detected", { incidentId, publicationId: result.ledger.duplicateMatch.matchedPublicationId,
@@ -283,6 +301,15 @@ export class AnkaraFlyPipeline {
       this.closedClusterIds.add(cluster.id);
       this.processTransitions(this.lifecycle.clusterClosed(cluster.id, nowMs));
     }
+  }
+
+  private pruneHistoricalState(nowMs: number): void {
+    const removedClusterIds = this.pipeline.clusterer.pruneClosed(nowMs, CLOSED_CLUSTER_RETENTION_MS);
+    for (const id of removedClusterIds) this.closedClusterIds.delete(id);
+    const retainedClusterIds = new Set(this.pipeline.clusterer.clusters.map(cluster => cluster.id));
+    const removedIncidentIds = this.lifecycle.pruneClosed(nowMs, retainedClusterIds, this.candidateWork);
+    for (const id of removedIncidentIds) this.controllers.delete(id);
+    this.policy.pruneClosed(nowMs);
   }
 }
 
