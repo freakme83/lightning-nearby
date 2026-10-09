@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
 
-          fly machine update "$machine_id" -a "$app" --restart always --yes
+          fly machine update "$machine_id" -a "$app" --restart always --autostart=false --autostop=off --yes
 
           final_json="$(fly machine list --app "$app" --json)"
           final_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$final_json")"
