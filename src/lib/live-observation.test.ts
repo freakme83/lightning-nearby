@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
-import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "./live-observation.ts";
+import { currentSeverity, isCurrentLiveRequest, liveActivityCopy, liveActivitySegments, liveEventCountCopy, liveSeverity, liveSeverityLabel, requestLiveCheck } from "./live-observation.ts";
 
 function observed(nearestKm: number | null, status: "not-requested" | "clear" | "active" = nearestKm === null ? "clear" : "active"): LiveLightningApiResult {
   if (status === "not-requested") {
@@ -47,9 +48,12 @@ test("current picture selects strongest evidence without changing either source"
 test("live severity badge labels use the live result even when forecast severity is higher", () => {
   const live = liveSeverity(observed(25));
   assert.equal(currentSeverity("high", live), "high");
-  assert.equal(liveSeverityLabel(live), "Elevated");
-  assert.equal(liveSeverityLabel("high"), "High");
-  assert.equal(liveSeverityLabel("nearby"), "Nearby activity");
+  assert.equal(liveSeverityLabel(live, "en"), "Nearby");
+  assert.equal(liveSeverityLabel("high", "en"), "Very close");
+  assert.equal(liveSeverityLabel("nearby", "en"), "In the area");
+  assert.equal(liveSeverityLabel("high", "tr"), "Çok yakın");
+  assert.equal(liveSeverityLabel("elevated", "tr"), "Yakın");
+  assert.equal(liveSeverityLabel("nearby", "tr"), "Çevrede");
   assert.equal(liveSeverityLabel("none"), null);
   assert.equal(liveSeverityLabel(null), null);
 });
@@ -75,9 +79,26 @@ test("recent regional activity without current lightning stays non-severe and us
   const result = observed(null, "clear");
   assert.equal(liveSeverity(result), "none");
   if (result.ok) {
-    assert.equal(liveActivityCopy(result.summary), "Activity was also detected within 50 km during the last 30 minutes.");
+    assert.equal(liveActivityCopy(result.summary), "However, activity was detected within 50 km during the last 30 minutes.");
+    assert.equal(liveActivityCopy(result.summary, "tr"), "Ancak son 30 dakikada 50 km içinde aktivite tespit edildi.");
+    assert.deepEqual(liveActivitySegments(result.summary, "tr"), [
+      { text: "Ancak son 30 dakikada 50 km içinde aktivite " },
+      { text: "tespit edildi", emphasize: true }, { text: "." },
+    ]);
     assert.doesNotMatch(liveActivityCopy(result.summary), /flash|detections?/i);
   }
+});
+
+test("only clear-current positive-area evidence has the detection emphasis", async () => {
+  const clear = observed(null, "not-requested");
+  const positive = observed(null, "clear");
+  if (!clear.ok || !positive.ok) throw new Error("fixture must succeed");
+  assert.equal(liveActivitySegments(clear.summary, "tr").some(part => part.emphasize), false);
+  assert.equal(liveActivitySegments(positive.summary, "en").filter(part => part.emphasize).map(part => part.text).join(""), "was detected");
+  const component = await readFile(new URL("../app/live-observation.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/styles.css", import.meta.url), "utf8");
+  assert.match(component, /className="recent-detection"/);
+  assert.match(styles, /\.recent-detection\{color:#914b3e;font-weight:700\}/);
 });
 
 test("partial current-provider failure is unknown rather than clear", () => {
@@ -94,6 +115,38 @@ test("partial current-provider failure is unknown rather than clear", () => {
 test("active event count uses ordinary lightning-event wording", () => {
   assert.equal(liveEventCountCopy(8, 10), "8 recent lightning events within 10 km · last 5 min");
   assert.equal(liveEventCountCopy(1, 10), "1 recent lightning event within 10 km · last 5 min");
+  assert.equal(liveEventCountCopy(1, 10, "tr"), "Son 5 dakikada 10 km içinde 1 şimşek/yıldırım olayı");
+  assert.equal(liveEventCountCopy(8, 25, "tr"), "Son 5 dakikada 25 km içinde 8 şimşek/yıldırım olayı");
+});
+
+test("automatic and first manual Live checks do not request an extra forecast", async () => {
+  let forecastRefreshes = 0;
+  let liveChecks = 0;
+  const live = async () => { liveChecks++; };
+  const forecast = () => { forecastRefreshes++; };
+  await requestLiveCheck("automatic", live, forecast);
+  await requestLiveCheck("manual-check", live, forecast);
+  assert.equal(liveChecks, 2);
+  assert.equal(forecastRefreshes, 0);
+});
+
+test("manual Live refresh starts both requests once and neither waits for the other", async () => {
+  let completeLive!: () => void;
+  const pendingLive = new Promise<void>(resolve => { completeLive = resolve; });
+  const started: string[] = [];
+  const live = requestLiveCheck("manual-refresh", () => { started.push("live"); return pendingLive; }, () => started.push("forecast"));
+  assert.deepEqual(started, ["live", "forecast"]);
+  completeLive();
+  await live;
+
+  let forecastCount = 0;
+  await assert.rejects(requestLiveCheck("manual-refresh", async () => { throw new Error("live unavailable"); }, () => { forecastCount++; }), /live unavailable/);
+  assert.equal(forecastCount, 1);
+  let rejectForecast!: (error: Error) => void;
+  const forecastFailure = new Promise<void>((_, reject) => { rejectForecast = reject; });
+  const successfulLive = requestLiveCheck("manual-refresh", async () => {}, () => { rejectForecast(new Error("forecast unavailable")); });
+  await assert.rejects(forecastFailure, /forecast unavailable/);
+  await successfulLive;
 });
 
 test("obsolete and aborted requests cannot own a changed location", () => {

@@ -22,6 +22,7 @@
 .current-hero-content>p{max-width:650px;margin:12px 0 0}
 .current-hero-content .nearest-line,.current-hero-content .flash-count{font-size:15px;color:#53616a}
 .current-hero-content strong{color:var(--ink)}
+.current-hero-content .recent-detection{color:#914b3e;font-weight:700}
 .current-hero-content .live-context{color:#78838a;font-size:11px}
 .strongest-window{color:#69777d;font-size:12px}
 .live-action{width:100%;margin-top:20px;min-height:48px}

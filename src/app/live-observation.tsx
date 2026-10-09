@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "@/lib/lightning/types";
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
-import { isCurrentLiveRequest, liveActivityCopy, liveEventCountCopy, liveSeverity, liveSeverityLabel } from "@/lib/live-observation";
+import { isCurrentLiveRequest, liveActivityCopy, liveActivitySegments, liveEventCountCopy, liveSeverity, liveSeverityLabel, requestLiveCheck } from "@/lib/live-observation";
 import { activityMapData, liveActivityView, lookupActivityPlace, type ActivityPlaceContext } from "@/lib/live-activity";
 import LiveActivityMap from "./live-activity-map";
 import type { RiskLevel } from "@/lib/weather";
@@ -26,9 +26,10 @@ interface Props {
   forecast: ForecastContext | null;
   autoCheckEligible: boolean;
   locale: Locale;
+  onManualRefresh: () => void;
 }
 
-export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible, locale }: Props) {
+export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible, locale, onManualRefresh }: Props) {
   const [result, setResult] = useState<LiveLightningApiResult | null>(null);
   const [place, setPlace] = useState<ActivityPlaceContext | null>(null);
   const placeController = useRef<AbortController | null>(null);
@@ -97,7 +98,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
     queueMicrotask(() => {
       if (generation !== automaticEffectGeneration.current) return;
       if (!claimInitialLiveCheck(() => window.sessionStorage)) return;
-      void checkActivity();
+      void requestLiveCheck("automatic", checkActivity);
     });
     return () => { automaticEffectGeneration.current += 1; };
   }, [autoCheckEligible, checkActivity]);
@@ -135,9 +136,10 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
                 {count !== null && countRadius !== null && <p className="flash-count">{liveEventCountCopy(count, countRadius, locale)}</p>}
                 <p className="live-context">{liveActivityCopy(summary, locale)}</p>
               </>
-                : <><h1 id="overview-title">{t(locale, "noCurrentActivity")}</h1><p>{liveActivityCopy(summary, locale)}</p></>}
+                : <><h1 id="overview-title">{t(locale, "noCurrentActivity")}</h1><p>{liveActivitySegments(summary, locale).map(segment => segment.emphasize
+                  ? <span key="recent-detection" className="recent-detection">{segment.text}</span> : segment.text)}</p></>}
     </div>
-    <button className={`${result ? "secondary-button" : "primary-button"} live-action`} type="button" disabled={loading} onClick={() => void checkActivity()}>{loading ? t(locale, "checking") : checkedAt ? t(locale, "refreshLive") : t(locale, "checkLive")}</button>
+    <button className={`${result ? "secondary-button" : "primary-button"} live-action`} type="button" disabled={loading} onClick={() => void requestLiveCheck(checkedAt === null ? "manual-check" : "manual-refresh", checkActivity, onManualRefresh)}>{loading ? t(locale, "checking") : checkedAt ? t(locale, "refreshLive") : t(locale, "checkLive")}</button>
     {result && forecast && <aside className={`forecast-context risk-${forecast.risk}`} aria-label={t(locale, "forecastContext")}>
       <div><p className="eyebrow">{t(locale, "next24hOutlook")}</p><h2>{forecast.headline}</h2></div>
       <p>{forecast.summary}</p>
