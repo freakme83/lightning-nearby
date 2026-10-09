@@ -2,7 +2,7 @@
 
 The Fly worker is the continuous owner of LightningMaps source collection for the Ankara operational area. It reuses the repository’s existing Ankara polygon, dedupe and clustering pipeline, incident lifecycle Profile B, fresh-trigger guard, Xweather adapter, Nominatim location naming, Composer, publish-decision gate, and persistent publication ledger. The worker keeps one long-lived websocket and its incident/lifecycle state in memory; candidate enrichment and ledger work runs off the websocket message handler.
 
-The worker stops at a pending publication record. A newly actionable row is stored in `public.publication_records` with `decision = WOULD_PUBLISH` and `approval_status = pending`. Duplicate/history checks use the existing ledger matcher and rules. A location or provider failure follows existing safe-HOLD behavior and does not stop source monitoring.
+The worker stops at a pending publication record. A newly actionable row is stored in `public.publication_records` with `decision = WOULD_PUBLISH` and `approval_status = pending`. Duplicate/history checks use the existing ledger matcher and rules. A location or provider failure follows existing safe-HOLD behavior and does not stop source monitoring. An optional outbound Telegram notification reports a newly inserted pending candidate; it does not approve or publish it.
 
 ## Long-running in-memory retention
 
@@ -19,16 +19,24 @@ Configure these four Fly app secrets before deploying Phase 2:
 
 The process validates that each value is present at startup, without logging values. X/Twitter credentials remain only in GitHub Actions and are not required or read by this worker. The Fly worker cannot approve its own row, write `platform_post_id`, mark a row `PUBLISHED`, invoke the X Publisher, or send a social post. Manual Approval remains the human approval path, and the existing GitHub X Publisher remains the only X-writing component.
 
+For pending-candidate notifications, configure these **optional** Fly secrets separately after review:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID` (numeric chat ID)
+
+If either is missing or malformed, the worker continues detection and persistence, reports `telegram: false` and emits one `configuration_warning` naming the unusable setting. No token or chat ID is logged. With both settings present, `telegram: true` indicates notification capability; it does not guarantee delivery. The adapter makes at most one bounded outbound Bot API `sendMessage` attempt **after** a new `WOULD_PUBLISH`, `pending` row is confirmed inserted. Duplicates, HOLD, already-present IDs and failed writes do not notify. Telegram errors cannot roll back the row or stop the worker; no automatic retry or delivery queue exists. The bot does not poll updates or register webhooks, so it can coexist with another outbound sender using the same token. No Telegram approval buttons exist yet; Manual Approval and X Publisher remain separate GitHub Actions workflows.
+
 ## Operational verification
 
 After a separately authorized manual deploy, inspect `fly logs -a lightning-nearby-ankara-shadow`. Useful markers are:
 
-- `worker_start`: should report `persistence: true`, `xweather: true`, `approval: false`, and `publishing: false`.
+- `worker_start`: should report `persistence: true`, `xweather: true`, `telegram: true` when configured (otherwise `false`), `approval: false`, and `publishing: false`.
 - `connected`, `source_health`, `disconnected`, and `reconnect_wait`: websocket and watchdog behavior.
 - `summary`: five-minute source, filtering, clustering, lifecycle, and candidate counts.
 - `source_health`: one structured event per actual source-health transition (including the initial connecting-to-live transition).
 - `incident_candidate`, `candidate_rejected_stale`, `location_resolved`, and `enrichment_complete`: candidate preparation stages.
 - `duplicate_detected` or `publication_pending`: persistent-history decision or a new pending row.
+- `telegram_notification_sent` or `telegram_notification_failed`: one outbound notification outcome for a newly inserted pending row when configured. Match the `publicationId` against `publication_pending`; a failed notification leaves the row pending. A disabled capability emits only the startup `configuration_warning`.
 - `candidate_outcome` and `candidate_processing_error`: safe non-pending outcomes and isolated pipeline failures.
 - `out_of_bounds_event`: a limited sample of decoded feed points outside the Ankara subscription bounds, with approximate distance.
 
