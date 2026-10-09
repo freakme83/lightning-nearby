@@ -18,16 +18,18 @@ Successful outcomes include no publish candidate, no fresh candidate, no usable 
 
 Operational failures include missing required configuration, live or paired-run failure, location lookup or message composition failure, unavailable/invalid ledger configuration, ledger history read failure, and ledger write failure. These are surfaced as a failed monitor run. Existing end-to-end stop behavior and source-health gates remain authoritative.
 
-The Job Summary and small three-day result artifact include start/end, source health, candidate and publication ID, decision, pending approval when persisted, location and enrichment status, duplicate/history outcome, Xweather request diagnostics when available, and the exact existing candidate message. The final summary always states: **No social post was sent.** The summary and artifact contain no provider credentials.
+The Job Summary and small three-day result artifact include start/end, source health, candidate and publication ID, decision, pending approval when persisted, location and enrichment status, duplicate/history outcome, Xweather request diagnostics when available, and the exact existing candidate message. They also record the GitHub event, run ID/attempt, cron expression, actual wrapper start, and monitor duration. The final summary always states: **No social post was sent.** The summary and artifact contain no provider credentials.
+
+GitHub's schedule event provides the triggering cron expression but no intended-occurrence timestamp. The monitor therefore records the expression and actual start but leaves scheduled slot and delay unavailable. It does not infer a slot by rounding the actual start, because that can report a falsely recent slot when a run starts more than one interval late. Timing telemetry does not affect monitoring outcomes.
 
 ## Approval and publishing boundary
 
 This workflow never invokes Manual Approval or the X Publisher, never changes approval state, and has no X credentials or `X_PUBLISHING_ENABLED` variable. New actionable rows remain pending until an operator uses **Research Lightning Manual Approval**. The separate manual publisher flow is unchanged. There is no automated publishing or social post.
 
-## GitHub default-branch caveat
+## Default-branch operation after integration
 
-GitHub scheduled workflows run from the repository default branch. A workflow also needs to be present on the default branch before its manual **Run workflow** entry is reliably available. This PR targets `merge-ready`, while the monitor implementation also remains on `merge-ready`; this PR does not register the workflow on `main`.
+After integration PR #71 is merged, `main` is the canonical branch and contains both this implementation and its workflow. GitHub scheduled workflows run from the repository default branch, so the `*/15 * * * *` schedule will then run from `main`. Manual runs remain available through `workflow_dispatch`.
 
-When the workflow definition is later registered on the default branch without the monitor implementation, a scheduled run checks out that default-branch ref and safely stops before dependency installation or provider calls. The workflow writes a summary that the implementation is unavailable on the checked-out ref. This prevents the workflow file alone from starting incomplete automation. Manual runs must select `merge-ready` so the workflow and implementation are both present.
+The workflow retains a safe implementation-availability check for refs that do not contain the monitor. That check is not the normal post-integration scheduled path. The workflow uses its selected/current ref with normal checkout behavior; it does not force checkout of `merge-ready`.
 
-Unattended scheduling must remain dormant until the implementation is available on the default branch, or an explicit checkout strategy for the implementation ref is separately designed, documented, and tested. This PR does not force checkout of `merge-ready`. Any later narrow workflow-registration PR must not be mistaken for enabling unattended monitoring.
+The earlier registration-only phase, when the workflow file existed on `main` without its implementation and scheduled runs safely skipped, is historical and superseded by PR #71. Integration activates unattended detection and pending-candidate creation on the default branch; it does not automate approval or publishing. Actionable candidates remain `approval_status=pending`, Manual Approval remains manual, and the X Publisher remains manual. No automatic X publishing exists. Schedule telemetry records available GitHub run timing data to assess schedule jitter, with a null slot and delay until GitHub supplies a reliable intended occurrence timestamp.

@@ -26,36 +26,36 @@ function e2e(patch: Record<string, unknown> = {}): DryRunResult {
 const common = { pipelineExitCode: 0, runStartedAt: "start", runEndedAt: "end" };
 const cron = "*/15 * * * *";
 
-test("scheduled telemetry resolves an exact UTC cron boundary to zero delay", () => {
+function assertScheduledTimingUnavailable(runStartedAt: string, runEndedAt = "2026-10-09T11:00:00.000Z") {
   const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
-    runStartedAt: "2026-10-09T10:15:00.000Z", runEndedAt: "2026-10-09T10:25:01.000Z" });
-  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
-  assert.equal(telemetry.scheduleDelaySeconds, 0);
-  assert.equal(telemetry.scheduleDelayMinutes, 0);
+    runStartedAt, runEndedAt });
+  assert.equal(telemetry.scheduledSlotAt, null);
+  assert.equal(telemetry.scheduleDelaySeconds, null);
+  assert.equal(telemetry.scheduleDelayMinutes, null);
+  assert.equal(telemetry.githubScheduleExpression, cron);
+  return telemetry;
+}
+
+test("exact on-time scheduled event stays unavailable without an intended-occurrence timestamp", () => {
+  const telemetry = assertScheduledTimingUnavailable("2026-10-09T10:15:00.000Z", "2026-10-09T10:25:01.000Z");
   assert.equal(telemetry.monitorDurationSeconds, 601);
 });
 
-test("scheduled telemetry measures a 4m42s start delay", () => {
-  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
-    runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:42.000Z" });
-  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
-  assert.equal(telemetry.scheduleDelaySeconds, 282);
-  assert.equal(telemetry.scheduleDelayMinutes, 4.7);
+test("a 4m42s delayed start is not presented as precise without the original slot", () => {
+  assertScheduledTimingUnavailable("2026-10-09T10:19:42.000Z", "2026-10-09T10:29:42.000Z");
 });
 
-test("scheduled telemetry resolves slots across an hour boundary", () => {
-  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
-    runStartedAt: "2026-10-09T11:00:15.000Z", runEndedAt: "2026-10-09T11:10:15.000Z" });
-  assert.equal(telemetry.scheduledSlotAt, "2026-10-09T11:00:00.000Z");
-  assert.equal(telemetry.scheduleDelaySeconds, 15);
+test("a 37-minute delay never gets misreported as a recent 7-minute slot", () => {
+  assertScheduledTimingUnavailable("2026-10-09T10:37:00.000Z", "2026-10-09T10:47:00.000Z");
 });
 
-test("scheduled telemetry resolves slots across midnight UTC", () => {
-  const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
-    runStartedAt: "2026-10-10T00:07:30.000Z", runEndedAt: "2026-10-10T00:17:30.000Z" });
-  assert.equal(telemetry.scheduledSlotAt, "2026-10-10T00:00:00.000Z");
-  assert.equal(telemetry.scheduleDelaySeconds, 450);
-  assert.equal(telemetry.scheduleDelayMinutes, 7.5);
+test("delays greater than 30 minutes are unavailable instead of being floored to a recent slot", () => {
+  assertScheduledTimingUnavailable("2026-10-09T10:47:00.000Z", "2026-10-09T10:57:00.000Z");
+});
+
+test("scheduled telemetry across hour and midnight boundaries stays unavailable without an occurrence timestamp", () => {
+  assertScheduledTimingUnavailable("2026-10-09T11:00:15.000Z", "2026-10-09T11:10:15.000Z");
+  assertScheduledTimingUnavailable("2026-10-10T00:07:30.000Z", "2026-10-10T00:17:30.000Z");
 });
 
 test("manual telemetry has no scheduled slot or delay", () => {
@@ -65,11 +65,12 @@ test("manual telemetry has no scheduled slot or delay", () => {
   assert.equal(telemetry.scheduledSlotAt, null);
   assert.equal(telemetry.scheduleDelaySeconds, null);
   assert.equal(telemetry.scheduleDelayMinutes, null);
+  assert.equal(telemetry.githubScheduleExpression, cron);
   assert.equal(telemetry.githubRunId, "1234");
   assert.equal(telemetry.githubRunAttempt, "2");
 });
 
-test("missing and malformed schedule metadata yield unavailable telemetry", () => {
+test("missing and malformed schedule metadata and invalid timestamps yield unavailable telemetry", () => {
   for (const scheduleExpression of [null, "not-a-cron-expression"]) {
     const telemetry = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression,
       runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:42.000Z" });
@@ -78,6 +79,11 @@ test("missing and malformed schedule metadata yield unavailable telemetry", () =
     assert.equal(telemetry.scheduleDelayMinutes, null);
     assert.equal(telemetry.monitorDurationSeconds, 600);
   }
+  const malformedTime = resolveScheduleTelemetry({ githubEventName: "schedule", scheduleExpression: cron,
+    runStartedAt: "not-a-timestamp", runEndedAt: "also-not-a-timestamp" });
+  assert.equal(malformedTime.scheduledSlotAt, null);
+  assert.equal(malformedTime.scheduleDelaySeconds, null);
+  assert.equal(malformedTime.monitorDurationSeconds, null);
 });
 
 test("telemetry availability does not change candidate or operational outcomes", () => {
@@ -96,9 +102,10 @@ test("structured result contains run identity, slot, delay, and monitor duration
   assert.equal(result.githubEventName, "schedule");
   assert.equal(result.githubRunId, "999");
   assert.equal(result.githubRunAttempt, "1");
-  assert.equal(result.scheduledSlotAt, "2026-10-09T10:15:00.000Z");
-  assert.equal(result.scheduleDelaySeconds, 282);
-  assert.equal(result.scheduleDelayMinutes, 4.7);
+  assert.equal(result.githubScheduleExpression, cron);
+  assert.equal(result.scheduledSlotAt, null);
+  assert.equal(result.scheduleDelaySeconds, null);
+  assert.equal(result.scheduleDelayMinutes, null);
   assert.equal(result.runStartedAt, "2026-10-09T10:19:42.000Z");
   assert.equal(result.runEndedAt, "2026-10-09T10:29:43.000Z");
   assert.equal(result.monitorDurationSeconds, 601);
@@ -219,7 +226,7 @@ test("summary reports persisted composer text verbatim and never rebuilds it", (
   assert.equal(result.messageText, exactMessage);
 });
 
-test("summary renders scheduled slot and delay timing", () => {
+test("summary renders actual scheduled timing metadata and marks intended slot unavailable", () => {
   const result = buildMonitorResult({ pipeline: e2e(), pipelineExitCode: 0,
     githubEventName: "schedule", githubRunId: "999", githubRunAttempt: "1", scheduleExpression: cron,
     runStartedAt: "2026-10-09T10:19:42.000Z", runEndedAt: "2026-10-09T10:29:43.000Z" });
@@ -228,10 +235,12 @@ test("summary renders scheduled slot and delay timing", () => {
   assert.ok(summary.includes("- Event: schedule"));
   assert.ok(summary.includes("- GitHub run ID: 999"));
   assert.ok(summary.includes("- GitHub run attempt: 1"));
-  assert.ok(summary.includes("- Scheduled slot: 2026-10-09T10:15:00.000Z"));
+  assert.ok(summary.includes(`- GitHub cron expression: ${cron}`));
+  assert.ok(summary.includes("- Scheduled slot: unavailable"));
   assert.ok(summary.includes("- Actual start: 2026-10-09T10:19:42.000Z"));
-  assert.ok(summary.includes("- Delay: 282 seconds (4.70 minutes)"));
+  assert.ok(summary.includes("- Delay: unavailable"));
   assert.ok(summary.includes("- Monitor duration: 601 seconds"));
+  assert.ok(summary.includes("GitHub provides the cron expression but no intended occurrence timestamp"));
 });
 
 test("summary renders manual timing as not applicable and unavailable cron timing clearly", () => {
@@ -276,7 +285,8 @@ test("selected ref is checked normally; scheduled runs safely skip without imple
   assert.match(workflow, /implementation is not present on the checked-out ref/i);
   const docs = await readFile(new URL("../../docs/lightning-ankara-monitor-v1.md", import.meta.url), "utf8");
   assert.match(docs, /scheduled workflows run from the repository default branch/i);
-  assert.match(docs, /monitor implementation also remains on `merge-ready`/i);
+  assert.match(docs, /after integration PR #71 is merged, `main` is the canonical branch/i);
+  assert.match(docs, /schedule will then run from `main`/i);
 });
 
 test("existing early-stop runner and polygon remain the configured path", async () => {

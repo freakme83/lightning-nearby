@@ -25,6 +25,7 @@ export function renderMonitorSummary(result: MonitorResult): string {
     `- Event: ${display(result.githubEventName)}`,
     `- GitHub run ID: ${display(result.githubRunId)}`,
     `- GitHub run attempt: ${display(result.githubRunAttempt)}`,
+    `- GitHub cron expression: ${display(result.githubScheduleExpression)}`,
     `- Scheduled slot: ${scheduledSlot}`,
     `- Actual start: ${display(result.runStartedAt)}`,
     `- Delay: ${scheduleDelay}`,
@@ -32,7 +33,7 @@ export function renderMonitorSummary(result: MonitorResult): string {
     `- Monitor window end: ${display(result.runEndedAt)}`,
     `- Monitor duration: ${result.monitorDurationSeconds === null ? "unavailable" : `${result.monitorDurationSeconds} seconds`}`,
     ...(result.githubEventName === "schedule" && result.scheduledSlotAt === null
-      ? ["- Schedule telemetry unavailable: safe cron slot could not be determined from the event metadata."] : []),
+      ? ["- Schedule telemetry unavailable: GitHub provides the cron expression but no intended occurrence timestamp."] : []),
     ...(result.githubEventName === "schedule" && result.githubEventName !== null && result.scheduleDelaySeconds === null && result.scheduledSlotAt !== null
       ? ["- Schedule delay unavailable: timing calculation could not be completed safely."] : []),
     ...(result.githubEventName !== "schedule" && result.githubEventName !== "workflow_dispatch"

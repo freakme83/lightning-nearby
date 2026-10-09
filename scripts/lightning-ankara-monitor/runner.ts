@@ -16,6 +16,7 @@ export type MonitorResult = {
   githubEventName: string | null;
   githubRunId: string | null;
   githubRunAttempt: string | null;
+  githubScheduleExpression: string | null;
   scheduledSlotAt: string | null;
   scheduleDelaySeconds: number | null;
   scheduleDelayMinutes: number | null;
@@ -49,32 +50,22 @@ export function resolveScheduleTelemetry(input: {
   runStartedAt: string;
   runEndedAt: string;
 }): Pick<MonitorResult, "githubEventName" | "githubRunId" | "githubRunAttempt" | "scheduledSlotAt" |
-  "scheduleDelaySeconds" | "scheduleDelayMinutes" | "monitorDurationSeconds"> {
+  "githubScheduleExpression" | "scheduleDelaySeconds" | "scheduleDelayMinutes" | "monitorDurationSeconds"> {
   const startedMs = Date.parse(input.runStartedAt);
   const endedMs = Date.parse(input.runEndedAt);
   const monitorDurationSeconds = Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
     ? Math.round((endedMs - startedMs) / 1000) : null;
-  let scheduledSlotAt: string | null = null;
-  let scheduleDelaySeconds: number | null = null;
-  let scheduleDelayMinutes: number | null = null;
-
-  if (input.githubEventName === "schedule" && input.scheduleExpression === "*/15 * * * *" && Number.isFinite(startedMs)) {
-    const slotMs = Math.floor(startedMs / (15 * 60 * 1000)) * (15 * 60 * 1000);
-    const delaySeconds = Math.floor((startedMs - slotMs) / 1000);
-    if (delaySeconds >= 0) {
-      scheduledSlotAt = new Date(slotMs).toISOString();
-      scheduleDelaySeconds = delaySeconds;
-      scheduleDelayMinutes = Math.round((delaySeconds / 60) * 100) / 100;
-    }
-  }
-
+  // GitHub exposes the cron expression for schedule events, but not the intended
+  // occurrence timestamp. Flooring the actual start to a cron boundary can select
+  // a newer slot after a delayed run and under-report schedule jitter.
   return {
     githubEventName: input.githubEventName || null,
     githubRunId: input.githubRunId || null,
     githubRunAttempt: input.githubRunAttempt || null,
-    scheduledSlotAt,
-    scheduleDelaySeconds,
-    scheduleDelayMinutes,
+    githubScheduleExpression: input.scheduleExpression ?? null,
+    scheduledSlotAt: null,
+    scheduleDelaySeconds: null,
+    scheduleDelayMinutes: null,
     monitorDurationSeconds,
   };
 }
