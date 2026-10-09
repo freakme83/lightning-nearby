@@ -3,6 +3,11 @@ run-name: Research Lightning Fly Shadow Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      fly_org:
+        description: Fly organization slug used only if the app must be created
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +25,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Read Fly app name from config
+        id: fly-config
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="$(sed -nE 's/^app[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' fly.ankara-worker.toml | head -n 1)"
+          if [[ -z "$app_name" || ! "$app_name" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::Could not read a valid app name from fly.ankara-worker.toml."
+            exit 1
+          fi
+          echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
+
       - name: Install Fly CLI
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
 
@@ -34,20 +51,57 @@ jobs:
           fi
           echo "FLY_API_TOKEN is configured."
 
-      - name: Check existing Machine count
+      - name: Detect app and check existing Machine count
         shell: bash
         env:
+          APP_NAME: ${{ steps.fly-config.outputs.app_name }}
+          FLY_ORG: ${{ inputs.fly_org }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
-          app="lightning-nearby-ankara-shadow"
-          machines_json="$(fly machine list --app "$app" --json)"
-          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
-          if (( machine_count > 1 )); then
-            echo "::error::Found $machine_count Machines in $app before deployment. No deployment or Machine changes were made; review and resolve the count manually."
+          app="$APP_NAME"
+          apps_json="$(fly apps list --json)"
+          app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+
+          if (( app_count > 1 )); then
+            echo "::error::Fly listed the app $app more than once; refusing deployment for manual review."
             exit 1
+          elif (( app_count == 0 )); then
+            if [[ -z "${FLY_ORG:-}" ]]; then
+              echo "::error::The app $app is not present in the authenticated Fly app list. Supply the Fly organization slug in the fly_org dispatch input to create it safely."
+              exit 1
+            fi
+
+            echo "App $app is absent from the successful Fly app listing; creating it in organization $FLY_ORG."
+            if create_output="$(fly apps create "$app" --org "$FLY_ORG" --yes 2>&1)"; then
+              echo "Created app $app in the requested organization."
+            else
+              create_status=$?
+              if grep -Eqi 'already exists|already been taken|name[^[:cntrl:]]*taken' <<< "$create_output"; then
+                apps_json="$(fly apps list --json)"
+                app_count="$(jq -er --arg app "$app" 'if type == "array" then [ .[] | select((.Name // .name // .ID // .id) == $app) ] | length else error("expected a JSON array from fly apps list") end' <<< "$apps_json")"
+                if (( app_count == 1 )); then
+                  echo "The app was created concurrently and is now confirmed in the Fly app listing."
+                else
+                  printf '%s\n' "$create_output"
+                  echo "::error::Fly reported that the app already exists, but the subsequent successful listing did not confirm it."
+                  exit 1
+                fi
+              else
+                printf '%s\n' "$create_output"
+                echo "::error::Failed to create Fly app $app in organization $FLY_ORG."
+                exit "$create_status"
+              fi
+            fi
+          else
+            machines_json="$(fly machine list --app "$app" --json)"
+            machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+            if (( machine_count > 1 )); then
+              echo "::error::Found $machine_count Machines in $app before deployment. No deployment or Machine changes were made; review and resolve the count manually."
+              exit 1
+            fi
+            echo "App exists; preflight Machine count: $machine_count"
           fi
-          echo "Preflight Machine count: $machine_count"
 
       - name: Deploy existing passive worker configuration
         shell: bash
@@ -58,10 +112,11 @@ jobs:
       - name: Verify one Machine and set restart policy
         shell: bash
         env:
+          APP_NAME: ${{ steps.fly-config.outputs.app_name }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
-          app="lightning-nearby-ankara-shadow"
+          app="$APP_NAME"
           machines_json="$(fly machine list --app "$app" --json)"
           machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
           if (( machine_count != 1 )); then
