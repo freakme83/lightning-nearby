@@ -82,10 +82,46 @@ export function renderEndToEndSummary(result: DryRunResult): string {
     rows.push(fencedText(preview.text), "",
       `- Character count: ${preview.characterCount}`,
       `- Event kind: ${value(preview.composer.eventKind)}`,
-      `- Map link included: ${preview.mapUrl ? "yes" : "no"}`,
-      `- Selected map coordinate: ${mapCoordinate}`);
+      `- Internal map URL available: ${preview.mapUrl ? "yes" : "no"}`,
+      `- Public message contains URL: ${/https?:\/\//i.test(preview.text) ? "yes" : "no"}`,
+      `- Public coordinate: ${preview.composer.coordinateText ?? "not applicable"}`,
+      `- Selected map coordinate: ${mapCoordinate}`,
+      ...(preview.mapUrl ? [`- Internal Maps URL: ${preview.mapUrl}`] : []));
   } else {
     rows.push(`No final message: **${value(result.status)}** — ${value(result.reason ?? (result.message?.ok === false ? result.message.error.message : null))}.`);
+  }
+  const decision = result.publishDecision;
+  rows.push("", "## Publish decision (shadow only)", "",
+    `**${decision?.decision ?? "not evaluated"}**`, "",
+    ...(decision ? [
+      ...decision.reasonCodes.map(code => `- ${value(code)}`),
+      "",
+      `- Source health at trigger: ${value(decision.sourceHealthAtTrigger)}`,
+      `- Known same-incident duplicate: ${decision.duplicateIncident === null ? "not checked" : decision.duplicateIncident ? "yes" : "no"}`,
+    ] : []),
+    result.ledger ? `Persistent duplicate history: ${result.ledger.historyChecked ? "checked" : "unavailable"}.` :
+      "Persistent duplicate history: not enabled in v1A.");
+  if (result.ledger) {
+    const ledger = result.ledger;
+    rows.push("", "## Publication ledger", "",
+      `- Persistence: ${ledger.persistenceEnabled ? "enabled" : "unavailable"}`,
+      `- History checked: ${ledger.historyChecked ? "yes" : "no"}`,
+      `- Records examined: ${ledger.recordsExamined}`,
+      `- Duplicate: ${ledger.duplicateMatch ? (ledger.duplicateMatch.duplicate ? "yes" : "no") : "not checked"}`,
+      `- Match reason: ${value(ledger.duplicateMatch?.reason)}`,
+      `- Matched publication: ${value(ledger.duplicateMatch?.matchedPublicationId)}`,
+      `- Record persisted: ${ledger.recordPersisted ? "yes" : "no"}`,
+      `- Write disposition: ${value(ledger.writeDisposition)}`,
+      `- Publication ID: ${value(ledger.persistedPublicationId)}`,
+      `- Storage status: ${ledger.storageStatus}`,
+      ...(ledger.reason ? [`- Storage detail: ${value(ledger.reason)}`] : []));
+  }
+  if (result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.recordPersisted &&
+      result.ledger.approvalStatus === "pending") {
+    rows.push("", "## Manual approval", "",
+      "- Approval status: pending",
+      `- Publication ID: ${value(result.ledger.persistedPublicationId)}`,
+      "- Action required: approve or skip using Research Lightning Manual Approval.");
   }
   rows.push("", "Dry run only. Nothing was published.", "");
   return rows.join("\n");

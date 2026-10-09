@@ -6,7 +6,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readIncidentRunnerOptions } from "../lightning-incident-lifecycle/options.ts";
-import { continueFromPairedArtifact, pairedValidationFailure, type DryRunResult, type DryRunStatus } from "./orchestrate.ts";
+import { continueFromPairedArtifact, pairedValidationFailure, withPublishDecision, type DryRunResult, type DryRunStatus } from "./orchestrate.ts";
+import { sourceHealthAtPairedTrigger } from "./trigger-health.ts";
+import { createSupabaseLedger } from "../lightning-publication-ledger/storage/supabase.ts";
+import { applyPersistentLedger } from "./ledger.ts";
 
 const artifactDirectory = "artifacts";
 const pairedPath = `${artifactDirectory}/lightning-cg-paired-result.json`;
@@ -89,6 +92,19 @@ export async function main(): Promise<void> {
     result = pairedValidationFailure(error instanceof Error ? error.message : String(error));
   }
   if (!result) result = pairedValidationFailure("No end-to-end result was produced.");
+  const healthLog = await readFile(logPath, "utf8").catch(() => "");
+  const context = { sourceHealthAtTrigger: sourceHealthAtPairedTrigger(healthLog, result.paired) };
+  result = withPublishDecision(result, context);
+  if (result.status === "message_preview_ready") {
+    let store = null;
+    try {
+      store = createSupabaseLedger({ url: process.env.SUPABASE_URL,
+        serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY });
+    } catch { /* A missing or invalid configuration becomes an explicit safe HOLD. */ }
+    result = await applyPersistentLedger(result, context, store, {
+      runId: process.env.GITHUB_RUN_ID, configured: true,
+    });
+  }
   await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
   console.log(`End-to-end dry-run status: ${result.status}. Result: ${resultPath}`);
   const exitCode = runnerExitCode(result.status);

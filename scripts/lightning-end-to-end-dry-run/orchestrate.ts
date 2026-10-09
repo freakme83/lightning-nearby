@@ -4,6 +4,8 @@ import { formatDiagnosticResult, formatLookupFailure } from "../lightning-locati
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { inspectPairedArtifact, previewPairedMessage } from "../lightning-message-preview/adapter.ts";
 import type { PairedMessagePreview } from "../lightning-message-preview/types.ts";
+import { decidePublish, type DecisionContext, type PublishDecision } from "../lightning-publish-decision/decision.ts";
+import type { LedgerDiagnostics } from "./ledger.ts";
 
 export type DryRunStatus = "message_preview_ready" | "no_publish_candidate" | "no_fresh_publish_candidate" |
   "no_usable_location_label" | "paired_validation_failed" | "location_lookup_failed" | "message_composition_failed";
@@ -15,6 +17,8 @@ export type DryRunResult = {
   paired: Record<string, unknown> | null;
   location: LocationResult | null;
   message: PairedMessagePreview | null;
+  publishDecision?: PublishDecision;
+  ledger?: LedgerDiagnostics;
   reason?: string;
   capturedAt: string;
   providerCalls: {
@@ -23,6 +27,10 @@ export type DryRunResult = {
     nominatimReverseLookups: 0 | 1;
   };
 };
+
+export function withPublishDecision(result: DryRunResult, context: DecisionContext = {}): DryRunResult {
+  return { ...result, publishDecision: decidePublish(result, context) };
+}
 
 type Dependencies = {
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
@@ -57,6 +65,7 @@ function summarizePaired(value: unknown): Record<string, unknown> | null {
     reactivation: value.reactivation ?? null,
     enrichment: enrichment && {
       status: enrichment.status,
+      provider: enrichment.provider ?? null,
       counts: enrichment.counts ?? null,
       match: enrichment.match ?? null,
       cost: enrichment.cost ?? null,

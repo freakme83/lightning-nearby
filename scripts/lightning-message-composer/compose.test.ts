@@ -11,7 +11,7 @@ const urban = COMPOSER_FIXTURES.cg_verified_urban;
 const generic = COMPOSER_FIXTURES.ic_only_urban;
 const compose = (input: ComposerInput) => composeLightningMessage(input);
 
-test("CG produces the locked four-line format and only the selected CG coordinate as map query", () => {
+test("CG produces URL-free public coordinates and a full-precision internal map", () => {
   const input = {
     ...urban,
     incident: { ...urban.incident, representativeLatitude: 40.1, representativeLongitude: 33.1 },
@@ -25,8 +25,10 @@ test("CG produces the locked four-line format and only the selected CG coordinat
   assert.equal(result.locationText, "Aşağı Ayrancı / Çankaya");
   assert.equal(result.eventText, `Aşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım ${verbForIncident(input.incident.id)}.`);
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.902742,32.851494");
-  assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText, result.mapUrl]);
+  assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText, "", "39.903, 32.851"]);
   assert.equal(result.text.includes("40.1,33.1"), false);
+  assert.equal(result.coordinateText, "39.903, 32.851");
+  assert.doesNotMatch(result.text, /https?:\/\//);
   assert.equal(result.characterCount, [...result.text].length);
   assert.ok(result.characterCount <= DEFAULT_MAX_CHARACTERS);
 });
@@ -43,6 +45,8 @@ for (const [name, input] of Object.entries({
     assert.equal(result.eventKind, name);
     assert.equal(result.hashtag, "#ŞİMŞEK");
     assert.equal(result.mapUrl, null);
+    assert.equal(result.coordinateText, null);
+    assert.doesNotMatch(result.text, /https?:\/\/|^-?\d+\.\d+, -?\d+\.\d+$/m);
     assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText]);
     assert.match(result.eventText, / civarında şimşek (tespit edildi|kaydedildi)\.$/);
     assert.doesNotMatch(result.text, /CG|Xweather|provider|unavailable|no_match|doğrulanamadı|yere ulaşan|google\.com\/maps/i);
@@ -55,6 +59,42 @@ test("stable incident IDs always choose an allowed verb and fixture IDs exercise
   assert.equal(first.ok, true);
   const verbs = new Set(Object.values(COMPOSER_FIXTURES).map(item => verbForIncident(item.incident.id)));
   assert.deepEqual(verbs, new Set(["tespit edildi", "kaydedildi"]));
+});
+
+test("selected CG coordinates round deterministically to three decimals, preserving zeros and signs", () => {
+  for (const [latitude, longitude, expected] of [
+    [40.5118, 16.3612, "40.512, 16.361"],
+    [39.9, 32, "39.900, 32.000"],
+    [-39.902742, -73.98765, "-39.903, -73.988"],
+    [0, 180, "0.000, 180.000"],
+  ] as const) {
+    const result = compose({ ...urban, enrichment: {
+      status: "cg_verified", match: { type: "cg", latitude, longitude },
+    } });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.equal(result.coordinateText, expected);
+    assert.ok(result.text.endsWith(`\n\n${expected}`));
+    assert.equal(result.mapUrl, `https://www.google.com/maps?q=${latitude},${longitude}`);
+    assert.doesNotMatch(result.text, /https?:\/\//);
+    assert.equal(result.characterCount, [...result.text].length);
+  }
+});
+
+test("CG public character budget excludes internal URL and still enforces exactly 280", () => {
+  const short = compose(urban);
+  assert.ok(short.ok);
+  const prefix = "A".repeat(280 - short.characterCount);
+  const boundary = compose({ ...urban, locationDisplayLabel: prefix + urban.locationDisplayLabel });
+  assert.ok(boundary.ok);
+  assert.equal(boundary.characterCount, 280);
+  assert.ok(boundary.mapUrl);
+  const tooLong = compose({ ...urban, locationDisplayLabel: prefix + "A" + urban.locationDisplayLabel });
+  assert.equal(tooLong.ok, false);
+  if (!tooLong.ok) {
+    assert.equal(tooLong.error.code, "message_too_long");
+    assert.equal(tooLong.characterCount, 281);
+  }
 });
 
 test("Istanbul time, Turkish month, year, minutes, and TSİ suffix are explicit", () => {
@@ -89,12 +129,16 @@ test("rural CG fixture uses its own selected CG match", () => {
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.682564,32.859372");
 });
 
-test("a CG match in a non-CG status never adds a map or CG wording", () => {
-  const result = compose({ ...generic, enrichment: { status: "ic_only", match: urban.enrichment.match } });
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.mapUrl, null);
-  assert.doesNotMatch(result.text, /yere ulaşan|google\.com/);
+test("a CG match in any non-CG status never adds coordinates, a map, or CG wording", () => {
+  for (const status of ["ic_only", "no_match", "provider_unavailable"] as const) {
+    const result = compose({ ...generic, enrichment: { status, match: urban.enrichment.match } });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.equal(result.mapUrl, null);
+    assert.equal(result.coordinateText, null);
+    assert.doesNotMatch(result.text, /https?:\/\/|^-?\d+\.\d+, -?\d+\.\d+$/m);
+    assert.doesNotMatch(result.text, /yere ulaşan|google\.com/);
+  }
 });
 
 test("missing or unsafe location returns a structured error and no public post", () => {
