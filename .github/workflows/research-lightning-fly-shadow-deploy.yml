@@ -1,0 +1,106 @@
+name: Research Lightning Fly Shadow Deploy
+run-name: Research Lightning Fly Shadow Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lightning-fly-shadow-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy passive Ankara shadow worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+
+      - name: Validate Fly API token
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [[ -z "${FLY_API_TOKEN:-}" ]]; then
+            echo "::error::The FLY_API_TOKEN repository secret is missing."
+            exit 1
+          fi
+          echo "FLY_API_TOKEN is configured."
+
+      - name: Check existing Machine count
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          app="lightning-nearby-ankara-shadow"
+          machines_json="$(fly machine list --app "$app" --json)"
+          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+          if (( machine_count > 1 )); then
+            echo "::error::Found $machine_count Machines in $app before deployment. No deployment or Machine changes were made; review and resolve the count manually."
+            exit 1
+          fi
+          echo "Preflight Machine count: $machine_count"
+
+      - name: Deploy existing passive worker configuration
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: fly deploy --config fly.ankara-worker.toml --remote-only --yes
+
+      - name: Verify one Machine and set restart policy
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          app="lightning-nearby-ankara-shadow"
+          machines_json="$(fly machine list --app "$app" --json)"
+          machine_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$machines_json")"
+          if (( machine_count != 1 )); then
+            echo "::error::Expected exactly one Machine in $app after deployment, found $machine_count. No Machines were destroyed or scaled; manual review is required."
+            exit 1
+          fi
+          machine_id="$(jq -er '.[0].id // .[0].ID // empty' <<< "$machines_json")"
+          if [[ -z "$machine_id" ]]; then
+            echo "::error::Could not resolve the Machine ID from fly machine list output."
+            exit 1
+          fi
+
+          fly machine update "$machine_id" -a "$app" --restart always --yes
+
+          final_json="$(fly machine list --app "$app" --json)"
+          final_count="$(jq -er 'if type == "array" then length else error("expected a JSON array from fly machine list") end' <<< "$final_json")"
+          if (( final_count != 1 )); then
+            echo "::error::Expected exactly one Machine after the restart-policy update, found $final_count. No Machines were destroyed or scaled; manual review is required."
+            exit 1
+          fi
+          final_id="$(jq -er '.[0].id // .[0].ID // empty' <<< "$final_json")"
+          if [[ "$final_id" != "$machine_id" ]]; then
+            echo "::error::Machine ID changed during verification; manual review is required."
+            exit 1
+          fi
+
+          region="$(jq -r '.[0].region // .[0].Region // "unknown"' <<< "$final_json")"
+          state="$(jq -r '.[0].state // .[0].State // "unknown"' <<< "$final_json")"
+          restart_policy="$(jq -r '.[0].config.restart.policy // .[0].restart.policy // "not exposed"' <<< "$final_json")"
+          {
+            echo "## Fly shadow deployment"
+            echo
+            echo "- App: `$app`"
+            echo "- Machine ID: `$machine_id`"
+            echo "- Region: `$region`"
+            echo "- State: `$state`"
+            echo "- Restart policy: `$restart_policy`"
+            echo "- Deployed commit SHA: `${{ github.sha }}`"
+            echo "- Mode: passive shadow mode."
+            echo
+            echo "This worker does not create incidents or publication records, approve, or publish."
+          } >> "$GITHUB_STEP_SUMMARY"
