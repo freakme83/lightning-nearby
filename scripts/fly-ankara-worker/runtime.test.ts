@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
-import type { LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
+import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
@@ -124,6 +124,23 @@ test("fresh WOULD_PUBLISH candidate follows enrichment, existing composer, dupli
   assert.equal(events.some(row => row.kind === "publication_pending" && row.fields?.approvalStatus === "pending"), true);
 });
 
+test("the existing Supabase adapter writes an actionable Fly candidate as pending", async () => {
+  const writes: Array<Record<string, unknown>> = [];
+  const store = createSupabaseLedger({ url: "https://fixture.supabase.co", serviceRoleKey: "fixture-only" },
+    async (_input, init) => {
+      if (init?.method === "POST") writes.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Response.json(init?.method === "POST" ? [{ publication_id: "inserted" }] : []);
+    });
+  const { runtime } = setup({ store });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].approval_status, "pending");
+  assert.equal(writes[0].decision, "WOULD_PUBLISH");
+  assert.equal(writes[0].platform_post_id, null);
+  assert.equal(typeof writes[0].message_text, "string");
+});
+
 test("stale WOULD_PUBLISH trigger is rejected before enrichment and persistence", async () => {
   let enrichCalls = 0;
   const memory = memoryStore();
@@ -195,7 +212,7 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
   assert.match(worker, /summaryEveryMs\s*=\s*5\s*\*\s*60_000/);
   assert.match(worker, /backoffMs\(attempt\+\+\)/);
   const dockerfile = await readFile(new URL("../../Dockerfile.fly-ankara-worker", import.meta.url), "utf8");
-  for (const directory of ["live-lightning-listener", "live-lightning-clustering", "lightning-incident-lifecycle",
+  for (const directory of ["fly-ankara-worker", "live-lightning-listener", "live-lightning-clustering", "lightning-incident-lifecycle",
     "lightning-cg-paired-validation", "lightning-cg-enrichment", "lightning-location-naming",
     "lightning-message-preview", "lightning-message-composer", "lightning-publish-decision",
     "lightning-end-to-end-dry-run", "lightning-publication-ledger"]) {
