@@ -10,6 +10,12 @@ The observer does not emit individual events or coordinates. It does not call Xw
 
 This first stage compares connection uptime, reconnects, malformed frames, dedupe, and aggregate events in the Ankara polygon against the existing scheduled monitor. It does not claim candidate-level parity: the scheduled monitor still owns clustering, lifecycle, enrichment, and pending-candidate persistence. Do not interpret no detected events as evidence that there was no lightning; feed gaps and source limitations remain possible.
 
+## Billing and trial limits
+
+Fly bills running Machines by the second. The current published reference for the configured `shared-cpu-1x`, 256 MB preset is **$2.19/month** when running for a full month; region pricing, root filesystem storage, and egress can change the total. See [Fly Machine pricing](https://fly.io/docs/about/pricing/).
+
+A new-account free trial includes two total VM hours or seven days, whichever comes first, and trial Machines automatically stop after five minutes. That is not enough for a continuous shadow period. Adding a payment method ends the trial and starts billable usage. Do not add billing details or start an always-on Machine until the user has set an acceptable monthly spending limit.
+
 ## Build and deployment
 
 The image uses Node 22's built-in WebSocket and type stripping; it installs no app dependencies and copies only the observer and its two required source modules. The Fly app has no public service or inbound port. One Machine is intended for the shadow test.
