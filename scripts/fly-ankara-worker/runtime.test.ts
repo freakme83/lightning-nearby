@@ -46,6 +46,8 @@ function setup(options: {
   enrich?: (reference: EnrichmentReference) => Promise<EnrichmentResult>;
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
   notifyPending?: PendingPublicationNotifier;
+  notifyAutoPublishFailure?: (failure: { publicationId: string; httpStatus?: number }) => Promise<{ ok: true } | {
+    ok: false; reason: "timeout" | "network_error" | "http_error" | "invalid_response"; httpStatus?: number }>;
   autoPublish?: FlyAutoPublish;
 } = {}) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
@@ -56,6 +58,7 @@ function setup(options: {
     emit: (kind, fields) => events.push({ kind, fields }),
     enrich: options.enrich ?? (async reference => verifiedCg(reference)),
     notifyPending: options.notifyPending,
+    notifyAutoPublishFailure: options.notifyAutoPublishFailure,
     autoPublish: options.autoPublish,
     reverse: options.reverse ?? (async (latitude, longitude) => ({
       latitude, longitude, provider: "fixture", displayLabel: "Çankaya, Ankara", locality: "Çankaya", district: "Çankaya",
@@ -384,6 +387,7 @@ function autoPipelineFixture(options: {
   token?: string;
   dispatchStatus?: number;
   telegram?: "ok" | "failure" | "throw";
+  failureTelegram?: "ok" | "failure" | "throw";
   approvalConflict?: boolean;
 } = {}) {
   const trace: string[] = [];
@@ -392,6 +396,8 @@ function autoPipelineFixture(options: {
   let approvalWrites = 0;
   let dispatches = 0;
   let notifications = 0;
+  let failureNotifications = 0;
+  const failureTelegramTexts: string[] = [];
   const token = options.token ?? `github_pat_${"fixture_only_".repeat(3)}`;
   const environment = { LIGHTNING_AUTO_PUBLISH_ENABLED: options.enabled ?? "true",
     GITHUB_ACTIONS_DISPATCH_TOKEN: token, SUPABASE_URL: "https://fixture.supabase.co",
@@ -440,12 +446,22 @@ function autoPipelineFixture(options: {
     notifications++;
     trace.push("telegram");
     assert.equal(rows[0].approval_status, "pending");
+    assert.equal(candidate.autoPublish, f.runtime.capabilities.autoPublish);
     assert.equal(candidate.messageText, rows[0].message_text);
     assert.equal(f.events.at(-1)?.kind, "publication_pending");
     if (options.telegram === "throw") throw new Error(`Bearer ${token}`);
     return options.telegram === "failure" ? { ok: false, reason: "network_error" } : { ok: true };
+  }, notifyAutoPublishFailure: async failure => {
+    failureNotifications++;
+    trace.push("telegram_dispatch_failure");
+    failureTelegramTexts.push(`❌ Otomatik yayın başlatılamadı\nYayın ID: ${failure.publicationId}` +
+      `${failure.httpStatus === undefined ? "" : `\nHTTP: ${failure.httpStatus}`}`);
+    if (options.failureTelegram === "throw") throw new Error(`raw exception ${token}`);
+    if (options.failureTelegram === "failure") return { ok: false, reason: "network_error" };
+    return { ok: true };
   } });
-  return { ...f, rows, trace, warnings, token, get approvalWrites() { return approvalWrites; },
+  return { ...f, rows, trace, warnings, token, failureTelegramTexts,
+    get failureNotifications() { return failureNotifications; }, get approvalWrites() { return approvalWrites; },
     get dispatches() { return dispatches; }, get notifications() { return notifications; } };
 }
 
@@ -463,6 +479,8 @@ test("enabled Fly path inserts pending, emits, notifies, approves, then dispatch
   assert.equal(f.approvalWrites, 1);
   assert.equal(f.dispatches, 1);
   assert.equal(f.notifications, 1);
+  assert.equal(f.failureNotifications, 0);
+  assert.equal(f.events.some(event => event.kind === "telegram_auto_publish_failure_notification_sent"), false);
   assert.deepEqual(f.events.filter(event => event.kind.startsWith("auto_")).map(event => event.kind),
     ["auto_approval_succeeded", "auto_publish_dispatch_sent"]);
   assert.equal(f.events.find(event => event.kind === "auto_publish_dispatch_sent")?.fields?.publicationId,
@@ -472,6 +490,7 @@ test("enabled Fly path inserts pending, emits, notifies, approves, then dispatch
   assert.equal(f.dispatches, 1);
   assert.doesNotMatch(JSON.stringify({ events: f.events, summary: f.runtime.summary(), capabilities: f.runtime.capabilities }),
     /github_pat_|Bearer|Authorization|fixture-service-key/);
+  assert.doesNotMatch(JSON.stringify(f.failureTelegramTexts), /Yayınlandı|yayımlandı/i);
 });
 
 test("disabled and requested-but-missing/malformed-token configurations keep new candidates pending and Telegram working", async () => {
@@ -520,10 +539,30 @@ test("approval conflict blocks dispatch; dispatch failure leaves approved row an
   assert.equal(failed.dispatches, 1);
   assert.equal(failed.approvalWrites, 1);
   assert.equal(failed.events.find(event => event.kind === "auto_publish_dispatch_failed")?.fields?.httpStatus, 503);
+  assert.deepEqual(failed.trace, ["insert_pending", "telegram", "approve", "dispatch", "telegram_dispatch_failure"]);
+  assert.equal(failed.failureNotifications, 1);
+  assert.match(failed.failureTelegramTexts[0], new RegExp(String(failed.rows[0].publication_id)));
+  assert.match(failed.failureTelegramTexts[0], /HTTP: 503/);
   // Still the same publication ID, approved for manual recovery by the existing workflow.
   assert.match(String(failed.rows[0].publication_id), /^pub_[0-9a-f]{32}$/);
   assert.doesNotThrow(() => failed.runtime.acceptEvent(event(12), baseNow));
   assert.equal(failed.runtime.pipeline.counters.unique, 4);
+});
+
+test("dispatch-failure Telegram error is best-effort and cannot roll back approval, retry dispatch, or stop intake", async () => {
+  for (const failureTelegram of ["failure", "throw"] as const) {
+    const f = autoPipelineFixture({ dispatchStatus: 403, failureTelegram });
+    qualifyingEvents(f.runtime);
+    await f.runtime.drainCandidateWork();
+    assert.equal(f.failureNotifications, 1);
+    assert.equal(f.rows[0].approval_status, "approved");
+    assert.equal(f.dispatches, 1);
+    assert.equal(f.trace.filter(item => item === "dispatch").length, 1);
+    assert.equal(f.events.find(event => event.kind === "telegram_auto_publish_failure_notification_failed")?.fields?.reason,
+      failureTelegram === "throw" ? "unexpected_error" : "network_error");
+    assert.doesNotMatch(JSON.stringify(f.events), /raw exception|github_pat_|fixture-service-key|Authorization/);
+    assert.doesNotThrow(() => f.runtime.acceptEvent(event(12), baseNow));
+  }
 });
 
 test("enabled mode rejects duplicate, HOLD, already-present, stale, failed writes, no-location and composer failure before approval", async () => {

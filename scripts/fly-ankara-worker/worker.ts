@@ -34,7 +34,8 @@ try {
   }
   const autoPublish = createFlyAutoPublish(process.env, emit);
   runtime = new AnkaraFlyPipeline({ store, emit, autoPublish,
-    ...(telegram.notify ? { notifyPending: telegram.notify } : {}) });
+    ...(telegram.notify ? { notifyPending: telegram.notify } : {}),
+    ...(telegram.notifyAutoPublishFailure ? { notifyAutoPublishFailure: telegram.notifyAutoPublishFailure } : {}) });
 } catch (error) {
   if (error instanceof FlyPipelineConfigurationError) {
     emit("configuration_error", { missing: error.missing });

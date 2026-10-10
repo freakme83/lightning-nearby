@@ -1,6 +1,7 @@
 import { applyManualApproval, type ApprovalStore } from "../lightning-publication-ledger/approval.ts";
 import { createSupabaseApprovalStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import { createPublisherDispatcher, type PublisherDispatcher } from "../lightning-github-dispatch/publisher.ts";
+import type { AutoPublishFailureNotifier } from "../lightning-telegram-notifier/pending.ts";
 
 export type FlyAutoPublish = { approvalStore: ApprovalStore; dispatchPublisher: PublisherDispatcher };
 type Emit = (kind: string, fields?: Record<string, unknown>) => void;
@@ -21,7 +22,8 @@ export function createFlyAutoPublish(environment: Record<string, string | undefi
 // Called once, solely from the freshly inserted safe pending-candidate path,
 // after the independent Telegram attempt. Persistence remains authoritative.
 export async function autoPublishNewPending(publicationId: string, incidentId: string,
-  configuration: FlyAutoPublish | undefined, emit: Emit, now: () => number): Promise<void> {
+  configuration: FlyAutoPublish | undefined, emit: Emit, now: () => number,
+  notifyDispatchFailure?: AutoPublishFailureNotifier): Promise<void> {
   const identity = { publicationId, incidentId };
   if (!configuration) {
     emit("auto_publish_disabled", { ...identity, reason: "disabled_or_unconfigured" });
@@ -48,9 +50,27 @@ export async function autoPublishNewPending(publicationId: string, incidentId: s
       ...identity, ...(dispatched.ok ? {} : { reason: dispatched.reason }),
       ...(dispatched.httpStatus === undefined ? {} : { httpStatus: dispatched.httpStatus }),
     });
+    if (!dispatched.ok) await notifyFailure(emit, notifyDispatchFailure, identity, dispatched);
   } catch {
     emit("auto_publish_dispatch_failed", { ...identity, reason: "unexpected_error" });
+    await notifyFailure(emit, notifyDispatchFailure, identity, {});
   }
   // No rollback, retries, or PUBLISHED claim. GitHub independently checks the
   // final kill switch and owns the existing publish_attempt_id protocol.
+}
+
+async function notifyFailure(emit: Emit, notify: AutoPublishFailureNotifier | undefined,
+  identity: { publicationId: string; incidentId: string }, failure: { httpStatus?: number }): Promise<void> {
+  if (!notify) return;
+  try {
+    const result = await notify({ publicationId: identity.publicationId,
+      ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }) });
+    emit(result.ok ? "telegram_auto_publish_failure_notification_sent" :
+      "telegram_auto_publish_failure_notification_failed", {
+        ...identity, ...(result.ok ? {} : { reason: result.reason }),
+        ...(!result.ok && result.httpStatus !== undefined ? { httpStatus: result.httpStatus } : {}),
+      });
+  } catch {
+    emit("telegram_auto_publish_failure_notification_failed", { ...identity, reason: "unexpected_error" });
+  }
 }

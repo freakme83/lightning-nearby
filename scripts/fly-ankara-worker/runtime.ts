@@ -16,7 +16,7 @@ import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
-import type { PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
+import type { AutoPublishFailureNotifier, PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { autoPublishNewPending, type FlyAutoPublish } from "./auto-publish.ts";
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
@@ -54,6 +54,7 @@ type RuntimeDependencies = {
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
   clusterParameters?: ClusterParameters;
   notifyPending?: PendingPublicationNotifier;
+  notifyAutoPublishFailure?: AutoPublishFailureNotifier;
   autoPublish?: FlyAutoPublish;
 };
 
@@ -75,6 +76,7 @@ export class AnkaraFlyPipeline {
   private readonly enrich?: PairedEnrichmentFunction;
   private readonly reverse?: RuntimeDependencies["reverse"];
   private readonly notifyPending?: PendingPublicationNotifier;
+  private readonly notifyAutoPublishFailure?: AutoPublishFailureNotifier;
   private readonly autoPublish?: FlyAutoPublish;
   private outOfBoundsDebugCount = 0;
   private staleCandidateCount = 0;
@@ -88,6 +90,7 @@ export class AnkaraFlyPipeline {
     this.enrich = dependencies.enrich;
     this.reverse = dependencies.reverse;
     this.notifyPending = dependencies.notifyPending;
+    this.notifyAutoPublishFailure = dependencies.notifyAutoPublishFailure;
     this.autoPublish = dependencies.autoPublish;
     const startedAt = this.now();
     this.pipeline = new LightningClusteringPipeline(ANKARA_MONITORING_AREA.bounds,
@@ -304,7 +307,7 @@ export class AnkaraFlyPipeline {
             const sent = await this.notifyPending({ publicationId,
               hashtag: result.message.composer.hashtag, messageText: result.message.text,
               locationLabel: result.message.locationDisplayLabel,
-              enrichmentStatus: result.message.enrichmentStatus });
+              enrichmentStatus: result.message.enrichmentStatus, autoPublish: Boolean(this.autoPublish) });
             this.emit(sent.ok ? "telegram_notification_sent" : "telegram_notification_failed", {
               incidentId, publicationId, ...(sent.ok ? {} : { reason: sent.reason,
                 ...(sent.httpStatus === undefined ? {} : { httpStatus: sent.httpStatus }) }),
@@ -314,7 +317,7 @@ export class AnkaraFlyPipeline {
           }
         }
         await autoPublishNewPending(result.ledger.persistedPublicationId, incidentId,
-          this.autoPublish, this.emit, this.now);
+          this.autoPublish, this.emit, this.now, this.notifyAutoPublishFailure);
       } else {
         this.emit("candidate_outcome", { incidentId, status: result.status,
           decision: result.publishDecision?.decision ?? null,
