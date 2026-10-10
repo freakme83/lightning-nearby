@@ -30,8 +30,51 @@ test("one outbound sendMessage request contains the exact composer text and appr
   assert.ok(body.text.includes(candidate.messageText));
   assert.ok(body.text.includes(MANUAL_APPROVAL_WORKFLOW_URL));
   assert.match(body.text, /Onay gerekli/);
+  assert.equal(body.text, `⚡ Yeni yayın adayı\n\nTür: #YILDIRIM\nKonum: Çankaya, Ankara\n` +
+    `Zenginleştirme: cg_verified\nYayın ID: pub_fixture\n` +
+    `Onay gerekli; henüz yayımlanmadı.\n\nHerkese açık mesaj:\n${candidate.messageText}\n\n` +
+    `Manuel onay: ${MANUAL_APPROVAL_WORKFLOW_URL}`);
   assert.doesNotMatch(body.text, /google\.com\/maps|THIS_IS_A_FIXTURE_TOKEN/);
   assert.equal(calls[0].init.signal?.aborted, false);
+});
+
+test("auto-mode candidate notification announces the attempt without requiring approval or claiming success", () => {
+  const text = pendingPublicationText({ ...candidate, autoPublish: true });
+  assert.match(text, /⚡ Yeni yayın adayı/);
+  assert.match(text, /Otomatik yayın süreci başlatılıyor\./);
+  assert.doesNotMatch(text, /Onay gerekli|Manuel onay|yayınlandı|yayımlandı/i);
+  assert.match(text, /Herkese açık mesaj:/);
+  assert.match(text, new RegExp(candidate.messageText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("dispatch failure notification reuses the same Telegram sender and reports only safe details", async () => {
+  const calls: Array<{ url: string; body: { chat_id: string; text: string } }> = [];
+  const { notifyAutoPublishFailure } = createPendingPublicationNotifier(config, async (input, init) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return Response.json({ ok: true });
+  });
+  assert.ok(notifyAutoPublishFailure);
+  assert.deepEqual(await notifyAutoPublishFailure({ publicationId: `pub_${"a".repeat(32)}`, httpStatus: 403 }), { ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `https://api.telegram.org/bot${token}/sendMessage`);
+  assert.equal(calls[0].body.chat_id, config.TELEGRAM_CHAT_ID);
+  assert.match(calls[0].body.text, /❌ Otomatik yayın başlatılamadı/);
+  assert.match(calls[0].body.text, new RegExp(`pub_${"a".repeat(32)}`));
+  assert.match(calls[0].body.text, /GitHub publisher workflow başlatılamadı/);
+  assert.match(calls[0].body.text, /HTTP: 403/);
+  assert.match(calls[0].body.text, /Manuel kontrol gerekebilir/);
+  assert.doesNotMatch(calls[0].body.text, /yayımlandı|yayınlandı|Authorization|Bearer|fixture.*TOKEN/);
+});
+
+test("dispatch failure message omits unavailable HTTP status and secret or exception details", async () => {
+  const { notifyAutoPublishFailure } = createPendingPublicationNotifier(config, async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { text: string };
+    assert.match(body.text, /Yayın ID: pub_safe/);
+    assert.doesNotMatch(body.text, /HTTP:|fixture-secret|raw exception|Authorization|Bearer/);
+    return Response.json({ ok: true });
+  });
+  assert.ok(notifyAutoPublishFailure);
+  assert.deepEqual(await notifyAutoPublishFailure({ publicationId: "pub_safe" }), { ok: true });
 });
 
 test("missing or malformed Telegram settings disable notification without exposing values", () => {

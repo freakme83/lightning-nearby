@@ -10,6 +10,7 @@ import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import { createPendingPublicationNotifier, type PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { AnkaraFlyPipeline, validateFlyPipelineEnvironment } from "./runtime.ts";
+import { createFlyAutoPublish, type FlyAutoPublish } from "./auto-publish.ts";
 
 const baseNow = Date.parse("2026-10-09T12:00:00.000Z");
 
@@ -45,6 +46,9 @@ function setup(options: {
   enrich?: (reference: EnrichmentReference) => Promise<EnrichmentResult>;
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
   notifyPending?: PendingPublicationNotifier;
+  notifyAutoPublishFailure?: (failure: { publicationId: string; httpStatus?: number }) => Promise<{ ok: true } | {
+    ok: false; reason: "timeout" | "network_error" | "http_error" | "invalid_response"; httpStatus?: number }>;
+  autoPublish?: FlyAutoPublish;
 } = {}) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
   const memory = memoryStore();
@@ -54,6 +58,8 @@ function setup(options: {
     emit: (kind, fields) => events.push({ kind, fields }),
     enrich: options.enrich ?? (async reference => verifiedCg(reference)),
     notifyPending: options.notifyPending,
+    notifyAutoPublishFailure: options.notifyAutoPublishFailure,
+    autoPublish: options.autoPublish,
     reverse: options.reverse ?? (async (latitude, longitude) => ({
       latitude, longitude, provider: "fixture", displayLabel: "Çankaya, Ankara", locality: "Çankaya", district: "Çankaya",
       province: "Ankara", country: "Türkiye",
@@ -211,7 +217,7 @@ test("missing Telegram configuration reports disabled while candidate persistenc
   assert.equal(telegram.notify, null);
   const { runtime, memory, events } = setup();
   assert.deepEqual(runtime.capabilities, { persistence: true, xweather: true, telegram: false,
-    approval: false, publishing: false });
+    autoPublish: false, approval: false, publishing: false });
   qualifyingEvents(runtime);
   await runtime.drainCandidateWork();
   assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
@@ -330,6 +336,11 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
   assert.doesNotMatch(worker, /emit\("source_health",\s*\{\s*to:\s*"live"/);
   assert.doesNotMatch(worker, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
   assert.doesNotMatch(runtime, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|XPublisher/);
+  for (const file of ["./auto-publish.ts", "../lightning-github-dispatch/publisher.ts"]) {
+    const source = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /X_API_KEY|X_ACCESS_TOKEN|api\.x\.com|oauthHeader|createXAdapter/);
+    assert.doesNotMatch(source, /from\s+["'][^"']*lightning-x-publisher\//);
+  }
   assert.match(worker, /frameTimeoutMs\s*=\s*90_000/);
   assert.match(worker, /summaryEveryMs\s*=\s*5\s*\*\s*60_000/);
   assert.match(worker, /backoffMs\(attempt\+\+\)/);
@@ -337,7 +348,7 @@ test("Fly runtime needs no X publisher credentials or code", async () => {
   for (const directory of ["fly-ankara-worker", "live-lightning-listener", "live-lightning-clustering", "lightning-incident-lifecycle",
     "lightning-cg-paired-validation", "lightning-cg-enrichment", "lightning-location-naming",
     "lightning-message-preview", "lightning-message-composer", "lightning-publish-decision",
-    "lightning-end-to-end-dry-run", "lightning-publication-ledger", "lightning-telegram-notifier"]) {
+    "lightning-end-to-end-dry-run", "lightning-publication-ledger", "lightning-telegram-notifier", "lightning-github-dispatch"]) {
     assert.match(dockerfile, new RegExp(`scripts/${directory}/`));
   }
   assert.doesNotMatch(dockerfile, /lightning-x-publisher|COPY scripts\/ \./);
@@ -367,4 +378,242 @@ test("source-health connection transitions remain represented, and out-of-bounds
   runtime.recordDisconnected(baseNow + 1);
   assert.equal(runtime.sourceHealth.state.state, "disconnected");
   assert.equal(runtime.sourceHealth.interruptions, 1);
+});
+
+// Shared mocked transport exercises the actual ledger/approval/dispatch adapters
+// together. Providers remain the existing injected fixtures from setup().
+function autoPipelineFixture(options: {
+  enabled?: string;
+  token?: string;
+  dispatchStatus?: number;
+  telegram?: "ok" | "failure" | "throw";
+  failureTelegram?: "ok" | "failure" | "throw";
+  approvalConflict?: boolean;
+} = {}) {
+  const trace: string[] = [];
+  const rows: Array<Record<string, unknown>> = [];
+  const warnings: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
+  let approvalWrites = 0;
+  let dispatches = 0;
+  let notifications = 0;
+  let failureNotifications = 0;
+  const failureTelegramTexts: string[] = [];
+  const token = options.token ?? `github_pat_${"fixture_only_".repeat(3)}`;
+  const environment = { LIGHTNING_AUTO_PUBLISH_ENABLED: options.enabled ?? "true",
+    GITHUB_ACTIONS_DISPATCH_TOKEN: token, SUPABASE_URL: "https://fixture.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "fixture-service-key" };
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.github.com") {
+      assert.equal(rows[0].approval_status, "approved");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        ref: "main", inputs: { publicationId: rows[0].publication_id } });
+      dispatches++;
+      trace.push("dispatch");
+      return new Response(null, { status: options.dispatchStatus ?? 204 });
+    }
+    assert.equal(url.hostname, "fixture.supabase.co");
+    if (init?.method === "POST") {
+      const row = JSON.parse(String(init.body));
+      assert.equal(row.approval_status, "pending");
+      trace.push("insert_pending");
+      rows.push(row);
+      return Response.json([row]);
+    }
+    if (init?.method === "PATCH") {
+      trace.push("approve");
+      approvalWrites++;
+      assert.equal(url.searchParams.get("publication_id"), `eq.${rows[0].publication_id}`);
+      assert.equal(url.searchParams.get("approval_status"), "eq.pending");
+      assert.equal(url.searchParams.get("decision"), "eq.WOULD_PUBLISH");
+      assert.equal(url.searchParams.get("platform_post_id"), "is.null");
+      const patch = JSON.parse(String(init.body));
+      assert.deepEqual(Object.keys(patch).sort(), ["approval_actor", "approval_status", "approval_updated_at"]);
+      if (options.approvalConflict) {
+        rows[0].approval_status = "skipped";
+        return Response.json([]);
+      }
+      Object.assign(rows[0], patch);
+      return Response.json([rows[0]]);
+    }
+    return Response.json(rows);
+  };
+  const autoPublish = createFlyAutoPublish(environment,
+    (kind, fields) => warnings.push({ kind, fields }), fetcher);
+  const store = createSupabaseLedger({ url: environment.SUPABASE_URL,
+    serviceRoleKey: environment.SUPABASE_SERVICE_ROLE_KEY }, fetcher);
+  const f = setup({ store, autoPublish, notifyPending: async candidate => {
+    notifications++;
+    trace.push("telegram");
+    assert.equal(rows[0].approval_status, "pending");
+    assert.equal(candidate.autoPublish, f.runtime.capabilities.autoPublish);
+    assert.equal(candidate.messageText, rows[0].message_text);
+    assert.equal(f.events.at(-1)?.kind, "publication_pending");
+    if (options.telegram === "throw") throw new Error(`Bearer ${token}`);
+    return options.telegram === "failure" ? { ok: false, reason: "network_error" } : { ok: true };
+  }, notifyAutoPublishFailure: async failure => {
+    failureNotifications++;
+    trace.push("telegram_dispatch_failure");
+    failureTelegramTexts.push(`❌ Otomatik yayın başlatılamadı\nYayın ID: ${failure.publicationId}` +
+      `${failure.httpStatus === undefined ? "" : `\nHTTP: ${failure.httpStatus}`}`);
+    if (options.failureTelegram === "throw") throw new Error(`raw exception ${token}`);
+    if (options.failureTelegram === "failure") return { ok: false, reason: "network_error" };
+    return { ok: true };
+  } });
+  return { ...f, rows, trace, warnings, token, failureTelegramTexts,
+    get failureNotifications() { return failureNotifications; }, get approvalWrites() { return approvalWrites; },
+    get dispatches() { return dispatches; }, get notifications() { return notifications; } };
+}
+
+test("enabled Fly path inserts pending, emits, notifies, approves, then dispatches once", async () => {
+  const f = autoPipelineFixture();
+  assert.equal(f.runtime.capabilities.autoPublish, true);
+  assert.equal(f.runtime.capabilities.publishing, false);
+  qualifyingEvents(f.runtime);
+  await f.runtime.drainCandidateWork();
+  assert.deepEqual(f.trace, ["insert_pending", "telegram", "approve", "dispatch"]);
+  assert.equal(f.rows.length, 1);
+  assert.equal(f.rows[0].approval_status, "approved");
+  assert.equal(f.rows[0].decision, "WOULD_PUBLISH");
+  assert.equal(f.rows[0].platform_post_id, null);
+  assert.equal(f.approvalWrites, 1);
+  assert.equal(f.dispatches, 1);
+  assert.equal(f.notifications, 1);
+  assert.equal(f.failureNotifications, 0);
+  assert.equal(f.events.some(event => event.kind === "telegram_auto_publish_failure_notification_sent"), false);
+  assert.deepEqual(f.events.filter(event => event.kind.startsWith("auto_")).map(event => event.kind),
+    ["auto_approval_succeeded", "auto_publish_dispatch_sent"]);
+  assert.equal(f.events.find(event => event.kind === "auto_publish_dispatch_sent")?.fields?.publicationId,
+    f.rows[0].publication_id);
+  qualifyingEvents(f.runtime);
+  await f.runtime.drainCandidateWork();
+  assert.equal(f.dispatches, 1);
+  assert.doesNotMatch(JSON.stringify({ events: f.events, summary: f.runtime.summary(), capabilities: f.runtime.capabilities }),
+    /github_pat_|Bearer|Authorization|fixture-service-key/);
+  assert.doesNotMatch(JSON.stringify(f.failureTelegramTexts), /Yayınlandı|yayımlandı/i);
+});
+
+test("disabled and requested-but-missing/malformed-token configurations keep new candidates pending and Telegram working", async () => {
+  for (const options of [{ enabled: "false" }, { enabled: "TRUE" }, { token: "" }, { token: "malformed" }]) {
+    const f = autoPipelineFixture(options);
+    assert.equal(f.runtime.capabilities.autoPublish, false);
+    qualifyingEvents(f.runtime);
+    await f.runtime.drainCandidateWork();
+    assert.equal(f.rows[0].approval_status, "pending");
+    assert.deepEqual(f.trace, ["insert_pending", "telegram"]);
+    assert.equal(f.approvalWrites, 0);
+    assert.equal(f.dispatches, 0);
+    assert.equal(f.notifications, 1);
+    assert.equal(f.warnings.length, "token" in options ? 1 : 0);
+    assert.equal(f.events.some(event => event.kind === "auto_publish_disabled"), true);
+  }
+});
+
+test("Telegram failure or exception does not prevent automatic approval and dispatch", async () => {
+  for (const telegram of ["failure", "throw"] as const) {
+    const f = autoPipelineFixture({ telegram });
+    qualifyingEvents(f.runtime);
+    await f.runtime.drainCandidateWork();
+    assert.deepEqual(f.trace, ["insert_pending", "telegram", "approve", "dispatch"]);
+    assert.equal(f.rows[0].approval_status, "approved");
+    assert.equal(f.events.some(event => event.kind === "telegram_notification_failed"), true);
+    assert.equal(f.events.some(event => event.kind === "auto_publish_dispatch_sent"), true);
+    assert.doesNotMatch(JSON.stringify(f.events), /github_pat_|Bearer|Authorization/);
+  }
+});
+
+test("approval conflict blocks dispatch; dispatch failure leaves approved row and worker intake operational", async () => {
+  const conflict = autoPipelineFixture({ approvalConflict: true });
+  qualifyingEvents(conflict.runtime);
+  await conflict.runtime.drainCandidateWork();
+  assert.equal(conflict.rows[0].approval_status, "skipped");
+  assert.equal(conflict.dispatches, 0);
+  assert.equal(conflict.events.some(event => event.kind === "auto_approval_failed"), true);
+
+  const failed = autoPipelineFixture({ dispatchStatus: 503 });
+  qualifyingEvents(failed.runtime);
+  await failed.runtime.drainCandidateWork();
+  assert.equal(failed.rows[0].approval_status, "approved");
+  assert.equal(failed.rows[0].decision, "WOULD_PUBLISH");
+  assert.equal(failed.rows[0].platform_post_id, null);
+  assert.equal(failed.dispatches, 1);
+  assert.equal(failed.approvalWrites, 1);
+  assert.equal(failed.events.find(event => event.kind === "auto_publish_dispatch_failed")?.fields?.httpStatus, 503);
+  assert.deepEqual(failed.trace, ["insert_pending", "telegram", "approve", "dispatch", "telegram_dispatch_failure"]);
+  assert.equal(failed.failureNotifications, 1);
+  assert.match(failed.failureTelegramTexts[0], new RegExp(String(failed.rows[0].publication_id)));
+  assert.match(failed.failureTelegramTexts[0], /HTTP: 503/);
+  // Still the same publication ID, approved for manual recovery by the existing workflow.
+  assert.match(String(failed.rows[0].publication_id), /^pub_[0-9a-f]{32}$/);
+  assert.doesNotThrow(() => failed.runtime.acceptEvent(event(12), baseNow));
+  assert.equal(failed.runtime.pipeline.counters.unique, 4);
+});
+
+test("dispatch-failure Telegram error is best-effort and cannot roll back approval, retry dispatch, or stop intake", async () => {
+  for (const failureTelegram of ["failure", "throw"] as const) {
+    const f = autoPipelineFixture({ dispatchStatus: 403, failureTelegram });
+    qualifyingEvents(f.runtime);
+    await f.runtime.drainCandidateWork();
+    assert.equal(f.failureNotifications, 1);
+    assert.equal(f.rows[0].approval_status, "approved");
+    assert.equal(f.dispatches, 1);
+    assert.equal(f.trace.filter(item => item === "dispatch").length, 1);
+    assert.equal(f.events.find(event => event.kind === "telegram_auto_publish_failure_notification_failed")?.fields?.reason,
+      failureTelegram === "throw" ? "unexpected_error" : "network_error");
+    assert.doesNotMatch(JSON.stringify(f.events), /raw exception|github_pat_|fixture-service-key|Authorization/);
+    assert.doesNotThrow(() => f.runtime.acceptEvent(event(12), baseNow));
+  }
+});
+
+test("enabled mode rejects duplicate, HOLD, already-present, stale, failed writes, no-location and composer failure before approval", async () => {
+  let approvalReads = 0;
+  let dispatches = 0;
+  let notifications = 0;
+  const autoPublish: FlyAutoPublish = {
+    approvalStore: {
+      async getPublicationForApproval() { approvalReads++; throw new Error("must not approve unsafe candidate"); },
+      async transitionPendingApproval() { throw new Error("unexpected approval transition"); },
+    },
+    async dispatchPublisher() { dispatches++; return { ok: true, httpStatus: 204 }; },
+  };
+  const notifyPending: PendingPublicationNotifier = async () => { notifications++; return { ok: true }; };
+  const common = { autoPublish, notifyPending };
+  const memory = memoryStore();
+  const first = setup({ store: memory.store });
+  qualifyingEvents(first.runtime);
+  await first.runtime.drainCandidateWork();
+  const duplicate = setup({ ...common, store: memory.store });
+  const hold = setup({ ...common, enrich: async reference => ({
+    status: "provider_unavailable", provider: "xweather", reference,
+    thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error",
+  }) });
+  const alreadyPresent = setup({ ...common, store: {
+    async loadRelevantPublicationHistory() { return []; },
+    async insertPublicationRecord() { return "already_present"; },
+  } });
+  const failedWrite = setup({ ...common, store: {
+    async loadRelevantPublicationHistory() { return []; },
+    async insertPublicationRecord() { throw new Error("fixture write failed"); },
+  } });
+  const noLocation = setup({ ...common, reverse: async (latitude, longitude) => ({
+    latitude, longitude, provider: "fixture", displayLabel: null,
+  }) });
+  const failedComposer = setup({ ...common, reverse: async (latitude, longitude) => ({
+    latitude, longitude, provider: "fixture", displayLabel: `${"x".repeat(300)}, Ankara`,
+    district: "x".repeat(300), province: "Ankara",
+  }) });
+  const stale = setup(common);
+  for (const f of [duplicate, hold, alreadyPresent, failedWrite, noLocation, failedComposer, stale]) {
+    qualifyingEvents(f.runtime, f === stale ? baseNow - 5 * 60_000 : baseNow);
+    await f.runtime.drainCandidateWork();
+    assert.equal(f.runtime.capabilities.autoPublish, true);
+    assert.equal(f.events.some(event => event.kind.startsWith("auto_")), false);
+  }
+  assert.equal(duplicate.events.some(event => event.kind === "duplicate_detected"), true);
+  assert.equal(hold.memory.records[0].decision, "HOLD");
+  assert.equal(stale.events.some(event => event.kind === "candidate_rejected_stale"), true);
+  assert.equal(failedComposer.events.find(event => event.kind === "candidate_outcome")?.fields?.status, "message_composition_failed");
+  assert.equal(approvalReads, 0);
+  assert.equal(dispatches, 0);
+  assert.equal(notifications, 0);
 });
