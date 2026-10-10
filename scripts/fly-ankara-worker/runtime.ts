@@ -17,6 +17,7 @@ import { createSupabaseLedger, type LedgerStore } from "../lightning-publication
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import type { PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
+import { autoPublishNewPending, type FlyAutoPublish } from "./auto-publish.ts";
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
@@ -53,6 +54,7 @@ type RuntimeDependencies = {
   reverse?: (latitude: number, longitude: number) => Promise<ReverseGeocodeResult>;
   clusterParameters?: ClusterParameters;
   notifyPending?: PendingPublicationNotifier;
+  autoPublish?: FlyAutoPublish;
 };
 
 export class AnkaraFlyPipeline {
@@ -73,6 +75,7 @@ export class AnkaraFlyPipeline {
   private readonly enrich?: PairedEnrichmentFunction;
   private readonly reverse?: RuntimeDependencies["reverse"];
   private readonly notifyPending?: PendingPublicationNotifier;
+  private readonly autoPublish?: FlyAutoPublish;
   private outOfBoundsDebugCount = 0;
   private staleCandidateCount = 0;
   private candidateCount = 0;
@@ -85,6 +88,7 @@ export class AnkaraFlyPipeline {
     this.enrich = dependencies.enrich;
     this.reverse = dependencies.reverse;
     this.notifyPending = dependencies.notifyPending;
+    this.autoPublish = dependencies.autoPublish;
     const startedAt = this.now();
     this.pipeline = new LightningClusteringPipeline(ANKARA_MONITORING_AREA.bounds,
       dependencies.clusterParameters ?? { ...DEFAULT_CLUSTER_PARAMETERS }, {
@@ -100,7 +104,7 @@ export class AnkaraFlyPipeline {
 
   get capabilities() {
     return { persistence: true, xweather: true, telegram: Boolean(this.notifyPending),
-      approval: false, publishing: false } as const;
+      autoPublish: Boolean(this.autoPublish), approval: false, publishing: false } as const;
   }
 
   markConnecting(atMs = this.now()): void {
@@ -287,31 +291,30 @@ export class AnkaraFlyPipeline {
       }
       if (result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.approvalStatus === "pending" &&
           result.ledger.recordPersisted && result.ledger.writeDisposition === "inserted" &&
-          !result.ledger.duplicateMatch?.duplicate) {
+          result.ledger.duplicateMatch?.duplicate === false && result.ledger.persistedPublicationId &&
+          result.message?.ok && result.publishDecision.messageReady && result.publishDecision.locationUsable &&
+          result.message.enrichmentStatus !== "provider_unavailable") {
         this.pendingCount++;
         this.emit("publication_pending", { incidentId, publicationId: result.ledger.persistedPublicationId,
           approvalStatus: "pending", decision: result.publishDecision?.decision ?? null,
           messageText: result.message?.ok ? result.message.text : null });
         if (this.notifyPending) {
           const publicationId = result.ledger.persistedPublicationId;
-          if (!publicationId || !result.message?.ok || result.message.enrichmentStatus === "provider_unavailable") {
-            this.emit("telegram_notification_failed", { incidentId, publicationId,
-              reason: "candidate_metadata_unavailable" });
-          } else {
-            try {
-              const sent = await this.notifyPending({ publicationId,
-                hashtag: result.message.composer.hashtag, messageText: result.message.text,
-                locationLabel: result.message.locationDisplayLabel,
-                enrichmentStatus: result.message.enrichmentStatus });
-              this.emit(sent.ok ? "telegram_notification_sent" : "telegram_notification_failed", {
-                incidentId, publicationId, ...(sent.ok ? {} : { reason: sent.reason,
-                  ...(sent.httpStatus === undefined ? {} : { httpStatus: sent.httpStatus }) }),
-              });
-            } catch {
-              this.emit("telegram_notification_failed", { incidentId, publicationId, reason: "unexpected_error" });
-            }
+          try {
+            const sent = await this.notifyPending({ publicationId,
+              hashtag: result.message.composer.hashtag, messageText: result.message.text,
+              locationLabel: result.message.locationDisplayLabel,
+              enrichmentStatus: result.message.enrichmentStatus });
+            this.emit(sent.ok ? "telegram_notification_sent" : "telegram_notification_failed", {
+              incidentId, publicationId, ...(sent.ok ? {} : { reason: sent.reason,
+                ...(sent.httpStatus === undefined ? {} : { httpStatus: sent.httpStatus }) }),
+            });
+          } catch {
+            this.emit("telegram_notification_failed", { incidentId, publicationId, reason: "unexpected_error" });
           }
         }
+        await autoPublishNewPending(result.ledger.persistedPublicationId, incidentId,
+          this.autoPublish, this.emit, this.now);
       } else {
         this.emit("candidate_outcome", { incidentId, status: result.status,
           decision: result.publishDecision?.decision ?? null,

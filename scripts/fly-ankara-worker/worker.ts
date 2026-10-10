@@ -3,6 +3,7 @@ import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitori
 import { backoffMs, parseFrame, subscription } from "../live-lightning-listener/core.ts";
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
+import { createFlyAutoPublish } from "./auto-publish.ts";
 
 const endpoint = "wss://live2.lightningmaps.org/";
 const box = ANKARA_MONITORING_AREA.bounds;
@@ -31,7 +32,9 @@ try {
     emit("configuration_warning", { capability: "telegram", disabled: true,
       invalidSettings: telegram.invalidSettings });
   }
-  runtime = new AnkaraFlyPipeline({ store, emit, ...(telegram.notify ? { notifyPending: telegram.notify } : {}) });
+  const autoPublish = createFlyAutoPublish(process.env, emit);
+  runtime = new AnkaraFlyPipeline({ store, emit, autoPublish,
+    ...(telegram.notify ? { notifyPending: telegram.notify } : {}) });
 } catch (error) {
   if (error instanceof FlyPipelineConfigurationError) {
     emit("configuration_error", { missing: error.missing });
