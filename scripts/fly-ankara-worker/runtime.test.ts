@@ -276,9 +276,14 @@ test("closed lifecycle state is retained until asynchronous candidate work compl
 test("the existing Supabase adapter writes an actionable Fly candidate as pending", async () => {
   const writes: Array<Record<string, unknown>> = [];
   const store = createSupabaseLedger({ url: "https://fixture.supabase.co", serviceRoleKey: "fixture-only" },
-    async (_input, init) => {
-      if (init?.method === "POST") writes.push(JSON.parse(String(init.body)) as Record<string, unknown>);
-      return Response.json(init?.method === "POST" ? [{ publication_id: "inserted" }] : []);
+    async (input, init) => {
+      const rpc = String(input).includes("/rpc/");
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        writes.push(rpc ? body.p_record : body);
+      }
+      return Response.json(rpc ? { outcome: "inserted", reason: "admitted", rollingCount: 1 } :
+        init?.method === "POST" ? [{ publication_id: "inserted" }] : []);
     });
   const { runtime } = setup({ store });
   qualifyingEvents(runtime);
@@ -442,11 +447,13 @@ function autoPipelineFixture(options: {
     }
     assert.equal(url.hostname, "fixture.supabase.co");
     if (init?.method === "POST") {
-      const row = JSON.parse(String(init.body));
+      const body = JSON.parse(String(init.body));
+      const rpc = url.pathname.includes("/rpc/");
+      const row = rpc ? body.p_record : body;
       assert.equal(row.approval_status, "pending");
       trace.push("insert_pending");
       rows.push(row);
-      return Response.json([row]);
+      return Response.json(rpc ? { outcome: "inserted", reason: "admitted", rollingCount: 1 } : [row]);
     }
     if (init?.method === "PATCH") {
       trace.push("approve");

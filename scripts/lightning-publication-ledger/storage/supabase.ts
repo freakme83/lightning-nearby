@@ -2,10 +2,12 @@ import type { PublicationRecord } from "../types.ts";
 import { fingerprintMessage } from "../record.ts";
 import type { ApprovalCandidate, ApprovalStore } from "../approval.ts";
 import { parseCgPublicationMetadata } from "../cg-metadata.ts";
+import type { CgAdmissionRequest, CgAdmissionResult } from "../../lightning-cg-repeat-policy/admission.ts";
 
 export type LedgerStore = {
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
   insertPublicationRecord(record: PublicationRecord, exactMessageText: string): Promise<"inserted" | "already_present">;
+  admitCgPublication?(record: PublicationRecord, exactMessageText: string, request: CgAdmissionRequest): Promise<CgAdmissionResult>;
 };
 
 const columns = ["publication_id", "run_id", "incident_id", "incident_reference_time", "incident_latitude",
@@ -39,6 +41,7 @@ function fromRow(row: Row): PublicationRecord {
     decision: row.decision as PublicationRecord["decision"], recordedAt: row.recorded_at as string,
     platformPostId: row.platform_post_id as string | null,
     ...(cgMetadata ? { cgMetadata } : {}),
+    ...(typeof row.cg_scope_id === "string" ? { cgScopeId: row.cg_scope_id } : {}),
   };
 }
 
@@ -59,6 +62,7 @@ function toRow(record: PublicationRecord, exactMessageText: string): Row {
     approval_status: record.decision === "WOULD_PUBLISH" ? "pending" : null,
     approval_updated_at: null, approval_actor: null,
     cg_metadata: record.enrichmentStatus === "cg_verified" ? record.cgMetadata ?? null : null,
+    ...(record.cgScopeId ? { cg_scope_id: record.cgScopeId } : {}),
   };
 }
 
@@ -78,7 +82,7 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
   const { endpoint, headers } = supabaseConnection(config);
   async function query(filters: Record<string, string>): Promise<PublicationRecord[]> {
     const url = new URL(endpoint);
-    url.searchParams.set("select", [...columns, "cg_metadata"].join(","));
+    url.searchParams.set("select", [...columns, "cg_metadata", "cg_scope_id"].join(","));
     url.searchParams.set("decision", eligible);
     url.searchParams.set("limit", String(PAGE_SIZE + 1));
     for (const [key, value] of Object.entries(filters)) url.searchParams.set(key, value);
@@ -89,6 +93,24 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
     return rows.map(row => fromRow(row as Row));
   }
   return {
+    async admitCgPublication(record, exactMessageText, request) {
+      if (request.kind === "repeat" && !parseCgPublicationMetadata(record.cgMetadata)?.semanticIdentity.available) {
+        throw new Error("Selected CG semantic metadata is unavailable.");
+      }
+      const url = new URL("/rest/v1/rpc/admit_cg_publication", endpoint);
+      const response = await fetcher(url, { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ p_record: toRow(record, exactMessageText), p_request: request }),
+        signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error(`CG admission failed (HTTP ${response.status}).`);
+      const value: unknown = await response.json();
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid CG admission response.");
+      const row = value as Record<string, unknown>;
+      if (!["inserted", "already_present", "suppressed"].includes(String(row.outcome)) || typeof row.reason !== "string" ||
+          (row.rollingCount !== undefined && (!Number.isSafeInteger(row.rollingCount) || Number(row.rollingCount) < 0))) {
+        throw new Error("Invalid CG admission response.");
+      }
+      return row as CgAdmissionResult;
+    },
     async loadRelevantPublicationHistory(candidate) {
       const byId = new Map<string, PublicationRecord>();
       if (candidate.providerEventId) {

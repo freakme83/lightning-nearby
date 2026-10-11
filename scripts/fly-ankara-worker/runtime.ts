@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeline.ts";
 import { DEFAULT_CLUSTER_PARAMETERS, type ClusterParameters } from "../live-lightning-clustering/clusterer.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
-import { INCIDENT_POLICY_PROFILES, type IncidentTransition } from "../lightning-incident-lifecycle/types.ts";
+import { INCIDENT_POLICY_PROFILES, type IncidentTransition, type ClusterObservation, type LightningIncident } from "../lightning-incident-lifecycle/types.ts";
 import { IncidentLifecycleEngine } from "../lightning-incident-lifecycle/incident-engine.ts";
 import { DryRunPublishPolicy } from "../lightning-incident-lifecycle/publish-policy.ts";
 import { applyTransitions } from "../lightning-incident-lifecycle/experiment.ts";
@@ -18,6 +18,13 @@ import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import type { AutoPublishFailureNotifier, PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { autoPublishNewPending, type FlyAutoPublish } from "./auto-publish.ts";
+import { enrichIncidentWithLightningType } from "../lightning-cg-enrichment/xweather.ts";
+import { CgProbeCoordinator } from "../lightning-cg-repeat-policy/coordinator.ts";
+import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type CgAdmissionRequest } from "../lightning-cg-repeat-policy/admission.ts";
+import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
+import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
+
+type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
@@ -82,6 +89,10 @@ export class AnkaraFlyPipeline {
   private staleCandidateCount = 0;
   private candidateCount = 0;
   private pendingCount = 0;
+  private repeatReadyAtMs: number;
+  private readonly repeatProbes: CgProbeCoordinator<RepeatProbe>;
+  private readonly repeatPredecessors = new Map<string, string>();
+  private readonly repeatInFlight = new Set<string>();
 
   constructor(dependencies: RuntimeDependencies) {
     this.store = dependencies.store;
@@ -93,6 +104,7 @@ export class AnkaraFlyPipeline {
     this.notifyAutoPublishFailure = dependencies.notifyAutoPublishFailure;
     this.autoPublish = dependencies.autoPublish;
     const startedAt = this.now();
+    this.repeatReadyAtMs = startedAt + CG_REPEAT_RECOVERY_HOLD_MS;
     this.pipeline = new LightningClusteringPipeline(ANKARA_MONITORING_AREA.bounds,
       dependencies.clusterParameters ?? { ...DEFAULT_CLUSTER_PARAMETERS }, {
         monitoringArea: {
@@ -103,6 +115,11 @@ export class AnkaraFlyPipeline {
       });
     this.lifecycle = new IncidentLifecycleEngine(profile, startedAt, { metricSampleLimit: LIFECYCLE_METRIC_SAMPLE_LIMIT });
     this.sourceHealth = new SourceHealthTracker(startedAt);
+    this.repeatProbes = new CgProbeCoordinator({ now: this.now,
+      eligible: (_scope, probe) => this.repeatProbeEligible(probe),
+      execute: (_scope, probe) => this.processRepeatProbe(probe),
+      onError: scopeId => this.emit("cg_repeat_outcome", { scopeId, outcome: "held", reason: "unexpected_probe_error" }),
+    });
   }
 
   get capabilities() {
@@ -115,6 +132,10 @@ export class AnkaraFlyPipeline {
   }
 
   recordFrame(atMs = this.now()): void {
+    // A gap can occur between summary polls. Do not count unseen downtime toward recovery.
+    if (this.sourceHealth.state.state === "live" &&
+        (atMs - this.sourceHealth.state.lastFrameAtMs >= this.sourceHealth.staleAfterMs ||
+         atMs < this.sourceHealth.state.lastFrameAtMs)) this.repeatReadyAtMs = atMs + CG_REPEAT_RECOVERY_HOLD_MS;
     this.applyHealthTransition(this.sourceHealth.frame(atMs));
   }
 
@@ -153,7 +174,8 @@ export class AnkaraFlyPipeline {
       longitude: event.longitude,
     };
     this.processTransitions(this.lifecycle.tick(processingTimeMs));
-    this.processTransitions(this.lifecycle.observe(observation));
+    this.processTransitions(this.lifecycle.observe(observation), observation);
+    this.repeatProbes.pump();
     return accepted;
   }
 
@@ -164,6 +186,7 @@ export class AnkaraFlyPipeline {
     this.syncClosedClusters(nowMs);
     this.processTransitions(this.lifecycle.tick(nowMs));
     this.pruneHistoricalState(nowMs);
+    this.repeatProbes.pump();
     return {
       ...state,
       profile: { ...profile },
@@ -177,27 +200,44 @@ export class AnkaraFlyPipeline {
       staleCandidateTriggers: this.staleCandidateCount,
       pendingPublications: this.pendingCount,
       candidateProcessingInFlight: this.candidateWork.size,
+      cgRepeat: { recoveryReady: this.repeatRecoveryReady(nowMs),
+        repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(),
+        inFlight: this.repeatProbes.running, coalesced: this.repeatProbes.coalesced, dropped: this.repeatProbes.dropped },
     };
   }
 
   async drainCandidateWork(): Promise<void> {
     await Promise.all([...this.controllers.values()].map(controller => controller.waitForCompletion()));
     await this.processingQueue;
+    this.repeatProbes.pump();
+    await this.repeatProbes.drain();
+    await this.processingQueue;
   }
 
   private applyHealthTransition(transition: ReturnType<SourceHealthTracker["frame"]>): void {
     if (!transition) return;
+    this.repeatReadyAtMs = transition.atMs + CG_REPEAT_RECOVERY_HOLD_MS;
+    this.emit("cg_repeat_recovery_hold", { reason: `source_${transition.to}`,
+      repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(), holdMs: CG_REPEAT_RECOVERY_HOLD_MS });
     this.lifecycle.setSourceHealth({ ...this.sourceHealth.state }, transition.atMs);
     this.emit("source_health", { from: transition.from, to: transition.to });
     this.processTransitions(this.lifecycle.tick(transition.atMs));
   }
 
-  private processTransitions(transitions: IncidentTransition[]): void {
+  private processTransitions(transitions: IncidentTransition[], observation?: ClusterObservation): void {
     const decisions = applyTransitions(transitions, this.policy, this.lifecycle);
     for (const decision of decisions) {
-      if (decision.action !== "WOULD_PUBLISH") continue;
       const incident = this.lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId);
       if (!incident) continue;
+      if (decision.action !== "WOULD_PUBLISH") {
+        if (decision.relatedIncidentId) this.repeatPredecessors.set(incident.id, decision.relatedIncidentId);
+        if (observation && CG_REPEAT_REASONS.includes(decision.reason as CgRepeatReason)) {
+          const probe: RepeatProbe = { incident, observation: { ...observation }, reason: decision.reason as CgRepeatReason,
+            predecessorId: this.repeatPredecessors.get(incident.id) };
+          if (this.repeatProbeEligible(probe)) this.repeatProbes.offer(this.repeatScopeId(incident.id), probe);
+        }
+        continue;
+      }
       this.candidateCount++;
       this.emit("incident_candidate", { incidentId: incident.id, profile: profile.id,
         eventCount: incident.totalEvents, lastActivityAt: new Date(incident.lastActivityTimeMs).toISOString() });
@@ -214,6 +254,7 @@ export class AnkaraFlyPipeline {
       }
       if (transition.type === "closed" && !this.candidateWork.has(transition.incident.id)) {
         this.controllers.delete(transition.incident.id);
+        this.repeatProbes.forget(this.repeatScopeId(transition.incident.id));
       }
     }
   }
@@ -268,7 +309,7 @@ export class AnkaraFlyPipeline {
   }
 
   private async processCandidate(incidentId: string, artifact: PairedValidationArtifact,
-    sourceHealthAtTrigger: SourceHealth["state"]): Promise<void> {
+    sourceHealthAtTrigger: SourceHealth["state"], repeat?: RepeatProbe): Promise<void> {
     if (artifact.status !== "paired_result") {
       this.emit("candidate_outcome", { incidentId, status: artifact.status, reason: "no_paired_candidate" });
       return;
@@ -285,9 +326,29 @@ export class AnkaraFlyPipeline {
       } else if (result.status === "no_usable_location_label") {
         this.emit("candidate_processing_error", { incidentId, stage: "location", outcome: "no_usable_location_label" });
       }
-      result = withPublishDecision(result, { sourceHealthAtTrigger });
-      result = await applyPersistentLedger(result, { sourceHealthAtTrigger }, this.store,
-        { runId: this.runId, configured: true });
+      const repeatFailure = repeat ? (this.repeatRecoveryReady(this.now()) ?
+        selectedRepeatEventCheck(artifact.enrichment, repeat.observation.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS)
+        : "recovery_or_source_unhealthy") : null;
+      const context = { sourceHealthAtTrigger, ...(repeat ? { cgRepeatGate: {
+        eligible: !repeatFailure, ...(repeatFailure ? { reason: `cg_repeat_${repeatFailure}` } : {}) } } : {}) };
+      const admission: CgAdmissionRequest = { scopeId: this.repeatScopeId(incidentId),
+        kind: repeat ? "repeat" : "initial", policyVersion: CG_REPEAT_POLICY_VERSION,
+        ...(repeat ? { suppressionReason: repeat.reason,
+          referenceTime: new Date(repeat.observation.eventTimeMs).toISOString(),
+          repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(),
+          ...(repeat.predecessorId ? { predecessorScopeId: this.repeatScopeId(repeat.predecessorId) } : {}) } : {}) };
+      result = withPublishDecision(result, context);
+      result = await applyPersistentLedger(result, context, this.store,
+        { runId: this.runId, configured: true, cgAdmission: admission });
+      const repeatPlace = result.location && "normalized" in result.location ? {
+        ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
+      if (repeat) this.emit("cg_repeat_outcome", { scopeId: admission.scopeId, originalSuppressionReason: repeat.reason,
+        providerEventId: artifact.enrichment.match?.id ?? null,
+        selectedEventAgeMs: artifact.enrichment.match ? this.now() - artifact.enrichment.match.eventTimeMs : null,
+        outcome: result.publishDecision?.decision, admission: result.ledger?.cgAdmission ?? null,
+        classification: repeatPlace ? classifyCgPlace(repeatPlace) : null,
+        semanticIdentityAvailable: repeatPlace ? semanticCgLocationIdentity(repeatPlace).available : false,
+        reason: repeatFailure ?? result.ledger?.reason ?? result.reason ?? null });
       if (result.ledger?.duplicateMatch?.duplicate) {
         this.emit("duplicate_detected", { incidentId, publicationId: result.ledger.duplicateMatch.matchedPublicationId,
           reason: result.ledger.duplicateMatch.reason });
@@ -342,8 +403,63 @@ export class AnkaraFlyPipeline {
     for (const id of removedClusterIds) this.closedClusterIds.delete(id);
     const retainedClusterIds = new Set(this.pipeline.clusterer.clusters.map(cluster => cluster.id));
     const removedIncidentIds = this.lifecycle.pruneClosed(nowMs, retainedClusterIds, this.candidateWork);
-    for (const id of removedIncidentIds) this.controllers.delete(id);
+    for (const id of removedIncidentIds) {
+      this.controllers.delete(id);
+      this.repeatProbes.forget(this.repeatScopeId(id));
+      this.repeatPredecessors.delete(id);
+    }
     this.policy.pruneClosed(nowMs);
+  }
+
+  private repeatScopeId(incidentId: string): string { return `cg_${this.runId}_${incidentId}`; }
+
+  private repeatRecoveryReady(nowMs: number): boolean {
+    return Number.isFinite(nowMs) && nowMs >= this.repeatReadyAtMs && this.sourceHealth.state.state === "live" &&
+      nowMs >= this.sourceHealth.state.lastFrameAtMs && nowMs - this.sourceHealth.state.lastFrameAtMs < this.sourceHealth.staleAfterMs;
+  }
+
+  private repeatProbeEligible(probe: RepeatProbe): boolean {
+    const now = this.now();
+    const age = now - probe.observation.eventTimeMs;
+    const incident = this.lifecycle.incidents.find(item => item.id === probe.incident.id);
+    return Boolean(this.store.admitCgPublication && this.repeatRecoveryReady(now) && incident?.status === "active" &&
+      incident.promotedAtMs !== undefined && incident.totalEvents >= profile.promotionMinEvents &&
+      (!this.candidateWork.has(incident.id) || this.repeatInFlight.has(incident.id)) && CG_REPEAT_REASONS.includes(probe.reason) &&
+      Number.isFinite(age) && age >= 0 && age <= MAX_PAIRING_INCIDENT_AGE_MS);
+  }
+
+  private async processRepeatProbe(probe: RepeatProbe): Promise<void> {
+    if (!this.repeatProbeEligible(probe)) return;
+    const reference = { latitude: probe.observation.latitude, longitude: probe.observation.longitude,
+      eventTimeMs: probe.observation.eventTimeMs };
+    this.candidateWork.add(probe.incident.id);
+    this.repeatInFlight.add(probe.incident.id);
+    try {
+      this.emit("cg_repeat_probe", { scopeId: this.repeatScopeId(probe.incident.id),
+        originalSuppressionReason: probe.reason, reference, recoveryReady: true,
+        coalesced: this.repeatProbes.coalesced, dropped: this.repeatProbes.dropped });
+      const enrichment = await (this.enrich ?? enrichIncidentWithLightningType)(reference);
+      const failure = selectedRepeatEventCheck(enrichment, reference.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
+      if (failure || !this.repeatRecoveryReady(this.now())) {
+        this.emit("cg_repeat_outcome", { scopeId: this.repeatScopeId(probe.incident.id), outcome: "held",
+          reason: failure ?? "recovery_or_source_unhealthy" });
+        return;
+      }
+      const artifact: PairedValidationArtifact = { status: "paired_result", triggerMode: "cg_repeat_probe",
+        profile: { id: profile.id, name: profile.name }, capturedAt: new Date(this.now()).toISOString(),
+        incident: { incidentId: probe.incident.id, latitude: probe.incident.representativeLatitude,
+          longitude: probe.incident.representativeLongitude, eventTimeMs: reference.eventTimeMs,
+          firstActivityTimeMs: probe.incident.firstEventTimeMs, lastActivityTimeMs: enrichment.match!.eventTimeMs,
+          eventCount: probe.incident.totalEvents, clusterCount: probe.incident.sourceClusterIds.length },
+        enrichment, guardrail: { maxEnrichmentCalls: 1, enrichmentCalls: 1, providerRequestAttempted: true },
+        triggerFreshness: { incidentAgeMs: this.now() - reference.eventTimeMs, maxIncidentAgeMs: MAX_PAIRING_INCIDENT_AGE_MS,
+          stalePublishCount: 0, freshestSkippedIncidentAgeMs: null, futureDatedPublishCount: 0,
+          invalidTimestampPublishCount: 0, trackedStaleIncidentCount: 0, staleIncidentsWithLaterActivityCount: 0, reactivatedIncidentCount: 0 },
+      };
+      const work = this.processingQueue.then(() => this.processCandidate(probe.incident.id, artifact, "live", probe));
+      this.processingQueue = work.catch(() => undefined);
+      await work;
+    } finally { this.candidateWork.delete(probe.incident.id); this.repeatInFlight.delete(probe.incident.id); }
   }
 }
 

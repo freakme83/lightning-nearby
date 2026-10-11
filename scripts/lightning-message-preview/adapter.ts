@@ -83,7 +83,7 @@ export function inspectPairedArtifact(artifact: unknown):
   const triggerMode = artifact.triggerMode;
   const incident = artifact.incident;
   const enrichment = artifact.enrichment;
-  if ((triggerMode !== "fresh_would_publish" && triggerMode !== "reactivated_after_stale_publish") ||
+  if ((triggerMode !== "fresh_would_publish" && triggerMode !== "reactivated_after_stale_publish" && triggerMode !== "cg_repeat_probe") ||
       !record(incident) || typeof incident.incidentId !== "string" || !incident.incidentId.trim() ||
       typeof incident.lastActivityTimeMs !== "number" || !Number.isSafeInteger(incident.lastActivityTimeMs) ||
       !record(enrichment) || typeof enrichment.status !== "string" ||

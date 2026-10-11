@@ -25,6 +25,8 @@ export type DecisionContext = {
   // Legacy run-scoped fixture context; raw incident IDs are not cross-run identities.
   previouslyPublishedIncidentIds?: ReadonlySet<string>;
   now?: () => string;
+  // Additional repeat gate only; never overrides an ordinary safety reason.
+  cgRepeatGate?: { eligible: boolean; reason?: string };
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -71,6 +73,11 @@ export function decidePublish(result: Pick<DryRunResult, "status" | "paired" | "
     (context.previouslyPublishedIncidentIds === undefined || !incidentId ? null :
       context.previouslyPublishedIncidentIds.has(incidentId));
   const reasonCodes: string[] = [];
+  if (paired.triggerMode === "cg_repeat_probe") {
+    const match = record(record(paired.enrichment).match);
+    if (!context.cgRepeatGate?.eligible) reasonCodes.push(context.cgRepeatGate?.reason ?? "cg_repeat_not_admitted");
+    if (enrichment !== "cg_verified" || match.type !== "cg" || !name(match.id)) reasonCodes.push("cg_repeat_requires_verified_identity");
+  }
   if (!messageReady) reasonCodes.push("message_not_ready");
   if (!locationUsable) reasonCodes.push("location_insufficient");
   if (enrichment === "provider_unavailable") reasonCodes.push("provider_unavailable");

@@ -67,6 +67,7 @@ type PairedResultFields = {
 export type PairedValidationArtifact =
   | (PairedResultFields & { triggerMode: "fresh_would_publish"; reactivation?: never })
   | (PairedResultFields & { triggerMode: "reactivated_after_stale_publish"; reactivation: PairedReactivationDiagnostics })
+  | (PairedResultFields & { triggerMode: "cg_repeat_probe"; reactivation?: never })
   | (NoPairArtifactFields & { status: "no_publish_candidate" })
   | (NoPairArtifactFields & { status: "no_fresh_publish_candidate" });
 
