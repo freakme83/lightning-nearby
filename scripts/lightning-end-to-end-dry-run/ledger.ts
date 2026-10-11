@@ -4,6 +4,7 @@ import { buildPublicationRecord } from "../lightning-publication-ledger/record.t
 import type { DuplicateMatchResult } from "../lightning-publication-ledger/types.ts";
 import type { LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { DryRunResult } from "./orchestrate.ts";
+import type { CgAdmissionRequest, CgAdmissionResult } from "../lightning-cg-repeat-policy/admission.ts";
 
 export type LedgerDiagnostics = {
   persistenceEnabled: boolean;
@@ -16,11 +17,12 @@ export type LedgerDiagnostics = {
   approvalStatus: "pending" | null;
   storageStatus: "ok" | "not_configured" | "read_failed" | "write_failed" | "invalid_candidate";
   reason: string | null;
+  cgAdmission?: CgAdmissionResult;
 };
 
 // Storage is injected; neither the v1A policy nor the v1B.1 matcher performs I/O.
 export async function applyPersistentLedger(result: DryRunResult, context: DecisionContext,
-  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean } = {}): Promise<DryRunResult> {
+  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest } = {}): Promise<DryRunResult> {
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
@@ -45,12 +47,42 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
   diagnostics.duplicateMatch = matchPublicationDuplicate(built.record, history);
   let final = { ...result, publishDecision: decidePublish(result, {
     ...context, ...duplicateDecisionContext(diagnostics.duplicateMatch), persistentHistoryEnabled: true,
+    knownDuplicate: context.knownDuplicate === true || diagnostics.duplicateMatch.duplicate,
   }) };
   const finalBuilt = buildPublicationRecord(final, { runId: options.runId });
   if (!finalBuilt.ok) return finish({ publicationRecordAvailable: false }, "invalid_candidate", finalBuilt.message);
   const exactMessageText = result.message?.ok ? result.message.text : "";
+  const admission = options.cgAdmission;
+  if (admission?.kind === "repeat" && (!finalBuilt.record.cgMetadata?.semanticIdentity.available ||
+      !finalBuilt.record.providerEventId || finalBuilt.record.enrichmentStatus !== "cg_verified")) {
+    return finish({ cgRepeatGate: { eligible: false, reason: "cg_repeat_metadata_unavailable" } },
+      "invalid_candidate", "Selected CG semantic metadata is unavailable.");
+  }
+  if (admission && finalBuilt.record.enrichmentStatus === "cg_verified") finalBuilt.record.cgScopeId = admission.scopeId;
   try {
-    const disposition = await store.insertPublicationRecord(finalBuilt.record, exactMessageText);
+    let disposition: "inserted" | "already_present";
+    if (admission && finalBuilt.record.enrichmentStatus === "cg_verified" && finalBuilt.record.decision === "WOULD_PUBLISH") {
+      if (!store.admitCgPublication) {
+        if (admission.kind === "repeat") throw new Error("Atomic admission unavailable");
+        // Test/offline stores keep their initial path. They cannot admit repeats.
+        disposition = await store.insertPublicationRecord(finalBuilt.record, exactMessageText);
+      } else {
+        diagnostics.cgAdmission = await store.admitCgPublication(finalBuilt.record, exactMessageText, admission);
+        if (diagnostics.cgAdmission.outcome === "suppressed") {
+          return finish({ publicationRecordAvailable: false,
+            knownDuplicate: ["same_provider_event", "same_observation_fingerprint", "concurrent_unique_conflict"].includes(diagnostics.cgAdmission.reason),
+            cgRepeatGate: { eligible: false, reason: `cg_repeat_${diagnostics.cgAdmission.reason}` } },
+            "ok", diagnostics.cgAdmission.reason);
+        }
+        disposition = diagnostics.cgAdmission.outcome;
+      }
+    } else {
+      // A repeat artifact must never reach insertion without an admission request.
+      if (result.paired?.triggerMode === "cg_repeat_probe" && finalBuilt.record.decision === "WOULD_PUBLISH") {
+        return finish({ cgRepeatGate: { eligible: false, reason: "cg_repeat_atomic_admission_missing" } }, "invalid_candidate", "Repeat admission request is missing.");
+      }
+      disposition = await store.insertPublicationRecord(finalBuilt.record, exactMessageText);
+    }
     diagnostics.writeDisposition = disposition;
     diagnostics.persistedPublicationId = finalBuilt.record.publicationId;
     if (disposition === "inserted") {
@@ -67,7 +99,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
         diagnostics.duplicateMatch = matchPublicationDuplicate(finalBuilt.record, refreshed);
       } catch { /* An uncertain existing row still cannot safely publish. */ }
       final = { ...result, publishDecision: decidePublish(result, { ...context,
-        knownDuplicate: diagnostics.duplicateMatch?.duplicate ?? false,
+        knownDuplicate: context.knownDuplicate === true || diagnostics.duplicateMatch?.duplicate === true,
         publicationRecordAvailable: false, persistentHistoryEnabled: true,
       }) };
       diagnostics.storageStatus = "ok";
@@ -83,7 +115,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
       diagnostics.duplicateMatch = matchPublicationDuplicate(finalBuilt.record, refreshed);
     } catch { /* Preserve the original write failure. */ }
     final = { ...result, publishDecision: decidePublish(result, { ...context,
-      knownDuplicate: diagnostics.duplicateMatch?.duplicate ?? false,
+      knownDuplicate: context.knownDuplicate === true || diagnostics.duplicateMatch?.duplicate === true,
       publicationRecordAvailable: false, persistentHistoryEnabled: true,
     }) };
     diagnostics.storageStatus = "write_failed";

@@ -23,6 +23,7 @@ export type PublicationRecord = {
   mapUrl?: string | null;
   // Optional future comparison data; never part of duplicate identity or authorization.
   cgMetadata?: CgPublicationMetadata | null;
+  cgScopeId?: string | null;
 };
 
 export type DuplicateMatchResult = {
