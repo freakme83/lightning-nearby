@@ -15,4 +15,3 @@ export function cgRecord(id: string, place: string, distance = 0, scope = "scope
     providerEventType: "cg", locationLabel: place, messageFingerprint: "fingerprint", decision: "WOULD_PUBLISH",
     recordedAt: new Date(at).toISOString(), cgScopeId: scope, cgMetadata: cgMetadata(place, distance, kind) };
 }
-
