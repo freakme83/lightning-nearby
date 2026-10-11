@@ -111,6 +111,34 @@ test("non-qualifying individual events never call Xweather or Supabase", async (
   assert.equal(memory.writes, 0);
 });
 
+test("CG foundation leaves Profile B, active suppression and nearby cooldown unchanged", async () => {
+  let clock = baseNow;
+  let calls = 0;
+  const { runtime, memory } = setup({ now: () => clock,
+    enrich: async reference => { calls++; return verifiedCg(reference); } });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  const expected = { id: "B", name: "moderate", promotionMinEvents: 3, promotionWindowMinutes: 10,
+    closeAfterMinutes: 20, activeAssociationDistanceKm: 10, nearbyCooldownDistanceKm: 10, nearbyCooldownMinutes: 20 };
+  assert.deepEqual(runtime.summary(clock).profile, expected);
+  clock += 5 * 60_000;
+  runtime.recordFrame(clock);
+  runtime.acceptEvent(event(20, { eventTimeMs: clock, receivedAtMs: clock, longitude: 32.62 }), clock);
+  await runtime.drainCandidateWork();
+  assert.equal(calls, 1, "active CG activity still cannot get a second enrichment attempt");
+  clock += 20 * 60_000;
+  runtime.recordFrame(clock);
+  assert.equal(runtime.summary(clock).activeIncidents, 0);
+  clock += 5 * 60_000;
+  runtime.recordFrame(clock);
+  for (let index = 30; index < 34; index++) runtime.acceptEvent(event(index, {
+    eventTimeMs: clock - 1000 + index, receivedAtMs: clock, longitude: 32.6 }), clock);
+  await runtime.drainCandidateWork();
+  assert.equal(runtime.summary(clock).activeIncidents, 1);
+  assert.equal(calls, 1, "cooldown suppression still cannot reach enrichment");
+  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
+});
+
 test("fresh WOULD_PUBLISH candidate follows enrichment, existing composer, duplicate check, and pending persistence", async () => {
   let enrichCalls = 0;
   let reverseCalls = 0;

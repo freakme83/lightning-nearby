@@ -20,11 +20,14 @@ export type ReverseGeocodeResult = NormalizedPlace & {
 };
 
 export const PROVIDER_ADDRESS_FIELDS = [
-  "neighbourhood", "quarter", "suburb", "city", "town", "village", "hamlet", "municipality",
+  "neighbourhood", "neighborhood", "quarter", "suburb", "city", "town", "village", "hamlet", "municipality",
   "city_district", "district", "county", "state_district", "province", "state", "region", "country",
 ] as const;
 
-export type ProviderAddressHierarchy = Record<typeof PROVIDER_ADDRESS_FIELDS[number], string | null>;
+export type ProviderAddressHierarchy = Record<Exclude<typeof PROVIDER_ADDRESS_FIELDS[number], "neighborhood">, string | null> & {
+  // Older diagnostic artifacts did not include the American-spelled alias.
+  neighborhood?: string | null;
+};
 
 export interface ReverseGeocoder {
   reverse(latitude: number, longitude: number): Promise<ReverseGeocodeResult>;

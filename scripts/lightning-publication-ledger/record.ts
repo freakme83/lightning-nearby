@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DryRunResult } from "../lightning-end-to-end-dry-run/orchestrate.ts";
 import type { BuildPublicationRecordResult, PublicationRecord } from "./types.ts";
+import { buildCgPublicationMetadata } from "./cg-metadata.ts";
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -84,6 +85,8 @@ export function buildPublicationRecord(result: DryRunResult,
     providerEventId, providerEventType, locationLabel: label, messageFingerprint,
     decision: result.publishDecision.decision, recordedAt,
     mapUrl: status === "cg_verified" ? result.message.mapUrl : null,
+    cgMetadata: status === "cg_verified" ? buildCgPublicationMetadata(match, normalized,
+      record(result.location).providerAddress, record(result.location).requested) : null,
   };
   return { ok: true, record: publicationRecord };
 }
