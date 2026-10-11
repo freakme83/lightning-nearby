@@ -24,18 +24,18 @@ function place(displayLabel: string | null = label): ReverseGeocodeResult {
   };
 }
 
-test("real paired path uses incident coordinates for one lookup and selected CG coordinates for Maps", async () => {
+test("CG naming uses the full-precision selected strike, aligned with Maps and public coordinates", async () => {
   let calls = 0;
   const artifact = { ...PAIRED_ARTIFACT_FIXTURES.cg_verified,
     incident: { ...PAIRED_ARTIFACT_FIXTURES.cg_verified.incident,
       latitude: 41.535948999999995, longitude: 12.797077000223082 },
     enrichment: { ...PAIRED_ARTIFACT_FIXTURES.cg_verified.enrichment,
       match: { ...PAIRED_ARTIFACT_FIXTURES.cg_verified.enrichment.match,
-        latitude: 41.4784, longitude: 12.8168 } } };
+        latitude: 41.47841234567, longitude: 12.81681234567 } } };
   const result = await continueFromPairedArtifact(artifact, {
     reverse: async (lat, lon) => {
       calls++;
-      assert.deepEqual([lat, lon], [41.535948999999995, 12.797077000223082]);
+      assert.deepEqual([lat, lon], [41.47841234567, 12.81681234567]);
       return { ...place(), latitude: lat, longitude: lon };
     },
     now: () => "captured",
@@ -47,19 +47,21 @@ test("real paired path uses incident coordinates for one lookup and selected CG 
   assert.equal(result.message?.ok, true);
   if (result.message?.ok) {
     assert.equal(result.message.text, previewPairedMessage({ artifact, locationDisplayLabel: label }).text);
-    assert.equal(result.message.mapUrl, "https://www.google.com/maps?q=41.4784,12.8168");
+    assert.equal(result.message.mapUrl, "https://www.google.com/maps?q=41.47841234567,12.81681234567");
     assert.ok(result.message.text.includes("Cisterna di Latina / Latina"));
     assert.ok(result.message.text.endsWith("\n\n41.478, 12.817"));
     assert.doesNotMatch(result.message.text, /https?:\/\/|41\.536, 12\.797/);
     const summary = renderEndToEndSummary(result);
     assert.ok(summary.includes(`\`\`\`text\n${result.message.text}\n\`\`\``));
     assert.match(summary, /\`\`\`text\nCisterna di Latina, Latina\n\`\`\`/);
-    assert.match(summary, /Incident coordinate used for lookup: 41\.535948999999995, 12\.797077000223082/);
-    assert.match(summary, /Selected map coordinate: 41\.4784,12\.8168/);
+    assert.match(summary, /Incident coordinate: 41\.535948999999995, 12\.797077000223082/);
+    assert.match(summary, /Lookup source: Selected CG coordinate/);
+    assert.match(summary, /Coordinate used for lookup: 41\.47841234567, 12\.81681234567/);
+    assert.match(summary, /Selected map coordinate: 41\.47841234567,12\.81681234567/);
     assert.match(summary, /Internal map URL available: yes/);
     assert.match(summary, /Public message contains URL: no/);
     assert.match(summary, /Public coordinate: 41\.478, 12\.817/);
-    assert.match(summary, /Internal Maps URL: https:\/\/www\.google\.com\/maps\?q=41\.4784,12\.8168/);
+    assert.match(summary, /Internal Maps URL: https:\/\/www\.google\.com\/maps\?q=41\.47841234567,12\.81681234567/);
   }
   assert.equal(result.capturedAt, "captured");
 });
@@ -125,13 +127,31 @@ test("location provider failure is explicit, makes one lookup, and skips compose
   assert.equal(previews, 0);
 });
 
-test("adapter/composer error is a distinct terminal state", async () => {
-  const artifact = { ...PAIRED_ARTIFACT_FIXTURES.cg_verified,
-    enrichment: { ...PAIRED_ARTIFACT_FIXTURES.cg_verified.enrichment, match: undefined } };
-  const result = await continueFromPairedArtifact(artifact, { reverse: async () => place() });
-  assert.equal(result.status, "message_composition_failed");
-  assert.equal(result.message?.ok, false);
-  if (result.message?.ok === false) assert.equal(result.message.composer?.error.code, "missing_cg_match");
+test("invalid selected CG coordinates never fall back to an incident lookup", async () => {
+  let calls = 0;
+  for (const match of [undefined, { type: "ic", latitude: 41, longitude: 12 },
+    { type: "cg", latitude: NaN, longitude: 12 }, { type: "cg", latitude: 41, longitude: 181 }]) {
+    const artifact = { ...PAIRED_ARTIFACT_FIXTURES.cg_verified,
+      enrichment: { ...PAIRED_ARTIFACT_FIXTURES.cg_verified.enrichment, match } };
+    const result = await continueFromPairedArtifact(artifact, { reverse: async () => { calls++; return place(); } });
+    assert.equal(result.status, "paired_validation_failed");
+    assert.equal(result.message, null);
+    assert.equal(result.providerCalls.nominatimReverseLookups, 0);
+  }
+  assert.equal(calls, 0);
+});
+
+test("all non-CG states continue naming the incident representative coordinate", async () => {
+  for (const status of ["ic_only", "no_match", "provider_unavailable"] as const) {
+    const artifact = PAIRED_ARTIFACT_FIXTURES[status];
+    const result = await continueFromPairedArtifact(artifact, { reverse: async (lat, lon) => {
+      assert.deepEqual([lat, lon], [artifact.incident.latitude, artifact.incident.longitude]);
+      return { ...place(), latitude: lat, longitude: lon };
+    } });
+    assert.equal(result.status, "message_preview_ready");
+    assert.equal(result.location && "sample" in result.location ? result.location.sample : null, "Incident coordinate");
+    assert.equal(result.message?.mapUrl, null);
+  }
 });
 
 test("failed live runner has a structured terminal result and no final message", () => {

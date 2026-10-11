@@ -113,20 +113,33 @@ export async function continueFromPairedArtifact(artifact: unknown, deps: Depend
     return { ...base, reason: "The paired incident has no usable representative coordinate." };
   }
 
+  const cg = inspected.artifact.enrichment.status === "cg_verified";
+  const selected = record(inspected.artifact.enrichment.match) ? inspected.artifact.enrichment.match : null;
+  const lookupLatitude = cg ? selected?.latitude : latitude;
+  const lookupLongitude = cg ? selected?.longitude : longitude;
+  const sample = cg ? "Selected CG coordinate" : "Incident coordinate";
+  try {
+    if (typeof lookupLatitude !== "number" || typeof lookupLongitude !== "number" ||
+        (cg && selected?.type !== "cg")) throw new Error();
+    validateCoordinates(lookupLatitude, lookupLongitude);
+  } catch {
+    return { ...base, reason: "The selected CG match has no usable coordinate; no incident-coordinate fallback was used." };
+  }
+
   const withLookup = { ...base, providerCalls: { ...base.providerCalls, nominatimReverseLookups: 1 as const } };
   let location: ReverseGeocodeResult;
   try {
     const reverse = deps.reverse ?? ((lat: number, lon: number) =>
       new NominatimReverseGeocoder().reverse(lat, lon, { includeProviderHierarchy: true }));
-    location = await reverse(latitude, longitude);
+    location = await reverse(lookupLatitude, lookupLongitude);
   } catch (error) {
     return {
       ...withLookup, status: "location_lookup_failed",
-      location: formatLookupFailure("Incident coordinate", latitude, longitude, "nominatim", error),
-      reason: "The incident coordinate could not be reverse-geocoded.",
+      location: formatLookupFailure(sample, lookupLatitude, lookupLongitude, "nominatim", error),
+      reason: "The naming coordinate could not be reverse-geocoded.",
     };
   }
-  const diagnostic = formatDiagnosticResult("Incident coordinate", location);
+  const diagnostic = formatDiagnosticResult(sample, location);
   if (typeof location.displayLabel !== "string" || !location.displayLabel.trim()) {
     return { ...withLookup, status: "no_usable_location_label", location: diagnostic,
       reason: "No usable display label was produced." };

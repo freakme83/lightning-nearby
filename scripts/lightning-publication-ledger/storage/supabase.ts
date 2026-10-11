@@ -1,6 +1,7 @@
 import type { PublicationRecord } from "../types.ts";
 import { fingerprintMessage } from "../record.ts";
 import type { ApprovalCandidate, ApprovalStore } from "../approval.ts";
+import { parseCgPublicationMetadata } from "../cg-metadata.ts";
 
 export type LedgerStore = {
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
@@ -25,6 +26,7 @@ function fromRow(row: Row): PublicationRecord {
       !["WOULD_PUBLISH", "PUBLISHED"].includes(String(row.decision))) {
     throw new Error("Invalid publication history row");
   }
+  const cgMetadata = row.enrichment_status === "cg_verified" ? parseCgPublicationMetadata(row.cg_metadata) : null;
   return {
     publicationId: row.publication_id, runId: row.run_id as string | null,
     incidentId: row.incident_id as string | null, incidentReferenceTime: row.incident_reference_time,
@@ -36,6 +38,7 @@ function fromRow(row: Row): PublicationRecord {
     locationLabel: row.location_label as string | null, messageFingerprint: row.message_fingerprint,
     decision: row.decision as PublicationRecord["decision"], recordedAt: row.recorded_at as string,
     platformPostId: row.platform_post_id as string | null,
+    ...(cgMetadata ? { cgMetadata } : {}),
   };
 }
 
@@ -55,6 +58,7 @@ function toRow(record: PublicationRecord, exactMessageText: string): Row {
     map_url: record.enrichmentStatus === "cg_verified" ? record.mapUrl ?? null : null,
     approval_status: record.decision === "WOULD_PUBLISH" ? "pending" : null,
     approval_updated_at: null, approval_actor: null,
+    cg_metadata: record.enrichmentStatus === "cg_verified" ? record.cgMetadata ?? null : null,
   };
 }
 
@@ -74,7 +78,7 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
   const { endpoint, headers } = supabaseConnection(config);
   async function query(filters: Record<string, string>): Promise<PublicationRecord[]> {
     const url = new URL(endpoint);
-    url.searchParams.set("select", columns.join(","));
+    url.searchParams.set("select", [...columns, "cg_metadata"].join(","));
     url.searchParams.set("decision", eligible);
     url.searchParams.set("limit", String(PAGE_SIZE + 1));
     for (const [key, value] of Object.entries(filters)) url.searchParams.set(key, value);

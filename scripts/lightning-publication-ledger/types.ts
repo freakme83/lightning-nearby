@@ -1,5 +1,6 @@
 import type { EnrichmentResult, LightningType } from "../lightning-cg-enrichment/types.ts";
 import type { PublishDecision } from "../lightning-publish-decision/decision.ts";
+import type { CgPublicationMetadata } from "./cg-metadata.ts";
 
 // Domain record only. A WOULD_PUBLISH record is a shadow observation, not a post.
 export type PublicationRecord = {
@@ -20,6 +21,8 @@ export type PublicationRecord = {
   platformPostId?: string | null;
   // Internal selected CG map metadata; never part of the public-text fingerprint.
   mapUrl?: string | null;
+  // Optional future comparison data; never part of duplicate identity or authorization.
+  cgMetadata?: CgPublicationMetadata | null;
 };
 
 export type DuplicateMatchResult = {
