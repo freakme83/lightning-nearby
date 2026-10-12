@@ -31,7 +31,9 @@ function diagnostics(candidates: Candidate[], selected: Candidate | undefined): 
     rejectedSpatial: candidates.filter(item => !item.spatial).length,
     rejectedReferenceTime: candidates.filter(item => !item.temporal).length,
     rejectedProviderStale: candidates.filter(item => !item.current).length,
-    selectedProviderEventId: selected?.id ?? null, selectedDistanceKm: selected?.distanceKm ?? null,
+    selectedProviderEventId: selected?.id ?? null,
+    selectedLatitude: selected?.latitude ?? null, selectedLongitude: selected?.longitude ?? null,
+    selectedEventTimeMs: selected?.eventTimeMs ?? null, selectedDistanceKm: selected?.distanceKm ?? null,
     selectedReferenceDeltaMs: selected?.timeDifferenceMs ?? null, selectedProviderAgeMs: selected?.providerAgeMs ?? null,
     evaluatedProviderEventId: evaluated?.id ?? null, evaluatedDistanceKm: evaluated?.distanceKm ?? null,
     evaluatedReferenceDeltaMs: evaluated?.timeDifferenceMs ?? null, evaluatedProviderAgeMs: evaluated?.providerAgeMs ?? null };
@@ -71,7 +73,8 @@ export function enforceInitialCgAcceptance(enrichment: EnrichmentResult, nowMs: 
       outcome: enrichment.status === "provider_unavailable" ? "provider_unavailable" :
         returnedCg === 0 ? "no_cg_returned" : "no_eligible_cg",
       returnedCg, rejectedSpatial: 0, rejectedReferenceTime: 0, rejectedProviderStale: 0,
-      selectedProviderEventId: null, selectedDistanceKm: null, selectedReferenceDeltaMs: null,
+      selectedProviderEventId: null, selectedLatitude: null, selectedLongitude: null,
+      selectedEventTimeMs: null, selectedDistanceKm: null, selectedReferenceDeltaMs: null,
       selectedProviderAgeMs: null, evaluatedProviderEventId: null, evaluatedDistanceKm: null,
       evaluatedReferenceDeltaMs: null, evaluatedProviderAgeMs: null,
     } };
@@ -82,6 +85,8 @@ export function enforceInitialCgAcceptance(enrichment: EnrichmentResult, nowMs: 
     const selected = diagnostics([checked], checked);
     return { ...enrichment, initialCgDiagnostics: { ...selected, ...enrichment.initialCgDiagnostics,
       outcome: "accepted", selectedProviderEventId: checked.id,
+      selectedLatitude: checked.latitude, selectedLongitude: checked.longitude,
+      selectedEventTimeMs: checked.eventTimeMs,
       selectedDistanceKm: checked.distanceKm, selectedReferenceDeltaMs: checked.timeDifferenceMs,
       selectedProviderAgeMs: checked.providerAgeMs,
       evaluatedProviderEventId: checked.id, evaluatedDistanceKm: checked.distanceKm,
@@ -90,7 +95,8 @@ export function enforceInitialCgAcceptance(enrichment: EnrichmentResult, nowMs: 
   const rejected = checked ? diagnostics([checked], undefined) : {
     outcome: "no_eligible_cg", returnedCg: enrichment.matchDiagnostics?.returnedCg ?? 1,
     rejectedSpatial: 0, rejectedReferenceTime: 0, rejectedProviderStale: 0,
-    selectedProviderEventId: null, selectedDistanceKm: null, selectedReferenceDeltaMs: null, selectedProviderAgeMs: null,
+    selectedProviderEventId: null, selectedLatitude: null, selectedLongitude: null,
+    selectedEventTimeMs: null, selectedDistanceKm: null, selectedReferenceDeltaMs: null, selectedProviderAgeMs: null,
     evaluatedProviderEventId: null, evaluatedDistanceKm: null, evaluatedReferenceDeltaMs: null, evaluatedProviderAgeMs: null,
   } satisfies InitialCgDiagnostics;
   const prior = enrichment.initialCgDiagnostics;

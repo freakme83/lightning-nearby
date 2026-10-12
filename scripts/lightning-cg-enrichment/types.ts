@@ -83,6 +83,9 @@ export type InitialCgDiagnostics = {
   rejectedReferenceTime: number;
   rejectedProviderStale: number;
   selectedProviderEventId: string | null;
+  selectedLatitude: number | null;
+  selectedLongitude: number | null;
+  selectedEventTimeMs: number | null;
   selectedDistanceKm: number | null;
   selectedReferenceDeltaMs: number | null;
   selectedProviderAgeMs: number | null;
