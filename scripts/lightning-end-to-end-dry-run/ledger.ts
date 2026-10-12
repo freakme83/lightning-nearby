@@ -26,7 +26,7 @@ export type LedgerDiagnostics = {
 // Storage is injected; neither the v1A policy nor the v1B.1 matcher performs I/O.
 export async function applyPersistentLedger(result: DryRunResult, context: DecisionContext,
   store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest;
-    nowMs?: () => number; recordedAt?: string; canonicalDistrict?: string | null } = {}): Promise<DryRunResult> {
+    nowMs?: () => number; recordedAt?: string } = {}): Promise<DryRunResult> {
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
@@ -37,10 +37,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
     publishDecision: decidePublish(result, { ...context, ...extra, persistentHistoryEnabled: Boolean(store) }),
   });
   const buildRecord = (value: DryRunResult) => {
-    const built = buildPublicationRecord(value, { runId: options.runId, recordedAt: options.recordedAt });
-    if (built.ok) built.record.canonicalDistrict = value.message?.ok && value.message.enrichmentStatus !== "cg_verified"
-      ? options.canonicalDistrict ?? null : null;
-    return built;
+    return buildPublicationRecord(value, { runId: options.runId, recordedAt: options.recordedAt });
   };
   if (!store) return finish({ publicationHistoryAvailable: false }, "not_configured", "Supabase ledger configuration is missing or invalid.");
   const provisional = { ...result, publishDecision: decidePublish(result, context) };
