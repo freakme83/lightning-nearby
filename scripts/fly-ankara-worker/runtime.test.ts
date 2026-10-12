@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
+import { matchInitialCgEvents } from "../lightning-cg-enrichment/initial.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
@@ -226,6 +227,88 @@ test("fresh WOULD_PUBLISH candidate follows enrichment, existing composer, dupli
   assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
   assert.equal(memory.records[0].publicationId.length > 0, true);
   assert.equal(events.some(row => row.kind === "publication_pending" && row.fields?.approvalStatus === "pending"), true);
+});
+
+test("qualified initial incident publishes a current 9 km CG with provider identity, time, place and map", async () => {
+  const selectedTime = baseNow - 90_000;
+  const lookupCoordinates: Array<[number, number]> = [];
+  const { runtime, memory, events } = setup({
+    enrich: async reference => ({ status: "cg_verified", provider: "xweather", reference,
+      thresholds: { ...DEFAULT_THRESHOLDS }, counts: { returned: 1, matched: 0, matchedCg: 0, matchedIc: 0 },
+      match: { id: "fixture-bayindir-cg", type: "cg", latitude: 39.9, longitude: 32.704,
+        eventTimeMs: selectedTime, distanceKm: 0, timeDifferenceMs: 0 } }),
+    reverse: async (latitude, longitude) => {
+      lookupCoordinates.push([latitude, longitude]);
+      return { latitude, longitude, provider: "fixture", displayLabel: "Bayındır, Mamak",
+        locality: "Bayındır", district: "Mamak", province: "Ankara", country: "Türkiye" };
+    },
+  });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.deepEqual(lookupCoordinates, [[39.9, 32.704]]);
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
+  assert.equal(memory.records[0].providerEventId, "fixture-bayindir-cg");
+  assert.equal(memory.records[0].locationLabel, "Bayındır, Mamak");
+  assert.equal(memory.records[0].cgMetadata?.eventTime, new Date(selectedTime).toISOString());
+  assert.equal(memory.records[0].cgMetadata?.latitude, 39.9);
+  assert.equal(memory.records[0].cgMetadata?.longitude, 32.704);
+  assert.equal(memory.records[0].mapUrl, "https://www.google.com/maps?q=39.9,32.704");
+  const pending = events.find(row => row.kind === "publication_pending")?.fields?.messageText as string;
+  assert.match(pending, /^#YILDIRIM\n9 Ekim 2026, 14:58 TSİ\nBayındır \/ Mamak civarında/);
+  assert.ok(pending.endsWith("\n\n39.900, 32.704"));
+  const telemetry = events.find(row => row.kind === "enrichment_complete")?.fields;
+  assert.equal(telemetry?.category, "accepted");
+  assert.equal(telemetry?.providerEventId, "fixture-bayindir-cg");
+  assert.ok((telemetry?.selectedDistanceKm as number) > 8.5);
+  assert.ok((telemetry?.selectedDistanceKm as number) < 9.5);
+  assert.ok((telemetry?.referenceTimeDeltaMs as number) < 150_000);
+  assert.equal(telemetry?.selectedEventAgeMs, 90_000);
+});
+
+test("raw CG matches failing each initial condition fall back to non-CG without a CG map", async () => {
+  const cases = [
+    { name: "distance", longitude: 32.724, time: baseNow - 1_000, referenceTime: baseNow,
+      outcome: "rejected_spatial" },
+    { name: "reference delta", longitude: 32.67, time: baseNow - 170_000, referenceTime: baseNow,
+      outcome: "rejected_reference_time" },
+    { name: "provider stale", longitude: 32.67, time: baseNow - 250_000, referenceTime: baseNow - 230_000,
+      outcome: "rejected_provider_stale" },
+  ] as const;
+  for (const item of cases) {
+    const { runtime, memory, events } = setup({ enrich: async reference => ({
+      status: "cg_verified", provider: "xweather", reference, thresholds: { ...DEFAULT_THRESHOLDS },
+      match: { id: `raw-${item.name}`, type: "cg", latitude: 39.9, longitude: item.longitude,
+        eventTimeMs: item.time, distanceKm: 0, timeDifferenceMs: 0 },
+    }) });
+    qualifyingEvents(runtime, item.referenceTime);
+    await runtime.drainCandidateWork();
+    assert.equal(memory.records.length, 1, item.name);
+    assert.equal(memory.records[0].enrichmentStatus, "no_match", item.name);
+    assert.equal(memory.records[0].providerEventId, null, item.name);
+    assert.equal(memory.records[0].mapUrl, null, item.name);
+    const pending = events.find(row => row.kind === "publication_pending")?.fields?.messageText as string;
+    assert.match(pending, /^#ŞİMŞEK\n/, item.name);
+    const telemetry = events.find(row => row.kind === "enrichment_complete")?.fields;
+    assert.equal(telemetry?.rawStatus, "cg_verified", item.name);
+    assert.equal(telemetry?.category, item.outcome, item.name);
+    assert.equal(telemetry?.initialCgAccepted, false, item.name);
+    assert.equal(telemetry?.evaluatedProviderEventId, `raw-${item.name}`, item.name);
+    assert.equal(telemetry?.evaluatedProviderAgeMs, baseNow - item.time, item.name);
+  }
+});
+
+test("initial IC-only and empty provider results keep ŞİMŞEK wording", async () => {
+  for (const candidate of ["ic_only", "no_match"] as const) {
+    const { runtime, memory, events } = setup({ enrich: async reference => matchInitialCgEvents(reference,
+      candidate === "ic_only" ? [{ id: "ic-1", type: "ic", latitude: reference.latitude,
+        longitude: reference.longitude, eventTimeMs: reference.eventTimeMs }] : [], baseNow) });
+    qualifyingEvents(runtime);
+    await runtime.drainCandidateWork();
+    assert.equal(memory.records[0].enrichmentStatus, candidate);
+    assert.match(events.find(row => row.kind === "publication_pending")?.fields?.messageText as string, /^#ŞİMŞEK\n/);
+    assert.equal(events.find(row => row.kind === "enrichment_complete")?.fields?.category, "no_cg_returned");
+  }
 });
 
 test("a new pending row is notified exactly once, after Supabase insertion, using exact composer output", async () => {

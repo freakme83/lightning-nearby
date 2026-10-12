@@ -63,6 +63,7 @@ export type EnrichmentResult = {
     cgRejectedBoth: number;
   };
   match?: LightningMatch;
+  initialCgDiagnostics?: InitialCgDiagnostics;
   cost?: CostDiagnostics;
   failure?: "missing_credentials" | "network_error" | "http_error" | "malformed_response";
   httpStatus?: number;
@@ -72,4 +73,21 @@ export type ParsedXweatherPayload = {
   events: XweatherLightningEvent[];
   counts: MatchCounts;
   cost: CostDiagnostics;
+};
+
+export type InitialCgDiagnostics = {
+  outcome: "accepted" | "no_cg_returned" | "rejected_spatial" | "rejected_reference_time" |
+    "rejected_provider_stale" | "provider_unavailable" | "no_eligible_cg";
+  returnedCg: number | null;
+  rejectedSpatial: number;
+  rejectedReferenceTime: number;
+  rejectedProviderStale: number;
+  selectedProviderEventId: string | null;
+  selectedDistanceKm: number | null;
+  selectedReferenceDeltaMs: number | null;
+  selectedProviderAgeMs: number | null;
+  evaluatedProviderEventId: string | null;
+  evaluatedDistanceKm: number | null;
+  evaluatedReferenceDeltaMs: number | null;
+  evaluatedProviderAgeMs: number | null;
 };

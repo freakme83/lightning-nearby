@@ -19,7 +19,8 @@ import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts
 import { NominatimReverseGeocoder } from "../lightning-location-naming/nominatim.ts";
 import type { AutoPublishFailureNotifier, PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { autoPublishNewPending, type FlyAutoPublish } from "./auto-publish.ts";
-import { enrichIncidentWithLightningType } from "../lightning-cg-enrichment/xweather.ts";
+import { enrichIncidentWithLightningType, enrichInitialIncidentWithLightningType } from "../lightning-cg-enrichment/xweather.ts";
+import { enforceInitialCgAcceptance } from "../lightning-cg-enrichment/initial.ts";
 import { CgProbeCoordinator } from "../lightning-cg-repeat-policy/coordinator.ts";
 import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type CgAdmissionRequest } from "../lightning-cg-repeat-policy/admission.ts";
 import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
@@ -313,7 +314,7 @@ export class AnkaraFlyPipeline {
     let controller = this.controllers.get(incidentId);
     if (controller) return controller;
     controller = new PairedValidationController({
-      ...(this.enrich ? { enrich: this.enrich } : {}),
+      enrich: this.enrich ?? (reference => enrichInitialIncidentWithLightningType(reference, { now: this.now })),
       writeArtifact: artifact => this.queueCandidateProcessing(incidentId, artifact),
       nowMs: this.now,
       onStaleTriggerSkipped: diagnostic => {
@@ -364,13 +365,28 @@ export class AnkaraFlyPipeline {
       this.emit("candidate_outcome", { incidentId, status: artifact.status, reason: "no_paired_candidate" });
       return;
     }
+    // The provider's raw match is not publication authorization. Recheck currentness
+    // immediately before the initial artifact can reach naming and composition.
+    const publicationArtifact = repeat ? artifact : {
+      ...artifact, enrichment: enforceInitialCgAcceptance(artifact.enrichment, this.now()),
+    };
     if (!repeat) {
-      const telemetry = cgProviderTelemetry(artifact.enrichment, artifact.incident.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
-      this.cgProviderResults[`initial:${telemetry.category}`] = (this.cgProviderResults[`initial:${telemetry.category}`] ?? 0) + 1;
-      this.emit("enrichment_complete", { incidentId, status: artifact.enrichment.status, ...telemetry });
+      const diagnostics = publicationArtifact.enrichment.initialCgDiagnostics!;
+      this.cgProviderResults[`initial:${diagnostics.outcome}`] = (this.cgProviderResults[`initial:${diagnostics.outcome}`] ?? 0) + 1;
+      this.emit("enrichment_complete", { incidentId, status: publicationArtifact.enrichment.status,
+        rawStatus: artifact.enrichment.status, category: diagnostics.outcome,
+        initialCgAccepted: diagnostics.outcome === "accepted", counts: artifact.enrichment.counts ?? null,
+        matchDiagnostics: artifact.enrichment.matchDiagnostics ?? null, initialCgDiagnostics: diagnostics,
+        providerEventId: diagnostics.selectedProviderEventId, selectedDistanceKm: diagnostics.selectedDistanceKm,
+        referenceTimeDeltaMs: diagnostics.selectedReferenceDeltaMs,
+        selectedEventAgeMs: diagnostics.selectedProviderAgeMs,
+        evaluatedProviderEventId: diagnostics.evaluatedProviderEventId,
+        evaluatedDistanceKm: diagnostics.evaluatedDistanceKm,
+        evaluatedReferenceDeltaMs: diagnostics.evaluatedReferenceDeltaMs,
+        evaluatedProviderAgeMs: diagnostics.evaluatedProviderAgeMs });
     }
     try {
-      let result = await continueFromPairedArtifact(artifact, {
+      let result = await continueFromPairedArtifact(publicationArtifact, {
         ...(this.reverse ? { reverse: this.reverse } : {}),
       });
       if (result.location && "normalized" in result.location && result.location.normalized.displayLabel) {

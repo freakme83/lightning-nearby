@@ -1,6 +1,7 @@
 import { matchLightningEvents, resolveThresholds, validateReference } from "./match.ts";
+import { matchInitialCgEvents } from "./initial.ts";
 import type {
-  CostDiagnostics, EnrichmentOptions, EnrichmentReference, EnrichmentResult, ParsedXweatherPayload,
+  CostDiagnostics, EnrichmentOptions, EnrichmentReference, EnrichmentResult, MatchThresholds, ParsedXweatherPayload,
   XweatherLightningEvent,
 } from "./types.ts";
 
@@ -80,8 +81,10 @@ function unavailable(reference: EnrichmentReference, thresholds: ReturnType<type
     ...(httpStatus === undefined ? {} : { httpStatus }) };
 }
 
-export async function enrichIncidentWithLightningType(reference: EnrichmentReference, options: EnrichmentOptions = {},
-  dependencies: { fetch?: FetchLike; env?: Record<string, string | undefined> } = {}): Promise<EnrichmentResult> {
+type Dependencies = { fetch?: FetchLike; env?: Record<string, string | undefined> };
+
+async function queryXweather(reference: EnrichmentReference, options: EnrichmentOptions, dependencies: Dependencies,
+  classify: (payload: ParsedXweatherPayload, thresholds: MatchThresholds) => EnrichmentResult): Promise<EnrichmentResult> {
   validateReference(reference);
   const thresholds = resolveThresholds(options);
   const env = dependencies.env ?? process.env;
@@ -101,8 +104,21 @@ export async function enrichIncidentWithLightningType(reference: EnrichmentRefer
   try { payload = await response.json(); } catch { return { ...unavailable(reference, thresholds, "malformed_response", response.status), cost }; }
   try {
     const parsed = parseXweatherPayload(payload, response.headers);
-    return matchLightningEvents(reference, parsed.events, thresholds, parsed.cost);
+    return classify(parsed, thresholds);
   } catch {
     return { ...unavailable(reference, thresholds, "malformed_response", response.status), cost };
   }
+}
+
+export function enrichIncidentWithLightningType(reference: EnrichmentReference, options: EnrichmentOptions = {},
+  dependencies: Dependencies = {}): Promise<EnrichmentResult> {
+  return queryXweather(reference, options, dependencies,
+    (parsed, thresholds) => matchLightningEvents(reference, parsed.events, thresholds, parsed.cost));
+}
+
+/** One existing-radius provider request; initial CG acceptance is separate from repeat matching. */
+export function enrichInitialIncidentWithLightningType(reference: EnrichmentReference,
+  dependencies: Dependencies & { now?: () => number } = {}): Promise<EnrichmentResult> {
+  return queryXweather(reference, {}, dependencies,
+    parsed => matchInitialCgEvents(reference, parsed.events, (dependencies.now ?? Date.now)(), parsed.cost));
 }
