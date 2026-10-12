@@ -4,6 +4,7 @@ import { backoffMs, parseFrame, subscription } from "../live-lightning-listener/
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { createFlyAutoPublish } from "./auto-publish.ts";
+import { OuterAreaDigestShadow } from "./outer-area-digest-shadow.ts";
 
 const endpoint = "wss://live2.lightningmaps.org/";
 const box = ANKARA_MONITORING_AREA.bounds;
@@ -12,6 +13,7 @@ const frameTimeoutMs = 90_000;
 const lastIds: Record<string, number> = {};
 const counters = { messages: 0, decoded: 0, connections: 0, reconnects: 0, malformed: 0 };
 const startedAt = Date.now();
+const outerAreaDigest = new OuterAreaDigestShadow();
 let stopping = false;
 let sourceHealthy = false;
 let lastFrameAt: number | null = null;
@@ -21,7 +23,11 @@ let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 let resolveSleep: (() => void) | null = null;
 
 function emit(kind: string, fields: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ kind, at: new Date().toISOString(), ...fields }));
+  const at = new Date().toISOString();
+  console.log(JSON.stringify({ kind, at, ...fields }));
+  if (kind !== "publication_pending" || typeof fields.incidentId !== "string" || typeof fields.messageText !== "string") return;
+  const evaluation = outerAreaDigest.observePublication({ incidentId: fields.incidentId, atMs: Date.parse(at), messageText: fields.messageText });
+  if (evaluation) console.log(JSON.stringify({ kind: "outer_area_digest_shadow", at: new Date().toISOString(), ...evaluation }));
 }
 
 let runtime: AnkaraFlyPipeline;
@@ -55,6 +61,7 @@ function summary(reason = "periodic") {
     lastFrameAt: lastFrameAt === null ? null : new Date(lastFrameAt).toISOString(),
     ...counters,
     ...runtime.summary(Date.now()),
+    outerAreaDigest: outerAreaDigest.summary(),
   });
 }
 
