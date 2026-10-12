@@ -21,9 +21,9 @@ test("CG produces URL-free public coordinates and a full-precision internal map"
   if (!result.ok) return;
   assert.equal(result.hashtag, "#YILDIRIM");
   assert.equal(result.eventKind, "cg_verified");
-  assert.equal(result.dateTimeText, "6 Ekim 2026, 16:48 TSİ");
+  assert.equal(result.dateTimeText, "Ankara’da, 6 Ekim 2026, 16:48 TSİ");
   assert.equal(result.locationText, "Aşağı Ayrancı / Çankaya");
-  assert.equal(result.eventText, `Aşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım ${verbForIncident(input.incident.id)}.`);
+  assert.equal(result.eventText, "Aşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.");
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.902742,32.851494");
   assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText, "", "39.903, 32.851"]);
   assert.equal(result.text.includes("40.1,33.1"), false);
@@ -46,17 +46,19 @@ for (const [name, input] of Object.entries({
     assert.equal(result.hashtag, "#ŞİMŞEK");
     assert.equal(result.mapUrl, null);
     assert.equal(result.coordinateText, null);
+    assert.match(result.dateTimeText, /^Ankara’da, /);
     assert.doesNotMatch(result.text, /https?:\/\/|^-?\d+\.\d+, -?\d+\.\d+$/m);
     assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText]);
-    assert.match(result.eventText, / civarında şimşek (tespit edildi|kaydedildi)\.$/);
+    assert.match(result.eventText, / civarında şimşek kaydedildi\.$/);
     assert.doesNotMatch(result.text, /CG|Xweather|provider|unavailable|no_match|doğrulanamadı|yere ulaşan|google\.com\/maps/i);
   });
 }
 
-test("stable incident IDs always choose an allowed verb and fixture IDs exercise both", () => {
+test("public templates always use kaydedildi while the legacy verb helper remains deterministic", () => {
   const first = compose(generic);
   assert.deepEqual(first, compose(generic));
   assert.equal(first.ok, true);
+  if (first.ok) assert.match(first.eventText, / kaydedildi\.$/);
   const verbs = new Set(Object.values(COMPOSER_FIXTURES).map(item => verbForIncident(item.incident.id)));
   assert.deepEqual(verbs, new Set(["tespit edildi", "kaydedildi"]));
 });
@@ -84,9 +86,11 @@ test("selected CG coordinates round deterministically to three decimals, preserv
 test("CG public character budget excludes internal URL and still enforces exactly 280", () => {
   const short = compose(urban);
   assert.ok(short.ok);
+  if (!short.ok) return;
   const prefix = "A".repeat(280 - short.characterCount);
   const boundary = compose({ ...urban, locationDisplayLabel: prefix + urban.locationDisplayLabel });
   assert.ok(boundary.ok);
+  if (!boundary.ok) return;
   assert.equal(boundary.characterCount, 280);
   assert.ok(boundary.mapUrl);
   const tooLong = compose({ ...urban, locationDisplayLabel: prefix + "A" + urban.locationDisplayLabel });
@@ -97,12 +101,12 @@ test("CG public character budget excludes internal URL and still enforces exactl
   }
 });
 
-test("Istanbul time, Turkish month, year, minutes, and TSİ suffix are explicit", () => {
+test("Ankara scope, Istanbul time, Turkish month, year, minutes, and TSİ suffix are explicit", () => {
   const input = { ...generic, incident: { id: "september", lastActivityTimeMs: Date.parse("2026-09-21T17:51:42Z") } };
   const result = compose(input);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.dateTimeText, "21 Eylül 2026, 20:51 TSİ");
+  assert.equal(result.dateTimeText, "Ankara’da, 21 Eylül 2026, 20:51 TSİ");
   assert.doesNotMatch(result.dateTimeText, /:42|UTC/);
 });
 
