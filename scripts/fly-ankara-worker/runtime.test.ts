@@ -102,13 +102,17 @@ function qualifyingEvents(runtime: AnkaraFlyPipeline, time = baseNow, processing
 }
 
 async function processOuterDistrictCandidate(memory: ReturnType<typeof memoryStore>, at: number,
-  district: string, options: { province?: string; locality?: string; cg?: boolean; missingDistrict?: boolean } = {}) {
+  district: string, options: { province?: string; locality?: string; localityKind?: ReverseGeocodeResult["localityKind"];
+    neighborhood?: string; cg?: boolean; missingDistrict?: boolean } = {}) {
   const current = at;
-  const locality = options.locality ?? "Yamak";
+  const locality = options.missingDistrict ? district : options.locality ?? "Yamak";
   const reverse = async (latitude: number, longitude: number): Promise<ReverseGeocodeResult> => ({
     latitude, longitude, provider: "fixture",
-    displayLabel: options.missingDistrict ? `${district}, ${options.province ?? "Ankara"}` : `${locality}, ${district}`,
-    locality: options.missingDistrict ? district : locality,
+    displayLabel: options.missingDistrict ? `${options.neighborhood ? `${options.neighborhood}, ` : ""}${district}` :
+      `${locality}, ${district}`,
+    locality,
+    ...(options.localityKind ? { localityKind: options.localityKind } : {}),
+    ...(options.neighborhood ? { neighborhood: options.neighborhood } : {}),
     ...(options.missingDistrict ? {} : { district }), province: options.province ?? "Ankara", country: "Türkiye",
   });
   const fixture = setup({ store: memory.store, now: () => current, reverse,
@@ -356,6 +360,27 @@ test("outer district cooldowns are independent, while central, Kulu, and ambiguo
     "ambiguous district retains the existing publication behavior");
   assert.equal(memory.records.filter(record => record.canonicalDistrict === "Haymana").length, 1);
   assert.equal(memory.records.filter(record => record.canonicalDistrict === "Polatlı").length, 1);
+});
+
+test("town-level Haymana identity activates the district-wide non-CG cooldown", async () => {
+  const memory = memoryStore();
+  const start = Date.parse("2026-10-12T14:00:00.000Z");
+  const first = await processOuterDistrictCandidate(memory, start, "Haymana", {
+    missingDistrict: true, localityKind: "town", neighborhood: "Güzelcekale",
+  });
+  assert.equal(first.events.find(row => row.kind === "outer_district_non_cg_cooldown")?.fields?.outcome,
+    "allowed_no_prior_publication");
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.records[0].canonicalDistrict, "Haymana");
+
+  const second = await processOuterDistrictCandidate(memory, start + 60 * 60_000, "Haymana", {
+    missingDistrict: true, localityKind: "town", neighborhood: "Yamak",
+  });
+  assert.equal(second.events.find(row => row.kind === "outer_district_non_cg_cooldown")?.fields?.canonicalDistrict,
+    "Haymana");
+  assert.equal(second.events.find(row => row.kind === "outer_district_non_cg_cooldown")?.fields?.outcome,
+    "held_within_cooldown");
+  assert.equal(memory.records.length, 1, "town locality must not bypass the district cooldown");
 });
 
 test("raw CG matches failing each initial condition fall back to non-CG without a CG map", async () => {
