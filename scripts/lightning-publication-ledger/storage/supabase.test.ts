@@ -17,6 +17,7 @@ const row = { publication_id: "pub_prior", run_id: "1", incident_id: "i-000002",
   incident_reference_time: candidate.incidentReferenceTime, incident_latitude: 41.5,
   incident_longitude: 12.8, provider: "xweather", enrichment_status: "cg_verified",
   provider_event_id: "event-1", provider_event_type: "cg", location_label: "Lenola, Latina",
+  canonical_district: null,
   message_fingerprint: candidate.messageFingerprint, decision: "PUBLISHED", recorded_at: candidate.recordedAt,
   platform_post_id: null };
 const config = { url: "https://example.supabase.co", serviceRoleKey: "SECRET_DO_NOT_LEAK" };
@@ -30,7 +31,7 @@ test("scoped provider and strict fingerprint/time history queries map actual tab
   const records = await store.loadRelevantPublicationHistory(candidate);
   assert.equal(records.length, 1);
   assert.deepEqual(records[0], { ...candidate, publicationId: "pub_prior", runId: "1", incidentId: "i-000002",
-    decision: "PUBLISHED", platformPostId: null });
+    decision: "PUBLISHED", platformPostId: null, canonicalDistrict: null });
   assert.equal(urls[0].searchParams.get("provider"), "eq.xweather");
   assert.equal(urls[0].searchParams.get("provider_event_id"), "eq.event-1");
   assert.equal(urls[1].searchParams.get("message_fingerprint"), `eq.${candidate.messageFingerprint}`);
@@ -60,6 +61,24 @@ test("no provider ID queries only strict fallback; exact publication ID write ig
   assert.equal(urls[0].searchParams.get("provider_event_id"), null);
   assert.equal(await store.insertPublicationRecord(candidate, exactMessageText), "already_present");
   assert.equal(urls[1].searchParams.get("on_conflict"), "publication_id");
+});
+
+test("district cooldown history query returns the latest admitted non-CG row", async () => {
+  const urls: URL[] = [];
+  const store = createSupabaseLedger(config, (async (input: RequestInfo | URL) => {
+    urls.push(new URL(String(input)));
+    return Response.json([{ ...row, decision: "WOULD_PUBLISH", enrichment_status: "no_match",
+      provider_event_id: null, provider_event_type: null, canonical_district: "Haymana" }]);
+  }) as typeof fetch);
+  const prior = await store.loadLastOuterDistrictNonCgPublication!("Haymana");
+  assert.equal(prior?.canonicalDistrict, "Haymana");
+  assert.equal(prior?.decision, "WOULD_PUBLISH");
+  assert.equal(urls.length, 1);
+  assert.equal(urls[0].searchParams.get("canonical_district"), "eq.Haymana");
+  assert.equal(urls[0].searchParams.get("enrichment_status"), "neq.cg_verified");
+  assert.equal(urls[0].searchParams.get("decision"), "in.(WOULD_PUBLISH,PUBLISHED)");
+  assert.equal(urls[0].searchParams.get("order"), "recorded_at.desc");
+  assert.equal(urls[0].searchParams.get("limit"), "1");
 });
 
 test("configuration and response errors expose no service-role credential", async () => {

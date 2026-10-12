@@ -14,6 +14,7 @@ import type { PairedEnrichmentFunction, PairedValidationArtifact } from "../ligh
 import { continueFromPairedArtifact, withPublishDecision } from "../lightning-end-to-end-dry-run/orchestrate.ts";
 import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
+import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { NominatimReverseGeocoder } from "../lightning-location-naming/nominatim.ts";
@@ -27,6 +28,7 @@ import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightni
 import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
 import { cgProviderTelemetry } from "./telemetry.ts";
 import { StormEvolutionShadow } from "./storm-evolution.ts";
+import { evaluateOuterDistrictCooldown, OUTER_DISTRICT_NON_CG_COOLDOWN_MS, resolveOuterDistrict } from "../lightning-outer-district-cooldown/policy.ts";
 
 type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
 
@@ -105,6 +107,8 @@ export class AnkaraFlyPipeline {
   private firstCgShadowEligible = 0;
   private readonly stormEvolution = new StormEvolutionShadow();
   private readonly stormEvolutionWork = new Map<string, Promise<void>>();
+  private readonly outerDistrictNonCgCooldown = { evaluated: 0, allowed: 0, held: 0,
+    notApplicable: 0, locationUnavailable: 0, historyUnavailable: 0 };
 
   constructor(dependencies: RuntimeDependencies) {
     this.store = dependencies.store;
@@ -240,6 +244,7 @@ export class AnkaraFlyPipeline {
         providerResults: { ...this.cgProviderResults }, admissionsSuppressed: this.cgAdmissionsSuppressed,
         admissionsAccepted: this.cgAdmissionsAccepted,
         firstCgShadowOpportunities: this.firstCgShadowOpportunities, firstCgShadowEligible: this.firstCgShadowEligible },
+      outerDistrictNonCgCooldown: { ...this.outerDistrictNonCgCooldown },
       stormEvolution: { ...this.stormEvolution.counters, inFlightLookups: this.stormEvolutionWork.size },
     };
   }
@@ -409,8 +414,76 @@ export class AnkaraFlyPipeline {
           repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(),
           ...(repeat.predecessorId ? { predecessorScopeId: this.repeatScopeId(repeat.predecessorId) } : {}) } : {}) };
       result = withPublishDecision(result, context);
+      let cooldownDistrict: string | null = null;
+      let cooldownRecordedAt: string | undefined;
+      if (!repeat && result.status === "message_preview_ready" && result.message?.ok &&
+          result.message.composer.hashtag === "#ŞİMŞEK" && result.publishDecision?.decision === "WOULD_PUBLISH") {
+        const normalized = result.location && "normalized" in result.location ? result.location.normalized : null;
+        const resolution = resolveOuterDistrict(normalized);
+        if (resolution.outcome === "not_applicable_district") {
+          this.outerDistrictNonCgCooldown.notApplicable++;
+        } else if (resolution.outcome === "location_unavailable") {
+          this.outerDistrictNonCgCooldown.locationUnavailable++;
+          const candidateAt = new Date(this.now()).toISOString();
+          this.emit("outer_district_non_cg_cooldown", { incidentId,
+            district: normalized?.district ?? null, canonicalDistrict: null,
+            cooldownMs: OUTER_DISTRICT_NON_CG_COOLDOWN_MS, previousNonCgPublishedAt: null,
+            candidateAt, elapsedMs: null, outcome: "location_unavailable", remainingMs: null });
+        } else {
+          this.outerDistrictNonCgCooldown.evaluated++;
+          const candidateAtMs = this.now();
+          const candidateAt = new Date(candidateAtMs).toISOString();
+          let previous: PublicationRecord | null;
+          try {
+            if (!this.store.loadLastOuterDistrictNonCgPublication) throw new Error("District cooldown history is unavailable.");
+            previous = await this.store.loadLastOuterDistrictNonCgPublication(resolution.canonicalDistrict);
+          } catch {
+            this.outerDistrictNonCgCooldown.historyUnavailable++;
+            this.outerDistrictNonCgCooldown.held++;
+            this.emit("outer_district_non_cg_cooldown", { incidentId, district: normalized?.district ?? null,
+              canonicalDistrict: resolution.canonicalDistrict, cooldownMs: OUTER_DISTRICT_NON_CG_COOLDOWN_MS,
+              previousNonCgPublishedAt: null, candidateAt, elapsedMs: null,
+              outcome: "history_unavailable", remainingMs: null });
+            this.emit("candidate_outcome", { incidentId, status: result.status, decision: "HOLD",
+              reason: "outer_district_cooldown_history_unavailable" });
+            return;
+          }
+          const previousAtMs = previous ? Date.parse(previous.recordedAt) : null;
+          if (previous && !Number.isFinite(previousAtMs)) {
+            this.outerDistrictNonCgCooldown.historyUnavailable++;
+            this.outerDistrictNonCgCooldown.held++;
+            this.emit("outer_district_non_cg_cooldown", { incidentId, district: normalized?.district ?? null,
+              canonicalDistrict: resolution.canonicalDistrict, cooldownMs: OUTER_DISTRICT_NON_CG_COOLDOWN_MS,
+              previousNonCgPublishedAt: previous.recordedAt, candidateAt, elapsedMs: null,
+              outcome: "history_unavailable", remainingMs: null });
+            this.emit("candidate_outcome", { incidentId, status: result.status, decision: "HOLD",
+              reason: "outer_district_cooldown_history_unavailable" });
+            return;
+          }
+          const decision = evaluateOuterDistrictCooldown(candidateAtMs, previousAtMs);
+          if (decision.outcome === "held_within_cooldown") {
+            this.outerDistrictNonCgCooldown.held++;
+            this.emit("outer_district_non_cg_cooldown", { incidentId, district: normalized?.district ?? null,
+              canonicalDistrict: resolution.canonicalDistrict, cooldownMs: OUTER_DISTRICT_NON_CG_COOLDOWN_MS,
+              previousNonCgPublishedAt: previous?.recordedAt ?? null, candidateAt,
+              elapsedMs: decision.elapsedMs, outcome: decision.outcome, remainingMs: decision.remainingMs });
+            this.emit("candidate_outcome", { incidentId, status: result.status, decision: "HOLD",
+              reason: "outer_district_non_cg_cooldown", remainingMs: decision.remainingMs });
+            return;
+          }
+          this.outerDistrictNonCgCooldown.allowed++;
+          cooldownDistrict = resolution.canonicalDistrict;
+          cooldownRecordedAt = candidateAt;
+          this.emit("outer_district_non_cg_cooldown", { incidentId, district: normalized?.district ?? null,
+            canonicalDistrict: resolution.canonicalDistrict, cooldownMs: OUTER_DISTRICT_NON_CG_COOLDOWN_MS,
+            previousNonCgPublishedAt: previous?.recordedAt ?? null, candidateAt,
+            elapsedMs: decision.elapsedMs, outcome: decision.outcome, remainingMs: null });
+        }
+      }
       result = await applyPersistentLedger(result, context, this.store,
-        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now });
+        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
+          ...(cooldownRecordedAt ? { recordedAt: cooldownRecordedAt } : {}),
+          ...(cooldownDistrict ? { canonicalDistrict: cooldownDistrict } : {}) });
       const repeatPlace = result.location && "normalized" in result.location ? {
         ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
       if (repeat) {
