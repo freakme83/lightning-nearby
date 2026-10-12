@@ -14,7 +14,6 @@ import type { PairedEnrichmentFunction, PairedValidationArtifact } from "../ligh
 import { continueFromPairedArtifact, withPublishDecision } from "../lightning-end-to-end-dry-run/orchestrate.ts";
 import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
-import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { NominatimReverseGeocoder } from "../lightning-location-naming/nominatim.ts";
