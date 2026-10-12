@@ -30,6 +30,20 @@ Live observations are separate from the forecast:
 
 ---
 
+## Ankara Live-Lightning Research Track
+
+Alongside the production PWA, this repository contains a separate Ankara-focused live-lightning research system. It is experimental operational research, not part of the forecast classifier and not an official warning service.
+
+The current research pipeline runs an always-on LightningMaps feed through a local Ankara monitoring polygon, clustering and Profile B incident lifecycle, Xweather CG enrichment, Nominatim place naming, the shared Turkish message composer, a Supabase publication ledger, Telegram operator notification, guarded auto-approval, and the existing GitHub X Publisher.
+
+The research goal is not to reproduce a raw strike feed. It is to publish concise, useful information while avoiding repeated posts that say essentially the same thing. A qualified incident, a first verified cloud-to-ground event, a meaningfully new CG location, and supported spread into a new area are treated as distinct possible information transitions.
+
+Initial publication enrichment is currently CG-first: after an incident independently qualifies, a current Xweather CG within 10 km, within 150 seconds of the reference time, and no more than 240 seconds old may authorize `#YILDIRIM`; otherwise the normal `#ŞİMŞEK` path remains. Repeat-CG admission is intentionally a separate policy.
+
+Storm-evolution logic is currently shadow-only, and additional publication behavior is being activated only after field evidence. See **[Ankara live-lightning research roadmap](./docs/ankara-live-lightning-roadmap.md)** for the current architecture, completed milestones, active experiments, guardrails, known limitations, and prioritized next work.
+
+---
+
 ## Initial MVP
 
 The first version should remain deliberately small.
