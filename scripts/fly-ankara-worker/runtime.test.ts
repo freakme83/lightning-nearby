@@ -7,6 +7,7 @@ import { createSupabaseLedger, type LedgerStore } from "../lightning-publication
 import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
+import { extractProviderAddressHierarchy, makeDisplayLabel, normalizeNominatimAddress } from "../lightning-location-naming/normalize.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import { createPendingPublicationNotifier, type PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { AnkaraFlyPipeline, validateFlyPipelineEnvironment } from "./runtime.ts";
@@ -108,6 +109,40 @@ test("worker summaries omit event arrays without altering clustering snapshots",
   assert.equal(summary.clusters[0].eventCount, 3);
   assert.equal(runtime.pipeline.clusterer.clusters[0].recentEvents.length, 3);
   assert.equal(summary.cgRepeat.queued, 0);
+  assert.equal(JSON.stringify(summary.stormEvolution).includes("recentEvents"), false);
+});
+
+test("published active incident's new supported neighborhood is shadow-only", async () => {
+  let lookupCalls = 0; let notifications = 0;
+  const { runtime, memory, events } = setup({
+    enrich: async reference => ({ status: "no_match", provider: "xweather", reference,
+      thresholds: DEFAULT_THRESHOLDS, counts: { returned: 0, matched: 0, matchedCg: 0, matchedIc: 0 } }),
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    reverse: async (latitude, longitude) => {
+      lookupCalls++;
+      const payload = { address: { neighbourhood: longitude > 32.64 ? "Törekent" : "Etiler",
+        city: "Ankara", county: longitude > 32.64 ? "Sincan" : "Etimesgut",
+        state: "Ankara", country: "Türkiye" } };
+      const normalized = normalizeNominatimAddress(payload);
+      return { ...normalized, latitude, longitude, provider: "fixture",
+        displayLabel: makeDisplayLabel(normalized), providerAddress: extractProviderAddressHierarchy(payload) };
+    },
+  });
+  qualifyingEvents(runtime);
+  await runtime.drainCandidateWork();
+  assert.equal(memory.records.length, 1);
+  runtime.acceptEvent(event(50, { latitude: 39.9, longitude: 32.6 }), baseNow);
+  runtime.acceptEvent(event(51, { latitude: 39.9, longitude: 32.67 }), baseNow);
+  runtime.acceptEvent(event(52, { latitude: 39.9001, longitude: 32.67 }), baseNow);
+  await runtime.drainCandidateWork();
+  const candidate = events.find(row => row.kind === "storm_evolution_shadow" && row.fields?.eligible === true);
+  assert.ok(candidate);
+  assert.equal((candidate.fields?.newlySupportedLocations as string[]).length, 1);
+  assert.equal(memory.records.length, 1);
+  assert.equal(notifications, 1);
+  assert.equal(lookupCalls, 2, "one normal naming call and one bounded shadow lookup");
+  assert.equal(runtime.summary().stormEvolution.stormEvolutionEligible, 1);
+  assert.equal(JSON.stringify(runtime.summary()).includes("recentEvents"), false);
 });
 
 test("worker recovers an expired continuing cluster through the unchanged initial publication path", async () => {

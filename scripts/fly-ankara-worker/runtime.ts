@@ -16,6 +16,7 @@ import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
+import { NominatimReverseGeocoder } from "../lightning-location-naming/nominatim.ts";
 import type { AutoPublishFailureNotifier, PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { autoPublishNewPending, type FlyAutoPublish } from "./auto-publish.ts";
 import { enrichIncidentWithLightningType } from "../lightning-cg-enrichment/xweather.ts";
@@ -24,6 +25,7 @@ import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type 
 import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
 import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
 import { cgProviderTelemetry } from "./telemetry.ts";
+import { StormEvolutionShadow } from "./storm-evolution.ts";
 
 type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
 
@@ -100,6 +102,8 @@ export class AnkaraFlyPipeline {
   private cgAdmissionsAccepted = 0;
   private firstCgShadowOpportunities = 0;
   private firstCgShadowEligible = 0;
+  private readonly stormEvolution = new StormEvolutionShadow();
+  private readonly stormEvolutionWork = new Map<string, Promise<void>>();
 
   constructor(dependencies: RuntimeDependencies) {
     this.store = dependencies.store;
@@ -183,6 +187,13 @@ export class AnkaraFlyPipeline {
     };
     this.processTransitions(this.lifecycle.tick(processingTimeMs));
     this.processTransitions(this.lifecycle.observe(observation), observation);
+    const associated = this.lifecycle.incidents.find(incident => incident.status === "active" &&
+      incident.sourceClusterIds.includes(observation.sourceClusterId));
+    if (associated) {
+      this.stormEvolution.observe(associated.id, observation.sourceClusterId,
+        observation.latitude, observation.longitude, observation.eventTimeMs);
+      this.scheduleStormEvolution(associated.id, processingTimeMs);
+    }
     this.repeatProbes.pump();
     return accepted;
   }
@@ -195,6 +206,11 @@ export class AnkaraFlyPipeline {
     this.processTransitions(this.lifecycle.tick(nowMs));
     this.pruneHistoricalState(nowMs);
     this.repeatProbes.pump();
+    for (const incident of this.lifecycle.incidents) {
+      if (incident.status !== "active") continue;
+      this.scheduleStormEvolution(incident.id, nowMs);
+      this.emitStormEvolution(incident.id, nowMs);
+    }
     return {
       ...state,
       clusters: state.clusters.map(({ recentEvents: _events, ...cluster }) => cluster),
@@ -223,6 +239,7 @@ export class AnkaraFlyPipeline {
         providerResults: { ...this.cgProviderResults }, admissionsSuppressed: this.cgAdmissionsSuppressed,
         admissionsAccepted: this.cgAdmissionsAccepted,
         firstCgShadowOpportunities: this.firstCgShadowOpportunities, firstCgShadowEligible: this.firstCgShadowEligible },
+      stormEvolution: { ...this.stormEvolution.counters, inFlightLookups: this.stormEvolutionWork.size },
     };
   }
 
@@ -232,6 +249,7 @@ export class AnkaraFlyPipeline {
     this.repeatProbes.pump();
     await this.repeatProbes.drain();
     await this.processingQueue;
+    await Promise.all([...this.stormEvolutionWork.values()]);
   }
 
   private applyHealthTransition(transition: ReturnType<SourceHealthTracker["frame"]>): void {
@@ -412,6 +430,15 @@ export class AnkaraFlyPipeline {
           result.ledger.duplicateMatch?.duplicate === false && result.ledger.persistedPublicationId &&
           result.message?.ok && result.publishDecision.messageReady && result.publishDecision.locationUsable &&
           result.message.enrichmentStatus !== "provider_unavailable") {
+        if (!repeat && result.location && "normalized" in result.location && result.location.normalized.displayLabel) {
+          const coordinate = result.location.requested;
+          this.stormEvolution.setBaseline(incidentId, coordinate.latitude, coordinate.longitude, {
+            ...result.location.normalized, providerAddress: result.location.providerAddress,
+            latitude: coordinate.latitude, longitude: coordinate.longitude,
+            displayLabel: result.location.normalized.displayLabel, provider: result.location.provider,
+          });
+          this.scheduleStormEvolution(incidentId, this.now());
+        }
         this.pendingCount++;
         this.emit("publication_pending", { incidentId, publicationId: result.ledger.persistedPublicationId,
           approvalStatus: "pending", decision: result.publishDecision?.decision ?? null,
@@ -458,11 +485,37 @@ export class AnkaraFlyPipeline {
     const retainedClusterIds = new Set(this.pipeline.clusterer.clusters.map(cluster => cluster.id));
     const removedIncidentIds = this.lifecycle.pruneClosed(nowMs, retainedClusterIds, this.candidateWork);
     for (const id of removedIncidentIds) {
+      this.stormEvolution.forget(id);
       this.controllers.delete(id);
       this.repeatProbes.forget(this.repeatScopeId(id));
       this.repeatPredecessors.delete(id);
     }
     this.policy.pruneClosed(nowMs);
+  }
+
+  private scheduleStormEvolution(incidentId: string, atMs: number): void {
+    const requests = this.stormEvolution.takeLookupRequests(incidentId, atMs);
+    if (!requests.length) return;
+    const previous = this.stormEvolutionWork.get(incidentId) ?? Promise.resolve();
+    const work = previous.then(async () => {
+      const reverse = this.reverse ?? ((lat: number, lon: number) =>
+        new NominatimReverseGeocoder().reverse(lat, lon, { includeProviderHierarchy: true }));
+      // Existing Nominatim client serializes requests at the public rate limit.
+      for (const request of requests) {
+        let place: ReverseGeocodeResult | null = null;
+        try { place = await reverse(request.latitude, request.longitude); } catch { /* Ambiguous; no eligible shadow result. */ }
+        this.stormEvolution.resolve(incidentId, request.cellId, place);
+      }
+      this.emitStormEvolution(incidentId, this.now());
+    }).finally(() => { if (this.stormEvolutionWork.get(incidentId) === work) this.stormEvolutionWork.delete(incidentId); });
+    this.stormEvolutionWork.set(incidentId, work);
+  }
+
+  private emitStormEvolution(incidentId: string, atMs: number): void {
+    const incident = this.lifecycle.incidents.find(item => item.id === incidentId && item.status === "active");
+    if (!incident) return;
+    const evaluation = this.stormEvolution.evaluate(incidentId, incident.sourceClusterIds, atMs);
+    if (evaluation && this.stormEvolution.shouldEmit(incidentId, evaluation)) this.emit("storm_evolution_shadow", evaluation);
   }
 
   private repeatScopeId(incidentId: string): string { return `cg_${this.runId}_${incidentId}`; }
