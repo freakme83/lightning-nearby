@@ -6,15 +6,15 @@ The exact output has three lines, plus a blank line and selected CG coordinates 
 
 ```text
 #YILDIRIM
-6 Ekim 2026, 16:48 TSİ
+Ankara’da, 6 Ekim 2026, 16:48 TSİ
 Aşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.
 
 39.903, 32.851
 ```
 
-Generic states (`ic_only`, `no_match`, and `provider_unavailable`) use `#ŞİMŞEK`, `[location] civarında şimşek [verb].`, and no coordinates or link. No provider diagnostics appear in the public post. `cg_verified` uses `#YILDIRIM` and `[location] civarında yere ulaşan yıldırım [verb].`; it requires a selected CG match with valid coordinates. Both kinds use only `tespit edildi` or `kaydedildi`. FNV-1a parity of the stable incident ID chooses the verb, so rerenders are identical.
+Generic states (`ic_only`, `no_match`, and `provider_unavailable`) use `#ŞİMŞEK`, `Ankara’da, D MMMM YYYY, HH:mm TSİ`, `[location] civarında şimşek kaydedildi.`, and no coordinates or link. No provider diagnostics appear in the public post. `cg_verified` uses `#YILDIRIM` and `[location] civarında yere ulaşan yıldırım kaydedildi.`; it requires a selected CG match with valid coordinates. Public templates now use the fixed verb `kaydedildi` so the automatic Ankara notices remain uniform.
 
-The composer formats the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `D MMMM YYYY, HH:mm TSİ`, with Turkish month names, no seconds, and no local incident timezone. It changes the first comma in the normalized display label to ` / `; names and qualifiers such as `Aşağı`, `Yukarı`, `Eski`, and `Yeni` are preserved. A missing label produces a structured error, with no invented place. Public coordinates use exactly three decimal places. The internal CG map URL is constructed locally from the **selected matched CG event coordinates**, not the incident representative coordinates; it describes an approximate observation location, not a meter-accurate impact point or proof of physical flash identity.
+The composer formats the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, with Turkish month names, no seconds, and no local incident timezone. The explicit Ankara scope keeps the account context visible in the public message without adding another hashtag. It changes the first comma in the normalized display label to ` / `; names and qualifiers such as `Aşağı`, `Yukarı`, `Eski`, and `Yeni` are preserved. A missing label produces a structured error, with no invented place. Public coordinates use exactly three decimal places. The internal CG map URL is constructed locally from the **selected matched CG event coordinates**, not the incident representative coordinates; it describes an approximate observation location, not a meter-accurate impact point or proof of physical flash identity.
 
 `characterCount` counts Unicode code points in the complete raw text (including line breaks and the public coordinate line, excluding the internal URL). The default maximum is 280 and can be configured. An oversized message returns `message_too_long` with its count; it is never truncated or split. This is not a full implementation of X's weighted text parser.
 

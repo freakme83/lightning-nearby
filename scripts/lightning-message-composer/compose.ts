@@ -21,7 +21,8 @@ function formatDateTime(eventTimeMs: number): string {
   const parts = formatter.formatToParts(new Date(eventTimeMs));
   const value = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)!.value;
   const month = value("month");
-  return `${value("day")} ${month.charAt(0).toLocaleUpperCase("tr-TR")}${month.slice(1)} ${value("year")}, ${value("hour")}:${value("minute")} TSİ`;
+  const dateTime = `${value("day")} ${month.charAt(0).toLocaleUpperCase("tr-TR")}${month.slice(1)} ${value("year")}, ${value("hour")}:${value("minute")} TSİ`;
+  return `Ankara’da, ${dateTime}`;
 }
 
 function formatLocation(label: string): string | null {
@@ -34,7 +35,7 @@ function formatLocation(label: string): string | null {
   return first && rest ? `${first} / ${rest}` : null;
 }
 
-// FNV-1a over the stable incident ID; the low bit chooses one of the two locked verbs.
+// FNV-1a over the stable incident ID; retained for compatibility with older research callers.
 export function verbForIncident(incidentId: string): "tespit edildi" | "kaydedildi" {
   let hash = 0x811c9dc5;
   for (const character of incidentId) {
@@ -78,7 +79,7 @@ export function composeLightningMessage(input: ComposerInput, options: ComposerO
 
   const hashtag = status === "cg_verified" ? "#YILDIRIM" : "#ŞİMŞEK";
   const dateTimeText = formatDateTime(eventTimeMs);
-  const eventText = `${locationText} civarında ${status === "cg_verified" ? "yere ulaşan yıldırım" : "şimşek"} ${verbForIncident(input.incident.id)}.`;
+  const eventText = `${locationText} civarında ${status === "cg_verified" ? "yere ulaşan yıldırım" : "şimşek"} kaydedildi.`;
   const text = [hashtag, dateTimeText, eventText, ...(coordinateText ? ["", coordinateText] : [])].join("\n");
   const characterCount = [...text].length;
   if (characterCount > maxCharacters) {
