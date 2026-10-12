@@ -7,3 +7,10 @@ The initial CG selection checks returned CG events within the existing 10 km pro
 When no CG passes every initial condition, the normal non-CG publication path remains available. Telemetry distinguishes no CG returned, spatial rejection, reference-time rejection, provider-event staleness, and accepted selection. The provider's returned or broadly matched CG is not itself authorization for a `#YILDIRIM` message. For an accepted initial CG, `enrichment_complete` also records the selected provider coordinates and event time alongside its event ID and selection metrics; rejected candidates remain distinguished as evaluated, with selected fields null.
 
 This policy applies to initial publication only. Repeat-CG admission, later first-CG transitions, and storm-evolution shadow evaluation retain their separate rules.
+
+
+## Outer-district non-CG cooldown
+
+Initial non-CG `#ŞİMŞEK` candidates in the selected outer Ankara districts use a 120-minute district-wide cooldown. The key comes from normalized Ankara province and district identity, not locality or rendered text, and is stored with each admitted publication ledger record so the decision survives worker restarts. The admission `recorded_at` timestamp starts the window; records at exactly 120 minutes are eligible again. Only these districts are covered: Şereflikoçhisar, Balâ/Bala, Haymana, Polatlı, Beypazarı, Nallıhan, Güdül, Çamlıdere, Kızılcahamam, Çubuk, and Kalecik. CG publications and repeat-CG admission do not read or update this cooldown.
+
+The ledger migration backfills legacy rows only when the stored location label ends in an exact allowlisted district component. Other historical labels remain unkeyed rather than being guessed. A held candidate exits before ledger insertion, pending approval, Telegram, or X dispatch. If normalized district identity is missing or ambiguous, telemetry records the condition and existing publication behavior continues. If cooldown history cannot be read, the candidate is held to avoid publishing without the district-wide check. Apply the migration before deploying the worker that reads the new ledger column.

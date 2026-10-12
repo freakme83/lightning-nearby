@@ -25,7 +25,8 @@ export type LedgerDiagnostics = {
 
 // Storage is injected; neither the v1A policy nor the v1B.1 matcher performs I/O.
 export async function applyPersistentLedger(result: DryRunResult, context: DecisionContext,
-  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest; nowMs?: () => number } = {}): Promise<DryRunResult> {
+  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest;
+    nowMs?: () => number; recordedAt?: string; canonicalDistrict?: string | null } = {}): Promise<DryRunResult> {
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
@@ -35,9 +36,15 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
     ...result, ledger: { ...diagnostics, storageStatus: status, reason },
     publishDecision: decidePublish(result, { ...context, ...extra, persistentHistoryEnabled: Boolean(store) }),
   });
+  const buildRecord = (value: DryRunResult) => {
+    const built = buildPublicationRecord(value, { runId: options.runId, recordedAt: options.recordedAt });
+    if (built.ok) built.record.canonicalDistrict = value.message?.ok && value.message.enrichmentStatus !== "cg_verified"
+      ? options.canonicalDistrict ?? null : null;
+    return built;
+  };
   if (!store) return finish({ publicationHistoryAvailable: false }, "not_configured", "Supabase ledger configuration is missing or invalid.");
   const provisional = { ...result, publishDecision: decidePublish(result, context) };
-  const built = buildPublicationRecord(provisional, { runId: options.runId });
+  const built = buildRecord(provisional);
   if (!built.ok) return finish({ publicationHistoryAvailable: false }, "invalid_candidate", built.message);
   let history;
   try {
@@ -52,7 +59,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
     ...context, ...duplicateDecisionContext(diagnostics.duplicateMatch), persistentHistoryEnabled: true,
     knownDuplicate: context.knownDuplicate === true || diagnostics.duplicateMatch.duplicate,
   }) };
-  const finalBuilt = buildPublicationRecord(final, { runId: options.runId });
+  const finalBuilt = buildRecord(final);
   if (!finalBuilt.ok) return finish({ publicationRecordAvailable: false }, "invalid_candidate", finalBuilt.message);
   const exactMessageText = result.message?.ok ? result.message.text : "";
   const admission = options.cgAdmission;
@@ -134,7 +141,7 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
     diagnostics.reason = "Publication record could not be persisted; shadow publication is held.";
     // Retain a HOLD audit record where storage is still available. Never turn a failed
     // WOULD_PUBLISH write into a successful publication decision.
-    const held = buildPublicationRecord(final, { runId: options.runId });
+    const held = buildRecord(final);
     if (held.ok) {
       try {
         const disposition = await store.insertPublicationRecord(held.record, exactMessageText);

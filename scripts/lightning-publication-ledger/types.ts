@@ -15,6 +15,8 @@ export type PublicationRecord = {
   providerEventId: string | null;
   providerEventType: LightningType | null;
   locationLabel: string | null;
+  /** Canonical Ankara district key used only for initial non-CG cooldown history. */
+  canonicalDistrict?: string | null;
   messageFingerprint: string;
   decision: PublishDecision["decision"] | "PUBLISHED";
   recordedAt: string;
