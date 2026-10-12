@@ -323,6 +323,7 @@ test("selected outer-district non-CG candidate is internally processed then supp
     row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
   assert.equal(memory.records.length, 0);
   assert.equal(memory.writes, 0);
+  assert.equal(memory.reads, 0);
   assert.equal(notifications, 0);
   assert.equal(approvalReads, 0);
   assert.equal(dispatches, 0);
