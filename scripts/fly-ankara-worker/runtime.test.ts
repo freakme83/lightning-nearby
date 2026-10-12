@@ -353,15 +353,19 @@ test("town-level Haymana and Nallıhan non-CG candidates stay suppressed without
   assert.equal(memory.records.length, 0, "selected-district non-CG events never create publication records");
 });
 
-test("selected outer-district CG and central Ankara non-CG keep their existing publication behavior", async () => {
+test("outer-district CG remains eligible after non-CG suppression; central non-CG is unchanged", async () => {
   const memory = memoryStore();
-  const cg = await processOuterDistrictCandidate(memory, baseNow, "Haymana", { cg: true });
+  const nonCg = await processOuterDistrictCandidate(memory, baseNow, "Haymana");
+  assert.equal(nonCg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), true);
+  assert.equal(memory.records.length, 0);
+
+  const cg = await processOuterDistrictCandidate(memory, baseNow + 2 * 60_000, "Haymana", { cg: true });
   assert.equal(memory.records.length, 1);
   assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
   assert.equal(cg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
   assert.equal(cg.events.some(row => row.kind === "publication_pending"), true);
 
-  const central = await processOuterDistrictCandidate(memory, baseNow + 60_000, "Çankaya", { locality: "Ayrancı" });
+  const central = await processOuterDistrictCandidate(memory, baseNow + 3 * 60_000, "Çankaya", { locality: "Ayrancı" });
   assert.equal(central.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
   assert.equal(central.events.some(row => row.kind === "publication_pending"), true);
   assert.equal(memory.records.length, 2);
