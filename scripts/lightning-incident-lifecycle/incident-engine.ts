@@ -56,6 +56,11 @@ export class IncidentLifecycleEngine {
     incidentsClosed: 0,
     reopenedOrRecreated: 0,
     singletonClustersIgnored: 0,
+    eventsAfterCandidateExpiry: 0,
+    candidatesRecovered: 0,
+    promotionsAfterRecovery: 0,
+    recoveredCandidatesAssociated: 0,
+    eventsIgnoredClosed: 0,
     eventsAtPromotion: [] as number[],
     timeToPromotionMs: [] as number[],
     incidentDurationMs: [] as number[],
@@ -89,7 +94,35 @@ export class IncidentLifecycleEngine {
     safeCoordinates(observation);
     const transitions: IncidentTransition[] = [];
     const existing = this.incidentByCluster.get(observation.sourceClusterId);
-    if (existing?.status === "closed") return transitions;
+    let recovered = false;
+    if (existing?.status === "closed") {
+      if (existing.closeReason !== "candidate_expired" || existing.promotedAtMs !== undefined) {
+        this.metrics.eventsIgnoredClosed++;
+        return transitions;
+      }
+      // Keep one failed candidate while its cluster lives. Only a qualifying new
+      // rolling window can recover it; there is no per-event reopening/ID churn.
+      this.metrics.eventsAfterCandidateExpiry++;
+      this.updateIncident(existing, observation);
+      this.updatePromotionWindow(existing, observation.eventTimeMs);
+      if (existing.eventTimesInPromotionWindow.length < this.profile.promotionMinEvents) return transitions;
+      this.metrics.candidatesRecovered++;
+      const active = this.findActiveNearby(observation);
+      if (active) {
+        this.metrics.recoveredCandidatesAssociated++;
+        active.sourceClusterIds.push(observation.sourceClusterId);
+        this.incidentByCluster.set(observation.sourceClusterId, active);
+        this.updateIncident(active, observation);
+        transitions.push({ type: "candidate_recovered", incident: snapshot(existing), relatedIncidentId: active.id },
+          { type: "activity", incident: snapshot(active), clusterAttached: true });
+        return transitions;
+      }
+      existing.status = "candidate";
+      delete existing.closedAtMs;
+      delete existing.closeReason;
+      recovered = true;
+      transitions.push({ type: "candidate_recovered", incident: snapshot(existing) });
+    }
     let incident = existing;
     let clusterAttached = false;
     if (!incident) {
@@ -109,17 +142,14 @@ export class IncidentLifecycleEngine {
       this.seenClusterIds.add(observation.sourceClusterId);
       this.metrics.clustersObserved++;
     }
-    this.updateIncident(incident, observation);
+    if (!recovered) this.updateIncident(incident, observation);
     if (incident.status === "candidate") {
-      const windowMs = this.profile.promotionWindowMinutes * 60_000;
-      const newestTime = Math.max(observation.eventTimeMs, ...incident.eventTimesInPromotionWindow);
-      incident.eventTimesInPromotionWindow = incident.eventTimesInPromotionWindow
-        .filter(time => time >= newestTime - windowMs);
-      if (observation.eventTimeMs >= newestTime - windowMs) incident.eventTimesInPromotionWindow.push(observation.eventTimeMs);
+      if (!recovered) this.updatePromotionWindow(incident, observation.eventTimeMs);
       if (incident.eventTimesInPromotionWindow.length >= this.profile.promotionMinEvents) {
         incident.status = "active";
         incident.promotedAtMs = observation.receivedAtMs;
         this.metrics.incidentsPromoted++;
+        if (recovered) this.metrics.promotionsAfterRecovery++;
         this.recordMetricSample(this.metrics.eventsAtPromotion, incident.totalEvents);
         this.recordMetricSample(this.metrics.timeToPromotionMs, Math.max(0, observation.receivedAtMs - incident.candidateOpenedAtMs));
         transitions.push({ type: "promoted", incident: snapshot(incident) });
@@ -239,6 +269,13 @@ export class IncidentLifecycleEngine {
     incident.lastActivityReceivedAtMs = Math.max(incident.lastActivityReceivedAtMs, observation.receivedAtMs);
     incident.representativeLatitude = incident.latitudeSum / incident.totalEvents;
     incident.representativeLongitude = Math.atan2(incident.longitudeSinSum, incident.longitudeCosSum) / DEG;
+  }
+
+  private updatePromotionWindow(incident: InternalIncident, eventTimeMs: number): void {
+    const windowMs = this.profile.promotionWindowMinutes * 60_000;
+    const newestTime = Math.max(eventTimeMs, ...incident.eventTimesInPromotionWindow);
+    incident.eventTimesInPromotionWindow = incident.eventTimesInPromotionWindow.filter(time => time >= newestTime - windowMs);
+    if (eventTimeMs >= newestTime - windowMs) incident.eventTimesInPromotionWindow.push(eventTimeMs);
   }
 
   private recordMetricSample(samples: number[], value: number): void {

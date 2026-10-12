@@ -10,6 +10,7 @@ test("one in flight, latest-only coalescing and bounded request cadence", async 
   coordinator.offer("scope", 1); await Promise.resolve();
   for (let i = 2; i <= 100; i++) coordinator.offer("scope", i);
   assert.deepEqual(starts, [1]); assert.equal(coordinator.coalesced, 98);
+  assert.equal(coordinator.queued, 2); assert.equal(coordinator.started, 1);
   release(); await coordinator.drain(); assert.deepEqual(starts, [1]);
   now = 120_000; coordinator.pump(); await coordinator.drain();
   assert.deepEqual(starts, [1, 100]);
@@ -21,6 +22,7 @@ test("queue rechecks freshness/health at start and separate scopes do not share 
     execute: async (scope) => { starts.push(scope); if (scope === "a") await new Promise<void>(resolve => { release = resolve; }); } });
   coordinator.offer("a", 0); await Promise.resolve(); coordinator.offer("b", 0);
   now = 240_001; release(); await coordinator.drain(); assert.deepEqual(starts, ["a"]);
+  assert.equal(coordinator.eligibilityRejections.ineligible, 1);
   healthy = false; coordinator.offer("c", now); await coordinator.drain(); assert.deepEqual(starts, ["a"]);
   healthy = true; coordinator.offer("c", now); await coordinator.drain(); assert.deepEqual(starts, ["a", "c"]);
 });

@@ -41,6 +41,31 @@ export function selectedRepeatEventCheck(enrichment: EnrichmentResult, reference
   return null;
 }
 
+// Measurement only: removing the empty-history rule is hypothetical. The actual
+// atomic admission result, duplicate checks and every other gate stay authoritative.
+export function evaluateFirstCgTransitionShadow(input: {
+  enrichment: EnrichmentResult;
+  metadata: CgPublicationMetadata | null | undefined;
+  admission: CgAdmissionResult;
+  referenceTimeMs: number;
+  nowMs: number;
+  maxAgeMs: number;
+  providerDuplicatePassed: boolean | null;
+  otherBlockers: string[];
+}) {
+  const currentnessFailure = selectedRepeatEventCheck(input.enrichment, input.referenceTimeMs, input.nowMs, input.maxAgeMs);
+  const blockers = [...input.otherBlockers];
+  if (input.admission.outcome !== "suppressed" || input.admission.reason !== "no_positive_cg_history") blockers.push("not_empty_cg_history_rejection");
+  if (currentnessFailure) blockers.push(currentnessFailure);
+  if (input.providerDuplicatePassed !== true) blockers.push(input.providerDuplicatePassed === false ? "provider_duplicate" : "duplicate_check_unavailable");
+  if (!input.metadata?.semanticIdentity.available) blockers.push("semantic_identity_unavailable");
+  return { policy: "first_cg_transition" as const, shadowOnly: true as const,
+    eligible: blockers.length === 0, otherBlockers: [...new Set(blockers)],
+    providerDuplicatePassed: input.providerDuplicatePassed, currentnessPassed: currentnessFailure === null,
+    semanticIdentityAvailable: input.metadata?.semanticIdentity.available === true,
+    classification: input.metadata?.classification ?? null };
+}
+
 // Mirrors the transaction's comparison. Positive rows reserve both place and quota,
 // regardless of asynchronous approval/publication outcome. A predecessor contributes
 // comparison places, never the new scope's burst count.

@@ -47,6 +47,7 @@ export type LightningIncident = {
 export type IncidentTransition =
   | { type: "candidate_created"; incident: LightningIncident }
   | { type: "candidate_expired"; incident: LightningIncident }
+  | { type: "candidate_recovered"; incident: LightningIncident; relatedIncidentId?: string }
   | { type: "promoted"; incident: LightningIncident }
   | { type: "activity"; incident: LightningIncident; clusterAttached: boolean }
   | { type: "closed"; incident: LightningIncident };
