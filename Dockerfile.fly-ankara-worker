@@ -10,7 +10,7 @@ COPY scripts/lightning-incident-lifecycle/ ./scripts/lightning-incident-lifecycl
 COPY scripts/lightning-cg-paired-validation/ ./scripts/lightning-cg-paired-validation/
 COPY scripts/lightning-cg-enrichment/ ./scripts/lightning-cg-enrichment/
 COPY scripts/lightning-cg-repeat-policy/ ./scripts/lightning-cg-repeat-policy/
-COPY scripts/lightning-outer-district-cooldown/ ./scripts/lightning-outer-district-cooldown/
+COPY scripts/lightning-outer-district-policy/ ./scripts/lightning-outer-district-policy/
 COPY scripts/lightning-location-naming/ ./scripts/lightning-location-naming/
 COPY scripts/lightning-message-preview/ ./scripts/lightning-message-preview/
 COPY scripts/lightning-message-composer/ ./scripts/lightning-message-composer/

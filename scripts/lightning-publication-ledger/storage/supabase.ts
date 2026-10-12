@@ -6,14 +6,13 @@ import type { CgAdmissionRequest, CgAdmissionResult } from "../../lightning-cg-r
 
 export type LedgerStore = {
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
-  loadLastOuterDistrictNonCgPublication?(canonicalDistrict: string): Promise<PublicationRecord | null>;
   insertPublicationRecord(record: PublicationRecord, exactMessageText: string): Promise<"inserted" | "already_present">;
   admitCgPublication?(record: PublicationRecord, exactMessageText: string, request: CgAdmissionRequest): Promise<CgAdmissionResult>;
 };
 
 const columns = ["publication_id", "run_id", "incident_id", "incident_reference_time", "incident_latitude",
   "incident_longitude", "provider", "enrichment_status", "provider_event_id", "provider_event_type",
-  "location_label", "canonical_district", "message_fingerprint", "decision", "recorded_at", "platform_post_id"] as const;
+  "location_label", "message_fingerprint", "decision", "recorded_at", "platform_post_id"] as const;
 const eligible = "in.(WOULD_PUBLISH,PUBLISHED)";
 const PAGE_SIZE = 100;
 
@@ -39,7 +38,6 @@ function fromRow(row: Row): PublicationRecord {
     providerEventId: row.provider_event_id as string | null,
     providerEventType: row.provider_event_type as PublicationRecord["providerEventType"],
     locationLabel: row.location_label as string | null, messageFingerprint: row.message_fingerprint,
-    canonicalDistrict: row.canonical_district as string | null,
     decision: row.decision as PublicationRecord["decision"], recordedAt: row.recorded_at as string,
     platformPostId: row.platform_post_id as string | null,
     ...(cgMetadata ? { cgMetadata } : {}),
@@ -57,7 +55,6 @@ function toRow(record: PublicationRecord, exactMessageText: string): Row {
     incident_longitude: record.incidentLongitude, provider: record.provider,
     enrichment_status: record.enrichmentStatus, provider_event_id: record.providerEventId,
     provider_event_type: record.providerEventType, location_label: record.locationLabel,
-    canonical_district: record.canonicalDistrict ?? null,
     message_fingerprint: record.messageFingerprint, decision: record.decision,
     recorded_at: record.recordedAt, platform_post_id: record.platformPostId ?? null,
     message_text: exactMessageText,
@@ -130,13 +127,6 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
         byId.set(row.publicationId, row);
       }
       return [...byId.values()];
-    },
-    async loadLastOuterDistrictNonCgPublication(canonicalDistrict) {
-      if (!canonicalDistrict.trim()) throw new Error("Invalid district cooldown query.");
-      const rows = await query({ canonical_district: `eq.${canonicalDistrict}`,
-        enrichment_status: "neq.cg_verified" },
-      { limit: 1, order: "recorded_at.desc" });
-      return rows[0] ?? null;
     },
     async insertPublicationRecord(record, exactMessageText) {
       const url = new URL(endpoint);
