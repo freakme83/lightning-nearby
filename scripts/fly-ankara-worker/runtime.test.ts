@@ -103,7 +103,7 @@ function qualifyingEvents(runtime: AnkaraFlyPipeline, time = baseNow, processing
 
 async function processOuterDistrictCandidate(memory: ReturnType<typeof memoryStore>, at: number,
   district: string, options: { province?: string; locality?: string; cg?: boolean; missingDistrict?: boolean } = {}) {
-  let current = at;
+  const current = at;
   const locality = options.locality ?? "Yamak";
   const reverse = async (latitude: number, longitude: number): Promise<ReverseGeocodeResult> => ({
     latitude, longitude, provider: "fixture",
@@ -115,7 +115,6 @@ async function processOuterDistrictCandidate(memory: ReturnType<typeof memorySto
     enrich: async reference => options.cg ? verifiedCg(reference) : matchInitialCgEvents(reference, [], current) });
   qualifyingEvents(fixture.runtime, at, at);
   await fixture.runtime.drainCandidateWork();
-  current = at;
   return fixture;
 }
 
