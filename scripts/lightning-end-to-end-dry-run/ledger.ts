@@ -4,7 +4,9 @@ import { buildPublicationRecord } from "../lightning-publication-ledger/record.t
 import type { DuplicateMatchResult } from "../lightning-publication-ledger/types.ts";
 import type { LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { DryRunResult } from "./orchestrate.ts";
-import type { CgAdmissionRequest, CgAdmissionResult } from "../lightning-cg-repeat-policy/admission.ts";
+import { evaluateFirstCgTransitionShadow, type CgAdmissionRequest, type CgAdmissionResult } from "../lightning-cg-repeat-policy/admission.ts";
+import type { EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
+import { MAX_PAIRING_INCIDENT_AGE_MS } from "../lightning-cg-paired-validation/controller.ts";
 
 export type LedgerDiagnostics = {
   persistenceEnabled: boolean;
@@ -18,11 +20,12 @@ export type LedgerDiagnostics = {
   storageStatus: "ok" | "not_configured" | "read_failed" | "write_failed" | "invalid_candidate";
   reason: string | null;
   cgAdmission?: CgAdmissionResult;
+  firstCgTransitionShadow?: ReturnType<typeof evaluateFirstCgTransitionShadow>;
 };
 
 // Storage is injected; neither the v1A policy nor the v1B.1 matcher performs I/O.
 export async function applyPersistentLedger(result: DryRunResult, context: DecisionContext,
-  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest } = {}): Promise<DryRunResult> {
+  store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest; nowMs?: () => number } = {}): Promise<DryRunResult> {
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
@@ -69,6 +72,15 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
       } else {
         diagnostics.cgAdmission = await store.admitCgPublication(finalBuilt.record, exactMessageText, admission);
         if (diagnostics.cgAdmission.outcome === "suppressed") {
+          if (admission.kind === "repeat" && diagnostics.cgAdmission.reason === "no_positive_cg_history") {
+            diagnostics.firstCgTransitionShadow = evaluateFirstCgTransitionShadow({
+              enrichment: result.paired!.enrichment as EnrichmentResult, metadata: finalBuilt.record.cgMetadata,
+              admission: diagnostics.cgAdmission, referenceTimeMs: Date.parse(admission.referenceTime ?? ""),
+              nowMs: (options.nowMs ?? Date.now)(), maxAgeMs: MAX_PAIRING_INCIDENT_AGE_MS,
+              providerDuplicatePassed: diagnostics.duplicateMatch ? !diagnostics.duplicateMatch.duplicate : null,
+              otherBlockers: final.publishDecision?.decision === "WOULD_PUBLISH" ? [] : final.publishDecision?.reasonCodes ?? ["decision_unavailable"],
+            });
+          }
           return finish({ publicationRecordAvailable: false,
             knownDuplicate: ["same_provider_event", "same_observation_fingerprint", "concurrent_unique_conflict"].includes(diagnostics.cgAdmission.reason),
             cgRepeatGate: { eligible: false, reason: `cg_repeat_${diagnostics.cgAdmission.reason}` } },

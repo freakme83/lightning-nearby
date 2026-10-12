@@ -23,6 +23,7 @@ import { CgProbeCoordinator } from "../lightning-cg-repeat-policy/coordinator.ts
 import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type CgAdmissionRequest } from "../lightning-cg-repeat-policy/admission.ts";
 import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
 import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
+import { cgProviderTelemetry } from "./telemetry.ts";
 
 type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
 
@@ -93,6 +94,12 @@ export class AnkaraFlyPipeline {
   private readonly repeatProbes: CgProbeCoordinator<RepeatProbe>;
   private readonly repeatPredecessors = new Map<string, string>();
   private readonly repeatInFlight = new Set<string>();
+  private readonly cgProviderResults: Record<string, number> = {};
+  private cgProviderQueries = 0;
+  private cgAdmissionsSuppressed = 0;
+  private cgAdmissionsAccepted = 0;
+  private firstCgShadowOpportunities = 0;
+  private firstCgShadowEligible = 0;
 
   constructor(dependencies: RuntimeDependencies) {
     this.store = dependencies.store;
@@ -117,6 +124,7 @@ export class AnkaraFlyPipeline {
     this.sourceHealth = new SourceHealthTracker(startedAt);
     this.repeatProbes = new CgProbeCoordinator({ now: this.now,
       eligible: (_scope, probe) => this.repeatProbeEligible(probe),
+      rejectionReason: (_scope, probe) => this.repeatProbeRejection(probe) ?? "ineligible",
       execute: (_scope, probe) => this.processRepeatProbe(probe),
       onError: scopeId => this.emit("cg_repeat_outcome", { scopeId, outcome: "held", reason: "unexpected_probe_error" }),
     });
@@ -189,6 +197,7 @@ export class AnkaraFlyPipeline {
     this.repeatProbes.pump();
     return {
       ...state,
+      clusters: state.clusters.map(({ recentEvents: _events, ...cluster }) => cluster),
       profile: { ...profile },
       area: ANKARA_MONITORING_AREA.id,
       sourceHealth: { ...this.sourceHealth.state },
@@ -200,9 +209,20 @@ export class AnkaraFlyPipeline {
       staleCandidateTriggers: this.staleCandidateCount,
       pendingPublications: this.pendingCount,
       candidateProcessingInFlight: this.candidateWork.size,
+      recall: { candidatesExpired: this.lifecycle.metrics.candidatesExpired,
+        eventsAfterCandidateExpiry: this.lifecycle.metrics.eventsAfterCandidateExpiry,
+        candidatesRecovered: this.lifecycle.metrics.candidatesRecovered,
+        promotionsAfterRecovery: this.lifecycle.metrics.promotionsAfterRecovery,
+        recoveredCandidatesAssociated: this.lifecycle.metrics.recoveredCandidatesAssociated,
+        eventsIgnoredClosed: this.lifecycle.metrics.eventsIgnoredClosed },
       cgRepeat: { recoveryReady: this.repeatRecoveryReady(nowMs),
         repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(),
-        inFlight: this.repeatProbes.running, coalesced: this.repeatProbes.coalesced, dropped: this.repeatProbes.dropped },
+        inFlight: this.repeatProbes.running, queued: this.repeatProbes.queued, started: this.repeatProbes.started,
+        coalesced: this.repeatProbes.coalesced, dropped: this.repeatProbes.dropped,
+        eligibilityRejections: { ...this.repeatProbes.eligibilityRejections }, providerQueries: this.cgProviderQueries,
+        providerResults: { ...this.cgProviderResults }, admissionsSuppressed: this.cgAdmissionsSuppressed,
+        admissionsAccepted: this.cgAdmissionsAccepted,
+        firstCgShadowOpportunities: this.firstCgShadowOpportunities, firstCgShadowEligible: this.firstCgShadowEligible },
     };
   }
 
@@ -225,6 +245,16 @@ export class AnkaraFlyPipeline {
   }
 
   private processTransitions(transitions: IncidentTransition[], observation?: ClusterObservation): void {
+    const recoveredIds = new Set(transitions.filter(item => item.type === "candidate_recovered").map(item => item.incident.id));
+    for (const transition of transitions) {
+      if (transition.type === "candidate_expired" || transition.type === "candidate_recovered" ||
+          (transition.type === "promoted" && recoveredIds.has(transition.incident.id))) {
+        this.emit(transition.type === "promoted" ? "candidate_promoted_after_recovery" : transition.type, {
+          incidentId: transition.incident.id, clusterIds: transition.incident.sourceClusterIds,
+          eventCount: transition.incident.totalEvents,
+          ...(transition.type === "candidate_recovered" ? { relatedIncidentId: transition.relatedIncidentId ?? null } : {}) });
+      }
+    }
     const decisions = applyTransitions(transitions, this.policy, this.lifecycle);
     for (const decision of decisions) {
       const incident = this.lifecycle.snapshot().incidents.find(item => item.id === decision.incidentId);
@@ -234,7 +264,9 @@ export class AnkaraFlyPipeline {
         if (observation && CG_REPEAT_REASONS.includes(decision.reason as CgRepeatReason)) {
           const probe: RepeatProbe = { incident, observation: { ...observation }, reason: decision.reason as CgRepeatReason,
             predecessorId: this.repeatPredecessors.get(incident.id) };
-          if (this.repeatProbeEligible(probe)) this.repeatProbes.offer(this.repeatScopeId(incident.id), probe);
+          const rejection = this.repeatProbeRejection(probe);
+          if (!rejection) this.repeatProbes.offer(this.repeatScopeId(incident.id), probe);
+          else this.repeatProbes.recordEligibilityRejection(rejection);
         }
         continue;
       }
@@ -314,8 +346,11 @@ export class AnkaraFlyPipeline {
       this.emit("candidate_outcome", { incidentId, status: artifact.status, reason: "no_paired_candidate" });
       return;
     }
-    this.emit("enrichment_complete", { incidentId, status: artifact.enrichment?.status ?? "unknown",
-      failure: artifact.enrichment?.failure ?? null });
+    if (!repeat) {
+      const telemetry = cgProviderTelemetry(artifact.enrichment, artifact.incident.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
+      this.cgProviderResults[`initial:${telemetry.category}`] = (this.cgProviderResults[`initial:${telemetry.category}`] ?? 0) + 1;
+      this.emit("enrichment_complete", { incidentId, status: artifact.enrichment.status, ...telemetry });
+    }
     try {
       let result = await continueFromPairedArtifact(artifact, {
         ...(this.reverse ? { reverse: this.reverse } : {}),
@@ -339,16 +374,35 @@ export class AnkaraFlyPipeline {
           ...(repeat.predecessorId ? { predecessorScopeId: this.repeatScopeId(repeat.predecessorId) } : {}) } : {}) };
       result = withPublishDecision(result, context);
       result = await applyPersistentLedger(result, context, this.store,
-        { runId: this.runId, configured: true, cgAdmission: admission });
+        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now });
       const repeatPlace = result.location && "normalized" in result.location ? {
         ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
-      if (repeat) this.emit("cg_repeat_outcome", { scopeId: admission.scopeId, originalSuppressionReason: repeat.reason,
+      if (repeat) {
+        if (result.ledger?.cgAdmission?.outcome === "suppressed") this.cgAdmissionsSuppressed++;
+        if (result.ledger?.cgAdmission?.outcome === "inserted") this.cgAdmissionsAccepted++;
+        const shadow = result.ledger?.firstCgTransitionShadow;
+        if (shadow) {
+          this.firstCgShadowOpportunities++;
+          const telemetry = cgProviderTelemetry(artifact.enrichment, repeat.observation.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
+          const otherBlockers = [...new Set([...shadow.otherBlockers,
+            ...(repeatFailure ? [repeatFailure] : []), ...(telemetry.currentnessFailure ? [telemetry.currentnessFailure] : []),
+            ...(!this.repeatRecoveryReady(this.now()) ? ["recovery_or_source_unhealthy"] : [])])];
+          const eligible = shadow.eligible && otherBlockers.length === 0;
+          if (eligible) this.firstCgShadowEligible++;
+          this.emit("first_cg_transition_shadow", { ...shadow, incidentId, scopeId: admission.scopeId,
+            ...telemetry, eligible, otherBlockers,
+            actualDecision: result.publishDecision?.decision, actualAdmissionReason: result.ledger?.cgAdmission?.reason });
+        }
+        this.emit("cg_repeat_outcome", { scopeId: admission.scopeId, originalSuppressionReason: repeat.reason,
+        stage: result.ledger?.cgAdmission?.outcome === "inserted" ? "admission_accepted" :
+          result.ledger?.cgAdmission?.outcome === "suppressed" ? "admission_suppressed" : "held_before_admission",
         providerEventId: artifact.enrichment.match?.id ?? null,
         selectedEventAgeMs: artifact.enrichment.match ? this.now() - artifact.enrichment.match.eventTimeMs : null,
         outcome: result.publishDecision?.decision, admission: result.ledger?.cgAdmission ?? null,
         classification: repeatPlace ? classifyCgPlace(repeatPlace) : null,
         semanticIdentityAvailable: repeatPlace ? semanticCgLocationIdentity(repeatPlace).available : false,
         reason: repeatFailure ?? result.ledger?.reason ?? result.reason ?? null });
+      }
       if (result.ledger?.duplicateMatch?.duplicate) {
         this.emit("duplicate_detected", { incidentId, publicationId: result.ledger.duplicateMatch.matchedPublicationId,
           reason: result.ledger.duplicateMatch.reason });
@@ -419,26 +473,38 @@ export class AnkaraFlyPipeline {
   }
 
   private repeatProbeEligible(probe: RepeatProbe): boolean {
+    return this.repeatProbeRejection(probe) === null;
+  }
+
+  private repeatProbeRejection(probe: RepeatProbe): string | null {
     const now = this.now();
     const age = now - probe.observation.eventTimeMs;
     const incident = this.lifecycle.incidents.find(item => item.id === probe.incident.id);
-    return Boolean(this.store.admitCgPublication && this.repeatRecoveryReady(now) && incident?.status === "active" &&
-      incident.promotedAtMs !== undefined && incident.totalEvents >= profile.promotionMinEvents &&
-      (!this.candidateWork.has(incident.id) || this.repeatInFlight.has(incident.id)) && CG_REPEAT_REASONS.includes(probe.reason) &&
-      Number.isFinite(age) && age >= 0 && age <= MAX_PAIRING_INCIDENT_AGE_MS);
+    if (!this.store.admitCgPublication) return "atomic_admission_unavailable";
+    if (!this.repeatRecoveryReady(now)) return "recovery_or_source_unhealthy";
+    if (incident?.status !== "active" || incident.promotedAtMs === undefined || incident.totalEvents < profile.promotionMinEvents) return "incident_not_promoted_active";
+    if (this.candidateWork.has(incident.id) && !this.repeatInFlight.has(incident.id)) return "initial_candidate_in_flight";
+    if (!CG_REPEAT_REASONS.includes(probe.reason)) return "unsupported_suppression";
+    if (!Number.isFinite(age) || age < 0 || age > MAX_PAIRING_INCIDENT_AGE_MS) return "reference_not_current";
+    return null;
   }
 
   private async processRepeatProbe(probe: RepeatProbe): Promise<void> {
-    if (!this.repeatProbeEligible(probe)) return;
+    const rejection = this.repeatProbeRejection(probe);
+    if (rejection) { this.repeatProbes.recordEligibilityRejection(rejection); return; }
     const reference = { latitude: probe.observation.latitude, longitude: probe.observation.longitude,
       eventTimeMs: probe.observation.eventTimeMs };
     this.candidateWork.add(probe.incident.id);
     this.repeatInFlight.add(probe.incident.id);
     try {
       this.emit("cg_repeat_probe", { scopeId: this.repeatScopeId(probe.incident.id),
-        originalSuppressionReason: probe.reason, reference, recoveryReady: true,
+        stage: "provider_query_executed", originalSuppressionReason: probe.reason, reference, recoveryReady: true,
         coalesced: this.repeatProbes.coalesced, dropped: this.repeatProbes.dropped });
+      this.cgProviderQueries++;
       const enrichment = await (this.enrich ?? enrichIncidentWithLightningType)(reference);
+      const telemetry = cgProviderTelemetry(enrichment, reference.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
+      this.cgProviderResults[`repeat:${telemetry.category}`] = (this.cgProviderResults[`repeat:${telemetry.category}`] ?? 0) + 1;
+      this.emit("cg_repeat_provider_result", { scopeId: this.repeatScopeId(probe.incident.id), incidentId: probe.incident.id, ...telemetry });
       const failure = selectedRepeatEventCheck(enrichment, reference.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
       if (failure || !this.repeatRecoveryReady(this.now())) {
         this.emit("cg_repeat_outcome", { scopeId: this.repeatScopeId(probe.incident.id), outcome: "held",

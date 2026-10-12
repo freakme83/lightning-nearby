@@ -55,6 +55,13 @@ export type EnrichmentResult = {
   reference: EnrichmentReference;
   thresholds: MatchThresholds;
   counts?: MatchCounts;
+  matchDiagnostics?: {
+    returnedCg: number;
+    returnedIc: number;
+    cgRejectedSpatial: number;
+    cgRejectedTemporal: number;
+    cgRejectedBoth: number;
+  };
   match?: LightningMatch;
   cost?: CostDiagnostics;
   failure?: "missing_credentials" | "network_error" | "http_error" | "malformed_response";

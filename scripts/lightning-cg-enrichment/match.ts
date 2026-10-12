@@ -64,9 +64,17 @@ export function matchLightningEvents(reference: EnrichmentReference, events: Xwe
     return [{ ...event, distanceKm, timeDifferenceMs }];
   }).sort(rank);
   const counts = makeCounts(events.length, matches);
+  // Aggregate only the returned payload; never infer provider-wide CG absence.
+  // Spatial/temporal counts overlap; cgRejectedBoth makes that explicit.
+  const cg = events.filter(event => event.type === "cg");
+  const spatial = (event: XweatherLightningEvent) => greatCircleDistanceKm(event, reference) > thresholds.maxMatchDistanceKm;
+  const temporal = (event: XweatherLightningEvent) => Math.abs(event.eventTimeMs - reference.eventTimeMs) > thresholds.maxTimeDifferenceMs;
+  const matchDiagnostics = { returnedCg: cg.length, returnedIc: events.length - cg.length,
+    cgRejectedSpatial: cg.filter(spatial).length, cgRejectedTemporal: cg.filter(temporal).length,
+    cgRejectedBoth: cg.filter(event => spatial(event) && temporal(event)).length };
   const bestCg = matches.filter(item => item.type === "cg").sort(rank)[0];
-  if (bestCg) return { status: "cg_verified", provider: "xweather", reference, thresholds, counts, match: bestCg, cost };
+  if (bestCg) return { status: "cg_verified", provider: "xweather", reference, thresholds, counts, matchDiagnostics, match: bestCg, cost };
   const bestIc = matches.filter(item => item.type === "ic").sort(rank)[0];
-  if (bestIc) return { status: "ic_only", provider: "xweather", reference, thresholds, counts, match: bestIc, cost };
-  return { status: "no_match", provider: "xweather", reference, thresholds, counts, cost };
+  if (bestIc) return { status: "ic_only", provider: "xweather", reference, thresholds, counts, matchDiagnostics, match: bestIc, cost };
+  return { status: "no_match", provider: "xweather", reference, thresholds, counts, matchDiagnostics, cost };
 }

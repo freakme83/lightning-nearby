@@ -100,6 +100,38 @@ test("only unique events inside the Ankara polygon feed the lifecycle", () => {
   assert.equal(runtime.lifecycle.metrics.clustersObserved, 1);
 });
 
+test("worker summaries omit event arrays without altering clustering snapshots", () => {
+  const { runtime } = setup(); qualifyingEvents(runtime);
+  const summary = runtime.summary();
+  assert.ok(summary.clusters.length > 0);
+  assert.equal(JSON.stringify(summary).includes("recentEvents"), false);
+  assert.equal(summary.clusters[0].eventCount, 3);
+  assert.equal(runtime.pipeline.clusterer.clusters[0].recentEvents.length, 3);
+  assert.equal(summary.cgRepeat.queued, 0);
+});
+
+test("worker recovers an expired continuing cluster through the unchanged initial publication path", async () => {
+  let clock = baseNow; let sequence = 0;
+  const { runtime, memory, events } = setup({ now: () => clock, enrich: async reference => ({
+    status: "no_match", provider: "xweather", reference, thresholds: DEFAULT_THRESHOLDS,
+  }) });
+  function feed(at: number) {
+    clock = baseNow + at * 60_000; runtime.recordFrame(clock);
+    runtime.acceptEvent(event(++sequence, { sourceEventKey: `recovery/${sequence}`, latitude: 39.9, longitude: 32.6,
+      eventTimeMs: clock, receivedAtMs: clock }), clock);
+  }
+  feed(0); feed(9); clock = baseNow + 10 * 60_000; runtime.recordFrame(clock); runtime.summary();
+  assert.equal(runtime.summary().recall.candidatesExpired, 1);
+  assert.equal(memory.records.length, 0);
+  feed(12); feed(14); await runtime.drainCandidateWork(); feed(15); await runtime.drainCandidateWork();
+  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
+  assert.equal(events.filter(row => row.kind === "candidate_promoted_after_recovery").length, 1);
+  assert.equal(events.filter(row => row.kind === "candidate_recovered").length, 1);
+  assert.equal(runtime.summary().recall.eventsAfterCandidateExpiry, 2);
+  assert.equal(runtime.summary().recall.promotionsAfterRecovery, 1);
+  assert.equal(runtime.summary().profile.promotionMinEvents, 3);
+});
+
 test("non-qualifying individual events never call Xweather or Supabase", async () => {
   let enrichCalls = 0;
   const memory = memoryStore();

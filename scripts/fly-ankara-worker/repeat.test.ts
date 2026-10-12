@@ -17,6 +17,7 @@ function setup(recovered = true) {
   let name = "Ayrancı"; let selectedDeltaMs = 0; let selectedId: string | undefined;
   let pending: Promise<void> | undefined;
   let failAdmission = false; let unusable = false;
+  let notifications = 0; let approvalAttempts = 0; let dispatches = 0; let admissionDelayMs = 0;
   const store: LedgerStore = {
     async loadRelevantPublicationHistory() { return [...records]; },
     async insertPublicationRecord(record) {
@@ -27,15 +28,21 @@ function setup(recovered = true) {
       if (failAdmission) throw new Error("ambiguous storage failure");
       if (records.some(row => row.publicationId === record.publicationId)) return { outcome: "already_present", reason: "id" };
       if (request.kind === "repeat") {
-        const history = records.filter(row => row.cgScopeId === request.scopeId || row.cgScopeId === request.predecessorScopeId);
+        const history = records.filter(row => row.enrichmentStatus === "cg_verified" &&
+          (row.cgScopeId === request.scopeId || row.cgScopeId === request.predecessorScopeId));
         const decision = evaluateCgRepeat(record.cgMetadata!, history, request.scopeId, clock);
-        if (!decision.eligible) return { outcome: "suppressed", ...decision };
+        if (!decision.eligible) { clock += admissionDelayMs; return { outcome: "suppressed", ...decision }; }
       }
       record.recordedAt = new Date(clock).toISOString(); records.push(record);
       return { outcome: "inserted", reason: "admitted" };
     },
   };
   const runtime = new AnkaraFlyPipeline({ store, now: () => clock, emit: (kind, fields) => events.push({ kind, fields }),
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    autoPublish: { approvalStore: {
+      async getPublicationForApproval() { approvalAttempts++; return null; },
+      async transitionPendingApproval() { throw new Error("no approval fixture"); },
+    }, dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; } },
     enrich: async reference => {
       calls.push({ ...reference }); await pending;
       return { status, provider: "xweather", reference, thresholds: DEFAULT_THRESHOLDS,
@@ -66,7 +73,9 @@ function setup(recovered = true) {
     set name(value: string) { name = value; }, set status(value: EnrichmentResult["status"]) { status = value; },
     set selectedDeltaMs(value: number) { selectedDeltaMs = value; }, set selectedId(value: string) { selectedId = value; },
     set pending(value: Promise<void> | undefined) { pending = value; }, set failAdmission(value: boolean) { failAdmission = value; },
-    set unusable(value: boolean) { unusable = value; }, get now() { return clock; } };
+    set unusable(value: boolean) { unusable = value; }, get now() { return clock; },
+    set admissionDelay(value: number) { admissionDelayMs = value; },
+    get notifications() { return notifications; }, get approvalAttempts() { return approvalAttempts; }, get dispatches() { return dispatches; } };
 }
 
 test("guarded urban repeats: same place, sub-km, three total and full history cycle", async () => {
@@ -95,7 +104,44 @@ test("non-CG outcomes, missing ID, old/future selected CG and ambiguous storage 
     f.feed(1.4); await f.runtime.drainCandidateWork();
     assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1, issue);
     assert.equal(f.events.filter(row => row.kind === "publication_pending").length, 1, issue);
+    assert.equal(f.events.filter(row => row.kind === "first_cg_transition_shadow").length, 0, issue);
   }
+});
+
+test("first CG after initial non-CG produces shadow only, retaining HOLD with no admission or dispatch", async () => {
+  const f = setup(); f.status = "no_match"; await f.initial();
+  f.status = "cg_verified"; f.advance(120_000); f.feed(1.4); await f.runtime.drainCandidateWork();
+  const shadow = f.events.find(row => row.kind === "first_cg_transition_shadow")!.fields!;
+  assert.equal(shadow.policy, "first_cg_transition"); assert.equal(shadow.shadowOnly, true);
+  assert.equal(shadow.eligible, true); assert.deepEqual(shadow.otherBlockers, []);
+  assert.equal(shadow.providerEventId, "xw-2"); assert.equal(shadow.currentnessPassed, true);
+  assert.equal(shadow.providerDuplicatePassed, true); assert.equal(shadow.semanticIdentityAvailable, true);
+  assert.equal(shadow.selectedEventAgeMs, 0); assert.equal(shadow.referenceTimeDeltaMs, 0);
+  assert.equal(shadow.actualDecision, "HOLD"); assert.equal(shadow.actualAdmissionReason, "no_positive_cg_history");
+  assert.equal(f.records.length, 1, "no positive or HOLD insert from shadow admission rejection");
+  assert.equal(f.notifications, 1); assert.equal(f.approvalAttempts, 1); assert.equal(f.dispatches, 0);
+  assert.equal(f.runtime.summary().pendingPublications, 1);
+  assert.equal(f.runtime.summary().cgRepeat.firstCgShadowEligible, 1);
+  assert.equal(f.runtime.summary().cgRepeat.admissionsAccepted, 0);
+});
+
+test("source interruption while empty-history admission returns blocks shadow eligibility", async () => {
+  const f = setup(); f.status = "no_match"; await f.initial();
+  f.status = "cg_verified"; f.admissionDelay = 100_000; f.advance(120_000); f.feed(1.4);
+  await f.runtime.drainCandidateWork();
+  const shadow = f.events.find(row => row.kind === "first_cg_transition_shadow")!.fields!;
+  assert.equal(shadow.eligible, false);
+  assert.ok((shadow.otherBlockers as string[]).includes("recovery_or_source_unhealthy"));
+  assert.equal(f.runtime.summary().cgRepeat.firstCgShadowEligible, 0);
+  assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1); assert.equal(f.notifications, 1);
+});
+
+test("provider duplicate from another scope cannot generate a first-CG shadow opportunity", async () => {
+  const f = setup(); await f.initial(); const prior = { ...f.records[0], cgScopeId: "unrelated" };
+  f.records.splice(0, 1, prior); f.selectedId = prior.providerEventId!;
+  f.advance(120_000); f.feed(1.4); await f.runtime.drainCandidateWork();
+  assert.equal(f.events.filter(row => row.kind === "first_cg_transition_shadow").length, 0);
+  assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1); assert.equal(f.notifications, 1);
 });
 
 test("exact provider duplicate wins over semantic change", async () => {
