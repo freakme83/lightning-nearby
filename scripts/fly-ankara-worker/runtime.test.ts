@@ -260,6 +260,11 @@ test("qualified initial incident publishes a current 9 km CG with provider ident
   const telemetry = events.find(row => row.kind === "enrichment_complete")?.fields;
   assert.equal(telemetry?.category, "accepted");
   assert.equal(telemetry?.providerEventId, "fixture-bayindir-cg");
+  assert.equal(telemetry?.selectedLatitude, memory.records[0].cgMetadata?.latitude);
+  assert.equal(telemetry?.selectedLongitude, memory.records[0].cgMetadata?.longitude);
+  assert.equal(telemetry?.selectedEventTimeMs, selectedTime);
+  assert.equal(memory.records[0].mapUrl,
+    `https://www.google.com/maps?q=${telemetry?.selectedLatitude},${telemetry?.selectedLongitude}`);
   assert.ok((telemetry?.selectedDistanceKm as number) > 8.5);
   assert.ok((telemetry?.selectedDistanceKm as number) < 9.5);
   assert.ok((telemetry?.referenceTimeDeltaMs as number) < 150_000);
@@ -293,6 +298,9 @@ test("raw CG matches failing each initial condition fall back to non-CG without 
     assert.equal(telemetry?.rawStatus, "cg_verified", item.name);
     assert.equal(telemetry?.category, item.outcome, item.name);
     assert.equal(telemetry?.initialCgAccepted, false, item.name);
+    assert.equal(telemetry?.selectedLatitude, null, item.name);
+    assert.equal(telemetry?.selectedLongitude, null, item.name);
+    assert.equal(telemetry?.selectedEventTimeMs, null, item.name);
     assert.equal(telemetry?.evaluatedProviderEventId, `raw-${item.name}`, item.name);
     assert.equal(telemetry?.evaluatedProviderAgeMs, baseNow - item.time, item.name);
   }
@@ -307,7 +315,11 @@ test("initial IC-only and empty provider results keep ŞİMŞEK wording", async 
     await runtime.drainCandidateWork();
     assert.equal(memory.records[0].enrichmentStatus, candidate);
     assert.match(events.find(row => row.kind === "publication_pending")?.fields?.messageText as string, /^#ŞİMŞEK\n/);
-    assert.equal(events.find(row => row.kind === "enrichment_complete")?.fields?.category, "no_cg_returned");
+    const telemetry = events.find(row => row.kind === "enrichment_complete")?.fields;
+    assert.equal(telemetry?.category, "no_cg_returned");
+    assert.equal(telemetry?.selectedLatitude, null);
+    assert.equal(telemetry?.selectedLongitude, null);
+    assert.equal(telemetry?.selectedEventTimeMs, null);
   }
 });
 

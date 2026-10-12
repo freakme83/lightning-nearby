@@ -20,6 +20,9 @@ test("initial association selects a current CG between the old 8 km cutoff and t
   assert.equal(selected.status, "cg_verified");
   assert.equal(selected.match?.id, "elmadag-9km");
   assert.equal(selected.initialCgDiagnostics?.outcome, "accepted");
+  assert.equal(selected.initialCgDiagnostics?.selectedLatitude, nearby.latitude);
+  assert.equal(selected.initialCgDiagnostics?.selectedLongitude, nearby.longitude);
+  assert.equal(selected.initialCgDiagnostics?.selectedEventTimeMs, nearby.eventTimeMs);
   assert.equal(selected.initialCgDiagnostics?.selectedReferenceDeltaMs, 0);
   assert.equal(selected.initialCgDiagnostics?.selectedProviderAgeMs, 30_000);
 });
@@ -29,6 +32,10 @@ test("initial association rejects spatial, reference-time and provider-age failu
   assert.equal(far.status, "no_match");
   assert.equal(far.initialCgDiagnostics?.outcome, "rejected_spatial");
   assert.equal(far.initialCgDiagnostics?.rejectedSpatial, 1);
+  assert.equal(far.initialCgDiagnostics?.selectedLatitude, null);
+  assert.equal(far.initialCgDiagnostics?.selectedLongitude, null);
+  assert.equal(far.initialCgDiagnostics?.selectedEventTimeMs, null);
+  assert.equal(far.initialCgDiagnostics?.evaluatedProviderEventId, "beyond-query");
 
   const weak = result([cg("delta-175", { longitude: 32.97, eventTimeMs: reference.eventTimeMs - 175_000 })]);
   assert.equal(weak.status, "no_match");
@@ -53,7 +60,15 @@ test("only eligible CG candidates are ranked by reference delta, distance, then 
   const c = cg("c-near", { longitude: 32.91, eventTimeMs: reference.eventTimeMs + 1_000 });
   assert.equal(result([a, c]).match?.id, "c-near");
   const d = cg("a-id", { longitude: 32.91, eventTimeMs: reference.eventTimeMs + 1_000 });
-  assert.equal(result([c, d]).match?.id, "a-id");
+  const ranked = result([c, d]);
+  assert.equal(ranked.match?.id, "a-id");
+  assert.equal(ranked.initialCgDiagnostics?.selectedProviderEventId, "a-id");
+  assert.equal(ranked.initialCgDiagnostics?.selectedLatitude, d.latitude);
+  assert.equal(ranked.initialCgDiagnostics?.selectedLongitude, d.longitude);
+  assert.equal(ranked.initialCgDiagnostics?.selectedEventTimeMs, d.eventTimeMs);
+  const differentlyTimed = result([b, a]);
+  assert.equal(differentlyTimed.initialCgDiagnostics?.selectedLongitude, a.longitude);
+  assert.equal(differentlyTimed.initialCgDiagnostics?.selectedEventTimeMs, a.eventTimeMs);
   const stale = cg("stale-best-delta", { eventTimeMs: now - 250_000 });
   const olderReference = { ...reference, eventTimeMs: now - 250_000 };
   const current = cg("current", { eventTimeMs: now - 130_000 });
@@ -68,6 +83,9 @@ test("very close CG wins, while IC-only and empty results retain the non-CG fall
   const empty = result([]);
   assert.equal(empty.status, "no_match");
   assert.equal(empty.initialCgDiagnostics?.returnedCg, 0);
+  assert.equal(empty.initialCgDiagnostics?.selectedLatitude, null);
+  assert.equal(empty.initialCgDiagnostics?.selectedLongitude, null);
+  assert.equal(empty.initialCgDiagnostics?.selectedEventTimeMs, null);
   const mixed = result([cg("far", { longitude: 33.022 }), { ...cg("ic"), type: "ic" }]);
   assert.equal(mixed.status, "ic_only");
 });
@@ -81,6 +99,10 @@ test("a raw cg_verified match failing initial currentness cannot authorize CG co
   assert.equal(checked.status, "no_match");
   assert.equal(checked.match, undefined);
   assert.equal(checked.initialCgDiagnostics?.outcome, "rejected_provider_stale");
+  assert.equal(checked.initialCgDiagnostics?.selectedLatitude, null);
+  assert.equal(checked.initialCgDiagnostics?.selectedLongitude, null);
+  assert.equal(checked.initialCgDiagnostics?.selectedEventTimeMs, null);
+  assert.equal(checked.initialCgDiagnostics?.evaluatedProviderEventId, "raw-stale");
   assert.equal(enforceInitialCgAcceptance({ ...raw, status: "provider_unavailable", match: undefined }, now).status,
     "provider_unavailable");
 });
