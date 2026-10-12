@@ -108,8 +108,8 @@ async function processOuterDistrictCandidate(memory: ReturnType<typeof memorySto
   const locality = options.missingDistrict ? district : options.locality ?? "Yamak";
   const reverse = async (latitude: number, longitude: number): Promise<ReverseGeocodeResult> => ({
     latitude, longitude, provider: "fixture",
-    displayLabel: options.missingDistrict ? `${options.neighborhood ? `${options.neighborhood}, ` : ""}${district}` :
-      `${locality}, ${district}`,
+    displayLabel: options.missingDistrict ? (options.neighborhood ? `${options.neighborhood}, ${district}` :
+      `${district}, ${options.province ?? "Ankara"}`) : `${locality}, ${district}`,
     locality,
     ...(options.localityKind ? { localityKind: options.localityKind } : {}),
     ...(options.neighborhood ? { neighborhood: options.neighborhood } : {}),
