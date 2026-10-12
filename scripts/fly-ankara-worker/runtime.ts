@@ -440,9 +440,7 @@ export class AnkaraFlyPipeline {
         }
       }
       result = await applyPersistentLedger(result, context, this.store,
-        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
-          ...(cooldownRecordedAt ? { recordedAt: cooldownRecordedAt } : {}),
-          ...(cooldownDistrict ? { canonicalDistrict: cooldownDistrict } : {}) });
+        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now });
       const repeatPlace = result.location && "normalized" in result.location ? {
         ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
       if (repeat) {
