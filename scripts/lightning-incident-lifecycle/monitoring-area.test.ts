@@ -3,12 +3,28 @@ import assert from "node:assert/strict";
 import { ANKARA_MONITORING_AREA, ANKARA_MONITORING_POLYGON, boundingBoxForPolygon,
   pointInMonitoringArea, pointInPolygon } from "./monitoring-area.ts";
 
-test("Ankara operational polygon contains broad local examples and Kırıkkale-side coverage", () => {
-  assert.equal(pointInMonitoringArea([32.85, 39.92]), true); // Ankara city center
-  assert.equal(pointInMonitoringArea([33.515, 39.846]), true); // Kırıkkale-side operational coverage
-  assert.equal(pointInMonitoringArea([32.2, 39.4]), true);
-  assert.equal(pointInMonitoringArea([35, 39.5]), false);
-  assert.equal(pointInMonitoringArea([29.5, 41]), false);
+test("Ankara-centered operational polygon keeps the intended Ankara places inside", () => {
+  const inside = [
+    [32.8541, 39.9208], // Ankara city center
+    [32.8628, 39.8897], // Çankaya / central Ankara
+    [32.809, 39.79], // Gölbaşı
+    [32.147, 39.584], // Polatlı
+    [32.497, 39.432], // Haymana
+    [33.123, 39.553], // Bala
+    [33.538, 38.939], // Şereflikoçhisar
+    [31.921, 40.167], // Beypazarı
+  ] as const;
+  for (const point of inside) assert.equal(pointInMonitoringArea(point), true, `${point} should be inside`);
+});
+
+test("Ankara operational polygon rejects Kulu-area incidents and points south of coverage", () => {
+  const outside = [
+    [33.08, 39.09], // Kulu center
+    [33.17, 38.94], // Zincirlikuyu / Kulu incident area
+    [32.965, 39.178], // Approximate Altılar / Kulu CG coordinate
+    [33.5, 38.3], // Clearly south toward Konya / Aksaray
+  ] as const;
+  for (const point of outside) assert.equal(pointInMonitoringArea(point), false, `${point} should be outside`);
 });
 
 test("polygon vertices and exact edge points are treated as inside", () => {
@@ -20,7 +36,7 @@ test("polygon vertices and exact edge points are treated as inside", () => {
 
 test("derived subscription bounds contain every exact polygon coordinate", () => {
   const box = boundingBoxForPolygon(ANKARA_MONITORING_POLYGON);
-  assert.deepEqual(box, { north: 40.792556, east: 33.9332503, south: 38.6575458, west: 30.7733215 });
+  assert.deepEqual(box, { north: 40.7974935, east: 33.9197537, south: 38.6497402, west: 30.7776843 });
   for (const [longitude, latitude] of ANKARA_MONITORING_AREA.polygon) {
     assert.ok(latitude <= box.north && latitude >= box.south);
     assert.ok(longitude <= box.east && longitude >= box.west);
