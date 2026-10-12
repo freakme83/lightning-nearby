@@ -20,13 +20,22 @@ export type DistrictResolution =
   | { outcome: "not_applicable_district" }
   | { outcome: "location_unavailable" };
 
-/** Use only structured reverse-geocoder hierarchy; no locality or rendered-label inference. */
+/** Use structured district identity, with town locality as the existing naming pipeline's district-like parent. */
 export function resolveOuterDistrict(place: NormalizedPlace | null | undefined): DistrictResolution {
   if (!place?.province?.trim()) return { outcome: "location_unavailable" };
   if (!isAnkaraProvince(place.province)) return { outcome: "not_applicable_district" };
-  if (!place.district?.trim()) return { outcome: "location_unavailable" };
-  const canonicalDistrict = DISTRICTS.get(key(place.district));
-  return canonicalDistrict ? { outcome: "target", canonicalDistrict } : { outcome: "not_applicable_district" };
+
+  const district = place.district?.trim();
+  const town = place.localityKind === "town" ? place.locality?.trim() : undefined;
+  const districtMatch = district ? DISTRICTS.get(key(district)) : undefined;
+  const townMatch = town ? DISTRICTS.get(key(town)) : undefined;
+
+  if (districtMatch && townMatch && districtMatch !== townMatch) {
+    return { outcome: "location_unavailable" };
+  }
+  const canonicalDistrict = districtMatch ?? townMatch;
+  if (canonicalDistrict) return { outcome: "target", canonicalDistrict };
+  return district || town ? { outcome: "not_applicable_district" } : { outcome: "location_unavailable" };
 }
 
 export type OuterDistrictCooldownDecision = {
