@@ -27,7 +27,12 @@ test("Ankara operational polygon rejects Kulu-area incidents and points south of
   for (const point of outside) assert.equal(pointInMonitoringArea(point), false, `${point} should be outside`);
 });
 
-test("polygon vertices and exact edge points are treated as inside", () => {
+test("polygon is a valid finite, explicitly closed ring and edge points are treated as inside", () => {
+  assert.deepEqual(ANKARA_MONITORING_POLYGON[0], ANKARA_MONITORING_POLYGON.at(-1));
+  assert.ok(ANKARA_MONITORING_POLYGON.length >= 4);
+  assert.ok(ANKARA_MONITORING_POLYGON.every(([longitude, latitude]) =>
+    Number.isFinite(longitude) && Number.isFinite(latitude) &&
+    longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90));
   assert.equal(pointInMonitoringArea(ANKARA_MONITORING_POLYGON[0]), true);
   const [a, b] = [ANKARA_MONITORING_POLYGON[0], ANKARA_MONITORING_POLYGON[1]];
   const midpoint = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as const;
@@ -36,7 +41,7 @@ test("polygon vertices and exact edge points are treated as inside", () => {
 
 test("derived subscription bounds contain every exact polygon coordinate", () => {
   const box = boundingBoxForPolygon(ANKARA_MONITORING_POLYGON);
-  assert.deepEqual(box, { north: 40.7974935, east: 33.9197537, south: 38.6497402, west: 30.7776843 });
+  assert.deepEqual(box, { north: 40.7462082, east: 33.8704696, south: 38.6905209, west: 30.8564432 });
   for (const [longitude, latitude] of ANKARA_MONITORING_AREA.polygon) {
     assert.ok(latitude <= box.north && latitude >= box.south);
     assert.ok(longitude <= box.east && longitude >= box.west);
