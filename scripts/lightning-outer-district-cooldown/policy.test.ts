@@ -17,6 +17,26 @@ test("only the explicit Ankara district allowlist resolves, with Balâ/Bala cano
   assert.equal(resolveOuterDistrict({ province: "Ankara" }).outcome, "location_unavailable");
 });
 
+
+test("town locality can identify only an allowlisted Ankara district, conservatively", () => {
+  assert.deepEqual(resolveOuterDistrict({ locality: "Haymana", localityKind: "town", province: "Ankara" }),
+    { outcome: "target", canonicalDistrict: "Haymana" });
+  assert.deepEqual(resolveOuterDistrict({ neighborhood: "Güzelcekale", locality: "Haymana",
+    localityKind: "town", province: "Ankara" }), { outcome: "target", canonicalDistrict: "Haymana" });
+  assert.equal(resolveOuterDistrict({ locality: "Haymana", localityKind: "village", province: "Ankara" }).outcome,
+    "location_unavailable");
+  assert.equal(resolveOuterDistrict({ locality: "Çankaya", localityKind: "town", province: "Ankara" }).outcome,
+    "not_applicable_district");
+  assert.deepEqual(resolveOuterDistrict({ district: "Haymana", province: "Ankara" }),
+    { outcome: "target", canonicalDistrict: "Haymana" });
+  assert.deepEqual(resolveOuterDistrict({ district: "Bala", province: "Ankara" }),
+    { outcome: "target", canonicalDistrict: "Balâ" });
+  assert.deepEqual(resolveOuterDistrict({ district: "Haymana", locality: "Bala", localityKind: "town",
+    province: "Ankara" }), { outcome: "location_unavailable" });
+  assert.deepEqual(resolveOuterDistrict({ district: "Bala", locality: "Balâ", localityKind: "town",
+    province: "Ankara" }), { outcome: "target", canonicalDistrict: "Balâ" });
+});
+
 test("cooldown holds strictly before 120 minutes and allows at the boundary", () => {
   const start = Date.parse("2026-10-12T14:00:00.000Z");
   assert.deepEqual(evaluateOuterDistrictCooldown(start, null), {
