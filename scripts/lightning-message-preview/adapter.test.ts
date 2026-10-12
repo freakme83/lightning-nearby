@@ -22,13 +22,13 @@ test("CG artifact maps current incident fields and selected match through the ex
   assert.equal(result.locationDisplayLabel, location);
   assert.equal(result.enrichmentStatus, "cg_verified");
   assert.equal(result.composer.hashtag, "#YILDIRIM");
-  assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:48 TSİ");
+  assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:47 TSİ");
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.902742,32.851494");
   assert.equal(result.text, result.composer.text);
   assert.equal(result.characterCount, result.composer.characterCount);
   assert.deepEqual(result.composer, composeLightningMessage({
     incident: { id: fixtures.cg_verified.incident.incidentId,
-      lastActivityTimeMs: fixtures.cg_verified.incident.lastActivityTimeMs },
+      lastActivityTimeMs: fixtures.cg_verified.enrichment.match.eventTimeMs },
     locationDisplayLabel: location,
     enrichment: { status: "cg_verified", match: { type: "cg", latitude: 39.902742, longitude: 32.851494 } },
   }));
@@ -62,12 +62,12 @@ test("CG map uses selected match coordinates, never incident representative coor
   assert.doesNotMatch(result.text, /39\.900, 32\.800|https?:\/\//);
 });
 
-test("the current lastActivityTimeMs wins over any older eventTimeMs", () => {
+test("initial CG publication time comes from the selected provider event", () => {
   const artifact = { ...fixtures.reactivated_cg,
     incident: { ...fixtures.reactivated_cg.incident, eventTimeMs: Date.parse("2026-10-06T13:38:00Z") } };
   const result = preview(artifact, "Beynam, Balâ");
   assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:48 TSİ");
+  if (result.ok) assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:47 TSİ");
 });
 
 test("reactivation, freshness, and cost diagnostics remain out of public wording", () => {
@@ -76,12 +76,24 @@ test("reactivation, freshness, and cost diagnostics remain out of public wording
   if (!result.ok) return;
   assert.equal(result.triggerMode, "reactivated_after_stale_publish");
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.682564,32.859372");
-  assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:48 TSİ");
+  assert.equal(result.composer.dateTimeText, "6 Ekim 2026, 16:47 TSİ");
   assert.doesNotMatch(result.text, /reactivat|stale|fresh|240000|540000|token|cost|Xweather|endpoint|provider/i);
   assert.match(result.text, /yere ulaşan yıldırım/);
   const fresh = preview({ ...fixtures.reactivated_cg, triggerMode: "fresh_would_publish" }, "Beynam, Balâ");
   assert.equal(fresh.ok, true);
   if (fresh.ok) assert.equal(result.text, fresh.text);
+});
+
+test("initial selected CG time can differ by minutes while repeat time remains unchanged", () => {
+  const selectedTime = fixtures.cg_verified.incident.lastActivityTimeMs - 90_000;
+  const artifact = { ...fixtures.cg_verified, enrichment: { ...fixtures.cg_verified.enrichment,
+    match: { ...fixtures.cg_verified.enrichment.match, eventTimeMs: selectedTime } } };
+  const initial = preview(artifact);
+  assert.equal(initial.ok, true);
+  if (initial.ok) assert.equal(initial.composer.dateTimeText, "6 Ekim 2026, 16:46 TSİ");
+  const repeat = preview({ ...artifact, triggerMode: "cg_repeat_probe" });
+  assert.equal(repeat.ok, true);
+  if (repeat.ok) assert.equal(repeat.composer.dateTimeText, "6 Ekim 2026, 16:48 TSİ");
 });
 
 test("missing location preserves the composer structured error", () => {

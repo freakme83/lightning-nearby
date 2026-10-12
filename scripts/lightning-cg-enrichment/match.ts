@@ -45,7 +45,7 @@ export function greatCircleDistanceKm(a: Pick<XweatherLightningEvent, "latitude"
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(Math.max(0, Math.min(1, haversine))));
 }
 
-function rank(a: LightningMatch, b: LightningMatch): number {
+export function rankLightningMatches(a: LightningMatch, b: LightningMatch): number {
   return a.timeDifferenceMs - b.timeDifferenceMs || a.distanceKm - b.distanceKm || a.id.localeCompare(b.id);
 }
 
@@ -62,7 +62,7 @@ export function matchLightningEvents(reference: EnrichmentReference, events: Xwe
     const timeDifferenceMs = Math.abs(event.eventTimeMs - reference.eventTimeMs);
     if (distanceKm > thresholds.maxMatchDistanceKm || timeDifferenceMs > thresholds.maxTimeDifferenceMs) return [];
     return [{ ...event, distanceKm, timeDifferenceMs }];
-  }).sort(rank);
+  }).sort(rankLightningMatches);
   const counts = makeCounts(events.length, matches);
   // Aggregate only the returned payload; never infer provider-wide CG absence.
   // Spatial/temporal counts overlap; cgRejectedBoth makes that explicit.
@@ -72,9 +72,9 @@ export function matchLightningEvents(reference: EnrichmentReference, events: Xwe
   const matchDiagnostics = { returnedCg: cg.length, returnedIc: events.length - cg.length,
     cgRejectedSpatial: cg.filter(spatial).length, cgRejectedTemporal: cg.filter(temporal).length,
     cgRejectedBoth: cg.filter(event => spatial(event) && temporal(event)).length };
-  const bestCg = matches.filter(item => item.type === "cg").sort(rank)[0];
+  const bestCg = matches.filter(item => item.type === "cg").sort(rankLightningMatches)[0];
   if (bestCg) return { status: "cg_verified", provider: "xweather", reference, thresholds, counts, matchDiagnostics, match: bestCg, cost };
-  const bestIc = matches.filter(item => item.type === "ic").sort(rank)[0];
+  const bestIc = matches.filter(item => item.type === "ic").sort(rankLightningMatches)[0];
   if (bestIc) return { status: "ic_only", provider: "xweather", reference, thresholds, counts, matchDiagnostics, match: bestIc, cost };
   return { status: "no_match", provider: "xweather", reference, thresholds, counts, matchDiagnostics, cost };
 }

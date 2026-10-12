@@ -1,8 +1,8 @@
 # Research: Xweather CG / IC enrichment
 
-This isolated adapter tests one question for an explicitly selected publish-candidate incident: did a nearby Xweather cloud-to-ground (CG) or intracloud (IC) event occur close to the incident in both space and time? The live LightningMaps-compatible feed currently classifies discharge type as unknown, so that feed alone cannot support a ground-strike claim.
+This adapter queries Xweather for an explicitly qualified publish-candidate incident. The live LightningMaps-compatible feed currently classifies discharge type as unknown, so that feed alone cannot support a ground-strike claim.
 
-This is a research-only query and result model. It is not connected to the listener, incident lifecycle, composer, persistence, or any publisher. Call it only at a future publish-candidate boundary; never call once per raw feed observation.
+The Fly research worker calls it only after the independent incident lifecycle has qualified an initial publication candidate. It never queries once per raw feed observation. For initial publication, it selects a current nearby CG under the [initial CG association policy](initial-cg-association.md) before naming, composition, and ledger persistence. Repeat CG probes retain their separate matching and admission rules.
 
 ## Reference and query
 
@@ -20,7 +20,7 @@ A real small `/lightning/closest` query with a 10 km radius and limit 3 returned
 
 ## Matching defaults and result meanings
 
-Initial research defaults are maximum query radius 10 km, maximum incident match distance 8 km, maximum absolute event-time difference 5 minutes, and limit 10. The existing feed clusterer uses an 8 km event-to-event grouping threshold, so 8 km is a tighter initial match bound than the query radius. Incidents can associate clusters as far as 10 km, so the choice may exclude some otherwise related events; evaluate it with paired samples before changing it. These are configurable operational research thresholds, not meteorological truth. The API radius only determines which records can be returned; local spatial and temporal checks determine whether a record matches.
+The general matcher and manual CLI retain a maximum query radius of 10 km, maximum match distance of 8 km, maximum absolute reference-time difference of 5 minutes, and limit 10. Its raw matching diagnostics remain available. Initial Fly publication uses the same 10 km request but separately admits CG events at up to 10 km, at most 150 seconds from the reference, and at most 4 minutes old at selection and publication processing. A returned or generally matched CG does not authorize initial CG wording until this complete policy passes. These are operational research thresholds, not meteorological truth.
 
 Candidates are ranked by smallest absolute time difference, then smallest great-circle distance, then stable event ID. For `cg_verified`, the best-ranked matching CG event is retained even if IC candidates also match.
 

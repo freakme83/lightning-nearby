@@ -42,8 +42,14 @@ export function previewPairedMessage(input: PairedPreviewInput): PairedMessagePr
       latitude: typeof selectedMatch.latitude === "number" ? selectedMatch.latitude : undefined,
       longitude: typeof selectedMatch.longitude === "number" ? selectedMatch.longitude : undefined,
     } : undefined;
+  // Initial CG wording reports the selected provider event's time. The incident
+  // reference remains separately available for lifecycle and ledger provenance.
+  const selectedEventTimeMs = selectedMatch?.eventTimeMs;
+  const messageTimeMs = enrichmentStatus === "cg_verified" && triggerMode !== "cg_repeat_probe" &&
+    typeof selectedEventTimeMs === "number" && Number.isSafeInteger(selectedEventTimeMs) && selectedEventTimeMs >= 0
+    ? selectedEventTimeMs : incident.lastActivityTimeMs;
   const composerInput: ComposerInput = {
-    incident: { id: incident.incidentId, lastActivityTimeMs: incident.lastActivityTimeMs },
+    incident: { id: incident.incidentId, lastActivityTimeMs: messageTimeMs },
     locationDisplayLabel: input.locationDisplayLabel,
     enrichment: { status: enrichmentStatus, match },
   };
