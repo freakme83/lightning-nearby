@@ -7,3 +7,8 @@ The initial CG selection checks returned CG events within the existing 10 km pro
 When no CG passes every initial condition, the normal non-CG publication path remains available. Telemetry distinguishes no CG returned, spatial rejection, reference-time rejection, provider-event staleness, and accepted selection. The provider's returned or broadly matched CG is not itself authorization for a `#YILDIRIM` message. For an accepted initial CG, `enrichment_complete` also records the selected provider coordinates and event time alongside its event ID and selection metrics; rejected candidates remain distinguished as evaluated, with selected fields null.
 
 This policy applies to initial publication only. Repeat-CG admission, later first-CG transitions, and storm-evolution shadow evaluation retain their separate rules.
+
+
+## Outer-district non-CG cooldown
+
+Initial non-CG publications in the selected outer Ankara districts use a 120-minute district-wide cooldown. The key comes from normalized district identity and is stored with the publication ledger record so the decision survives worker restarts. CG publications and repeat-CG admission do not read or update this cooldown.
