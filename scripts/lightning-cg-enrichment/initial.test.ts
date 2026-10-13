@@ -128,3 +128,19 @@ test("initial provider adapter makes one 10 km query and selects from all return
   assert.equal(selected.matchDiagnostics?.cgRejectedSpatial, 1, "general 8 km diagnostics remain distinct");
   assert.equal(enforceInitialCgAcceptance(selected, now).initialCgDiagnostics?.returnedCg, 2);
 });
+
+test("initial Xweather adapter returns only the provider-reported cost token value", async () => {
+  const payload = { success: true, response: [{ id: "cost-cg", loc: { lat: reference.latitude, long: reference.longitude },
+    ob: { timestampMS: reference.eventTimeMs, pulse: { type: "cg" } } }] };
+  const dependencies = { now: () => now, env: { XWEATHER_CLIENT_ID: "fixture-id", XWEATHER_CLIENT_SECRET: "fixture-secret" },
+    fetch: async () => new Response(JSON.stringify(payload), { status: 200,
+      headers: { "X-Cost-Tokens": "7" } }) };
+  const withCost = await enrichInitialIncidentWithLightningType(reference, dependencies);
+  assert.equal(withCost.status, "cg_verified");
+  assert.equal(withCost.cost?.tokens, 7);
+
+  const withoutHeader = await enrichInitialIncidentWithLightningType(reference, {
+    ...dependencies, fetch: async () => new Response(JSON.stringify(payload), { status: 200 }),
+  });
+  assert.equal(withoutHeader.cost?.tokens, undefined);
+});
