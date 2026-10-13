@@ -177,8 +177,11 @@ async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
     },
     reverse: async (latitude, longitude) => {
       calls.reverse++;
-      return { latitude, longitude, provider: "fixture", displayLabel: "Aşağı Ayrancı, Çankaya",
-        locality: "Aşağı Ayrancı", district: "Çankaya", province: "Ankara", country: "Türkiye" };
+      const payload = { address: { neighbourhood: "Aşağı Ayrancı", town: "Çankaya", county: "Çankaya",
+        state: "Ankara", country: "Türkiye" } };
+      const normalized = normalizeNominatimAddress(payload);
+      return { latitude, longitude, provider: "fixture", ...normalized,
+        displayLabel: makeDisplayLabel(normalized), providerAddress: extractProviderAddressHierarchy(payload) };
     },
   });
   qualifyingEvents(fixture.runtime);
