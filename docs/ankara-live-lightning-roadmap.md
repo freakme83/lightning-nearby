@@ -127,28 +127,21 @@ The most valuable live checks are:
 | P0-A | Expired candidate recovery | Complete - PR #84 |
 | P0-C | CG/provider telemetry | Largely complete; continue field validation |
 | P0-D | Initial CG association | Complete - PR #87; field validation active |
-| P0-B | First verified CG transition | Next behavioral candidate, but wait for initial-CG field evidence before activation |
-| P1 | Delayed Xweather recheck shadow | Recommended next experiment; telemetry-only |
+| P0-B | First verified CG transition | Detailed shadow telemetry active and collecting data (PR #98); publication transition remains inactive |
+| P1 | Delayed Xweather recheck shadow | This PR: one shadow-only query about 3 minutes after qualifying initial `#ŞİMŞEK` |
 | P1/P2 | Storm evolution | Shadow running; collect data before publishing activation |
 | P2 | Urban relevance layer | Defer until storm-evolution evidence is sufficient |
 | P3 | Cluster geometry redesign | Defer; do not solve publication semantics by prematurely shrinking meteorological clusters |
 
-## Recommended next experiment: delayed Xweather recheck shadow
+## Running shadow experiments
 
-The next low-risk experiment should measure provider latency without changing public behavior.
+These are evidence-gathering experiments. Their results must not silently become publication policy; review real cases before proposing any behavior change.
 
-Suggested design:
+- `first_cg_transition_shadow` measures whether a later verified CG would provide meaningful new information after an earlier `#ŞİMŞEK`. It observes the normal live flow and does not activate the transition.
+- Delayed Xweather recheck (this PR) measures provider/reporting latency: whether an initial non-CG result becomes a current, acceptable CG on one query about 3 minutes later. It records actual provider cost-token values when Xweather reports them so query cost can be compared with normal enrichment.
+- Storm evolution measures whether later electrical activity represents meaningful geographic evolution rather than repeat reporting.
 
-- trigger only after an initial `no_cg_returned` / provider returned zero usable lightning events
-- wait about 90 seconds
-- issue exactly one additional Xweather query for the same incident/reference
-- one retry maximum per incident
-- telemetry only: no composer change, no Supabase publication, no Telegram notification and no X dispatch
-- no restart recovery is required for a pending shadow retry
-
-Telemetry should show whether the delayed result remained empty, became IC-only, returned a CG that failed spatial/time/currentness policy, or returned a CG that the current initial policy would have accepted.
-
-This experiment should answer whether initial CG misses are caused materially by provider latency before any delayed-publish behavior is considered.
+The delayed check is scheduled only after an initial non-CG candidate is persisted in the normal publication flow. It makes no publication or admission decision. Pending work is in memory only and may be lost on worker restart; no recovery persistence is added.
 
 ## Design principles and guardrails
 
