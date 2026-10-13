@@ -646,7 +646,7 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   assert.equal(fields.enrichmentStatus, "cg_verified");
   assert.equal(fields.currentnessPassed, true);
   assert.equal(fields.actualAdmissionReason, "no_positive_cg_history");
-  assert.equal(fields.firstVerifiedCgObservedForScope, true);
+  assert.equal((fields.transitionElapsedSeconds as Record<string, unknown>).firstVerifiedCgObservedForScope, true);
   assert.equal(fields.providerEventAlreadyRecorded, false);
   assert.equal(fields.equivalentCgPublicationExists, false);
   assert.deepEqual(fields.earlierPublication, {
