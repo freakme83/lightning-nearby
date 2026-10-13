@@ -448,15 +448,35 @@ export class AnkaraFlyPipeline {
         const shadow = result.ledger?.firstCgTransitionShadow;
         if (shadow) {
           this.firstCgShadowOpportunities++;
-          const telemetry = cgProviderTelemetry(artifact.enrichment, repeat.observation.eventTimeMs, this.now(), MAX_PAIRING_INCIDENT_AGE_MS);
+          const evaluationAtMs = this.now();
+          const telemetry = cgProviderTelemetry(artifact.enrichment, repeat.observation.eventTimeMs,
+            evaluationAtMs, MAX_PAIRING_INCIDENT_AGE_MS);
           const otherBlockers = [...new Set([...shadow.otherBlockers,
             ...(repeatFailure ? [repeatFailure] : []), ...(telemetry.currentnessFailure ? [telemetry.currentnessFailure] : []),
-            ...(!this.repeatRecoveryReady(this.now()) ? ["recovery_or_source_unhealthy"] : [])])];
+            ...(!this.repeatRecoveryReady(evaluationAtMs) ? ["recovery_or_source_unhealthy"] : [])])];
           const eligible = shadow.eligible && otherBlockers.length === 0;
+          const actualAdmissionReason = result.ledger?.cgAdmission?.reason ?? null;
           if (eligible) this.firstCgShadowEligible++;
+          // The admission RPC returns only outcome/reason, not the prior non-CG record.
+          // Keep those fields explicit as null; do not add a telemetry-only ledger read.
           this.emit("first_cg_transition_shadow", { ...shadow, incidentId, scopeId: admission.scopeId,
-            ...telemetry, eligible, otherBlockers,
-            actualDecision: result.publishDecision?.decision, actualAdmissionReason: result.ledger?.cgAdmission?.reason });
+            clusterIds: [...repeat.incident.sourceClusterIds], predecessorIncidentId: repeat.predecessorId ?? null,
+            repeatSuppressionReason: repeat.reason, opportunityDetected: true,
+            evaluationAtMs, evaluationAt: new Date(evaluationAtMs).toISOString(),
+            reference: { sourceClusterId: repeat.observation.sourceClusterId,
+              eventTimeMs: repeat.observation.eventTimeMs, latitude: repeat.observation.latitude,
+              longitude: repeat.observation.longitude },
+            earlierPublication: { isNonCg: null, publicationRecordId: null, eventKind: null,
+              providerStatus: null, publishedAt: null, latitude: null, longitude: null,
+              locationLabel: null, structuredLocation: null,
+              unavailableReason: "not_returned_by_cg_admission_result" },
+            transitionElapsedSeconds: { earlierPublicationToCg: null, earlierPublicationToEvaluation: null,
+              earlierPublicationToCgDistanceKm: null,
+              firstVerifiedCgObservedForScope: actualAdmissionReason === "no_positive_cg_history" },
+            providerEventAlreadyRecorded: shadow.providerDuplicatePassed === null ? null : !shadow.providerDuplicatePassed,
+            equivalentCgPublicationExists: result.ledger?.duplicateMatch?.duplicate ?? null,
+            ...telemetry, eligible, eligibilityReason: eligible ? "eligible" : otherBlockers[0] ?? "ineligible",
+            otherBlockers, actualDecision: result.publishDecision?.decision, actualAdmissionReason });
         }
         this.emit("cg_repeat_outcome", { scopeId: admission.scopeId, originalSuppressionReason: repeat.reason,
         stage: result.ledger?.cgAdmission?.outcome === "inserted" ? "admission_accepted" :
