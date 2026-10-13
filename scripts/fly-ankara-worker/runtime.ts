@@ -26,10 +26,30 @@ import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type 
 import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
 import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
 import { cgProviderTelemetry } from "./telemetry.ts";
+import { greatCircleDistanceKm } from "../lightning-cg-enrichment/match.ts";
 import { StormEvolutionShadow } from "./storm-evolution.ts";
 import { resolveOuterDistrict } from "../lightning-outer-district-policy/policy.ts";
 
 type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
+type EarlierNonCgPublication = {
+  isNonCg: true;
+  publicationRecordId: string;
+  eventKind: string;
+  providerStatus: string;
+  publishedAt: string;
+  latitude: number;
+  longitude: number;
+  locationLabel: string;
+  structuredLocation: {
+    neighborhood: string | null;
+    locality: string | null;
+    localityKind: string | null;
+    district: string | null;
+    province: string | null;
+    country: string | null;
+    rawType: string | null;
+  } | null;
+};
 
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
@@ -104,6 +124,7 @@ export class AnkaraFlyPipeline {
   private cgAdmissionsAccepted = 0;
   private firstCgShadowOpportunities = 0;
   private firstCgShadowEligible = 0;
+  private readonly earlierNonCgPublications = new Map<string, EarlierNonCgPublication>();
   private readonly stormEvolution = new StormEvolutionShadow();
   private readonly stormEvolutionWork = new Map<string, Promise<void>>();
   private readonly outerDistrictNonCgPublication = { evaluated: 0, suppressed: 0,
@@ -438,8 +459,32 @@ export class AnkaraFlyPipeline {
           return;
         }
       }
+      // Reuse the ledger's normal record timestamp for later in-process shadow correlation.
+      const ledgerRecordedAt = new Date(this.now()).toISOString();
       result = await applyPersistentLedger(result, context, this.store,
-        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now });
+        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
+          ...(!repeat ? { recordedAt: ledgerRecordedAt } : {}) });
+      if (!repeat && result.message?.ok && result.message.composer.hashtag === "#ŞİMŞEK" &&
+          result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.recordPersisted &&
+          result.ledger.writeDisposition === "inserted" && result.ledger.persistedPublicationId) {
+        const pairedIncident = artifact.incident;
+        const normalized = result.location && "normalized" in result.location ? result.location.normalized : null;
+        this.earlierNonCgPublications.set(incidentId, {
+          isNonCg: true, publicationRecordId: result.ledger.persistedPublicationId,
+          eventKind: result.message.composer.hashtag, providerStatus: result.message.enrichmentStatus,
+          // This is the persisted ledger admission time; the asynchronous publisher does not return
+          // a confirmed external post timestamp to this worker.
+          publishedAt: ledgerRecordedAt,
+          latitude: pairedIncident.latitude, longitude: pairedIncident.longitude,
+          locationLabel: result.message.locationDisplayLabel,
+          structuredLocation: normalized ? {
+            neighborhood: normalized.neighborhood ?? null, locality: normalized.locality ?? null,
+            localityKind: normalized.localityKind ?? null, district: normalized.district ?? null,
+            province: normalized.province ?? null, country: normalized.country ?? null,
+            rawType: normalized.rawType ?? null,
+          } : null,
+        });
+      }
       const repeatPlace = result.location && "normalized" in result.location ? {
         ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
       if (repeat) {
@@ -456,9 +501,22 @@ export class AnkaraFlyPipeline {
             ...(!this.repeatRecoveryReady(evaluationAtMs) ? ["recovery_or_source_unhealthy"] : [])])];
           const eligible = shadow.eligible && otherBlockers.length === 0;
           const actualAdmissionReason = result.ledger?.cgAdmission?.reason ?? null;
+          const earlierPublication = this.earlierNonCgPublications.get(incidentId) ??
+            (repeat.predecessorId ? this.earlierNonCgPublications.get(repeat.predecessorId) : undefined);
+          const earlierPublicationAtMs = earlierPublication ? Date.parse(earlierPublication.publishedAt) : NaN;
+          const earlierPublicationToCgSeconds = earlierPublication && Number.isFinite(earlierPublicationAtMs) &&
+              typeof telemetry.selectedEventTimeMs === "number" && Number.isFinite(telemetry.selectedEventTimeMs)
+            ? (telemetry.selectedEventTimeMs - earlierPublicationAtMs) / 1000 : null;
+          const earlierPublicationToEvaluationSeconds = earlierPublication && Number.isFinite(earlierPublicationAtMs)
+            ? (evaluationAtMs - earlierPublicationAtMs) / 1000 : null;
+          const earlierPublicationToCgDistanceKm = earlierPublication &&
+              typeof telemetry.selectedLatitude === "number" && typeof telemetry.selectedLongitude === "number" &&
+              typeof telemetry.selectedEventTimeMs === "number" && Number.isFinite(telemetry.selectedEventTimeMs)
+            ? greatCircleDistanceKm({ latitude: earlierPublication.latitude, longitude: earlierPublication.longitude },
+              { latitude: telemetry.selectedLatitude, longitude: telemetry.selectedLongitude,
+                eventTimeMs: telemetry.selectedEventTimeMs })
+            : null;
           if (eligible) this.firstCgShadowEligible++;
-          // The admission RPC returns only outcome/reason, not the prior non-CG record.
-          // Keep those fields explicit as null; do not add a telemetry-only ledger read.
           this.emit("first_cg_transition_shadow", { ...shadow, incidentId, scopeId: admission.scopeId,
             clusterIds: [...repeat.incident.sourceClusterIds], predecessorIncidentId: repeat.predecessorId ?? null,
             repeatSuppressionReason: repeat.reason, opportunityDetected: true,
@@ -466,13 +524,15 @@ export class AnkaraFlyPipeline {
             reference: { sourceClusterId: repeat.observation.sourceClusterId,
               eventTimeMs: repeat.observation.eventTimeMs, latitude: repeat.observation.latitude,
               longitude: repeat.observation.longitude },
-            earlierPublication: { isNonCg: null, publicationRecordId: null, eventKind: null,
-              providerStatus: null, publishedAt: null, latitude: null, longitude: null,
-              locationLabel: null, structuredLocation: null,
-              unavailableReason: "not_returned_by_cg_admission_result" },
-            transitionElapsedSeconds: { earlierPublicationToCg: null, earlierPublicationToEvaluation: null,
-              earlierPublicationToCgDistanceKm: null,
-              firstVerifiedCgObservedForScope: actualAdmissionReason === "no_positive_cg_history" },
+            earlierPublication: earlierPublication ? { ...earlierPublication, unavailableReason: null } : {
+              isNonCg: null, publicationRecordId: null, eventKind: null, providerStatus: null,
+              publishedAt: null, latitude: null, longitude: null, locationLabel: null, structuredLocation: null,
+              unavailableReason: "not_observed_in_runtime_memory",
+            },
+            transitionElapsedSeconds: { earlierPublicationToCg: earlierPublicationToCgSeconds,
+              earlierPublicationToEvaluation: earlierPublicationToEvaluationSeconds,
+              earlierPublicationToCgDistanceKm },
+            admissionReportedNoPositiveCgHistory: actualAdmissionReason === "no_positive_cg_history",
             providerEventAlreadyRecorded: shadow.providerDuplicatePassed === null ? null : !shadow.providerDuplicatePassed,
             equivalentCgPublicationExists: result.ledger?.duplicateMatch?.duplicate ?? null,
             ...telemetry, eligible, eligibilityReason: eligible ? "eligible" : otherBlockers[0] ?? "ineligible",
@@ -556,6 +616,7 @@ export class AnkaraFlyPipeline {
       this.controllers.delete(id);
       this.repeatProbes.forget(this.repeatScopeId(id));
       this.repeatPredecessors.delete(id);
+      this.earlierNonCgPublications.delete(id);
     }
     this.policy.pruneClosed(nowMs);
   }

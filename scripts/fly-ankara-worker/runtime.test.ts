@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
+import { DEFAULT_THRESHOLDS, greatCircleDistanceKm } from "../lightning-cg-enrichment/match.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
@@ -117,7 +117,7 @@ async function processOuterDistrictCandidate(memory: ReturnType<typeof memorySto
   return fixture;
 }
 
-async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
+async function evaluateFirstCgShadowFixture(staleAtEvaluation = false, earlierPublicationAvailable = true) {
   let current = baseNow;
   const calls = { enrichment: 0, reverse: 0, historyReads: 0, writes: 0,
     notifications: 0, approvalReads: 0, approvalTransitions: 0, dispatches: 0 };
@@ -131,7 +131,7 @@ async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
   const store: LedgerStore = {
     async loadRelevantPublicationHistory() {
       calls.historyReads++;
-      if (staleAtEvaluation && calls.historyReads === 2) current = baseNow + 5 * 60_000;
+      if (staleAtEvaluation && calls.historyReads === 2) current = baseNow + 6 * 60_000;
       return [];
     },
     async insertPublicationRecord(record, messageText) {
@@ -171,9 +171,14 @@ async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
     notifyPending: async () => { calls.notifications++; return { ok: true }; },
     enrich: async reference => {
       calls.enrichment++;
-      if (calls.enrichment === 1) return { status: "no_match", provider: "xweather", reference,
-        thresholds: { ...DEFAULT_THRESHOLDS }, counts: { returned: 0, matched: 0, matchedCg: 0, matchedIc: 0 } };
-      return verifiedCg(reference);
+      if (calls.enrichment === 1) return earlierPublicationAvailable
+        ? { status: "no_match", provider: "xweather", reference,
+            thresholds: { ...DEFAULT_THRESHOLDS }, counts: { returned: 0, matched: 0, matchedCg: 0, matchedIc: 0 } }
+        : { status: "provider_unavailable", provider: "xweather", reference,
+            thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error" };
+      const selected = verifiedCg(reference);
+      return { ...selected, match: { ...selected.match!, latitude: 39.95,
+        longitude: 32.65, eventTimeMs: reference.eventTimeMs } };
     },
     reverse: async (latitude, longitude) => {
       calls.reverse++;
@@ -186,7 +191,9 @@ async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
   });
   qualifyingEvents(fixture.runtime);
   await fixture.runtime.drainCandidateWork();
-  assert.equal(records.length, 1, "the earlier non-CG candidate is the only persisted record");
+  assert.equal(records.length, 1, earlierPublicationAvailable
+    ? "the earlier non-CG candidate is the only persisted record"
+    : "the initial HOLD record is the only persisted record");
 
   const incident = fixture.runtime.lifecycle.incidents.find(value => value.status === "active");
   assert.ok(incident);
@@ -198,11 +205,13 @@ async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
       reason: "already_published_active_incident";
     }): Promise<void>;
   };
+  current = baseNow + 3 * 60_000;
+  fixture.runtime.recordFrame(current);
   internals.repeatReadyAtMs = current;
   await internals.processRepeatProbe({
     incident,
-    observation: { sourceClusterId: incident.sourceClusterIds[0], eventTimeMs: baseNow - 1_000,
-      receivedAtMs: baseNow, latitude: incident.representativeLatitude, longitude: incident.representativeLongitude },
+    observation: { sourceClusterId: incident.sourceClusterIds[0], eventTimeMs: baseNow + 60_000,
+      receivedAtMs: current, latitude: incident.representativeLatitude, longitude: incident.representativeLongitude },
     reason: "already_published_active_incident",
   });
   return { ...fixture, calls, records };
@@ -636,28 +645,40 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   assert.ok(Array.isArray(fields.clusterIds));
   assert.ok(Number.isFinite(fields.evaluationAtMs as number));
   assert.equal(fields.providerEventId, "xw-event-1");
-  assert.equal(fields.selectedEventTimeMs, baseNow - 1_000);
-  assert.equal(fields.selectedLatitude, 39.9);
-  assert.equal(fields.selectedLongitude, 32.6);
-  assert.equal(fields.selectedEventAgeMs, 1_000);
-  assert.equal(fields.referenceTimeMs, baseNow - 1_000);
+  assert.equal(fields.selectedEventTimeMs, baseNow + 60_000);
+  assert.equal(fields.selectedLatitude, 39.95);
+  assert.equal(fields.selectedLongitude, 32.65);
+  assert.equal(fields.selectedEventAgeMs, 120_000);
+  assert.equal(fields.referenceTimeMs, baseNow + 60_000);
   assert.equal(fields.referenceTimeDeltaMs, 0);
   assert.equal(fields.selectedDistanceKm, 0);
   assert.equal(fields.enrichmentStatus, "cg_verified");
   assert.equal(fields.currentnessPassed, true);
   assert.equal(fields.actualAdmissionReason, "no_positive_cg_history");
-  assert.equal((fields.transitionElapsedSeconds as Record<string, unknown>).firstVerifiedCgObservedForScope, true);
+  assert.equal(fields.admissionReportedNoPositiveCgHistory, true);
+  assert.equal(fields.firstVerifiedCgObservedForScope, undefined);
   assert.equal(fields.providerEventAlreadyRecorded, false);
   assert.equal(fields.equivalentCgPublicationExists, false);
-  assert.deepEqual(fields.earlierPublication, {
-    isNonCg: null, publicationRecordId: null, eventKind: null, providerStatus: null,
-    publishedAt: null, latitude: null, longitude: null, locationLabel: null, structuredLocation: null,
-    unavailableReason: "not_returned_by_cg_admission_result",
+  const earlier = fields.earlierPublication as Record<string, unknown>;
+  assert.equal(earlier.isNonCg, true);
+  assert.equal(earlier.publicationRecordId, fixture.records[0].publicationId);
+  assert.equal(earlier.eventKind, "#ŞİMŞEK");
+  assert.equal(earlier.providerStatus, "no_match");
+  assert.equal(earlier.publishedAt, new Date(baseNow).toISOString());
+  assert.equal(earlier.latitude, 39.9);
+  assert.equal(earlier.longitude, 32.6);
+  assert.equal(earlier.locationLabel, "Aşağı Ayrancı, Çankaya");
+  assert.deepEqual(earlier.structuredLocation, {
+    neighborhood: "Aşağı Ayrancı", locality: "Çankaya", localityKind: "town",
+    district: "Çankaya", province: "Ankara", country: "Türkiye", rawType: null,
   });
-  assert.deepEqual(fields.transitionElapsedSeconds, {
-    earlierPublicationToCg: null, earlierPublicationToEvaluation: null,
-    earlierPublicationToCgDistanceKm: null, firstVerifiedCgObservedForScope: true,
-  });
+  assert.equal(earlier.unavailableReason, null);
+  const transition = fields.transitionElapsedSeconds as Record<string, unknown>;
+  assert.equal(transition.earlierPublicationToCg, 60);
+  assert.equal(transition.earlierPublicationToEvaluation, 180);
+  assert.equal(transition.earlierPublicationToCgDistanceKm,
+    greatCircleDistanceKm({ latitude: 39.9, longitude: 32.6 },
+      { latitude: 39.95, longitude: 32.65, eventTimeMs: baseNow + 60_000 }));
   assert.equal(fixture.records.length, 1, "shadow evaluation must not persist another publication");
   assert.equal(fixture.calls.writes, 1);
   assert.equal(fixture.calls.notifications, 1);
@@ -669,6 +690,24 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   assert.equal(fixture.calls.historyReads, 2, "no telemetry-only ledger read was added");
   assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowOpportunities, 1);
   assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowEligible, 1);
+});
+
+test("first-CG shadow leaves earlier-publication fields null when this runtime did not observe one", async () => {
+  const fixture = await evaluateFirstCgShadowFixture(false, false);
+  const events = fixture.events.filter(row => row.kind === "first_cg_transition_shadow");
+  assert.equal(events.length, 1);
+  const fields = events[0].fields!;
+  assert.deepEqual(fields.earlierPublication, {
+    isNonCg: null, publicationRecordId: null, eventKind: null, providerStatus: null,
+    publishedAt: null, latitude: null, longitude: null, locationLabel: null, structuredLocation: null,
+    unavailableReason: "not_observed_in_runtime_memory",
+  });
+  assert.deepEqual(fields.transitionElapsedSeconds, {
+    earlierPublicationToCg: null, earlierPublicationToEvaluation: null, earlierPublicationToCgDistanceKm: null,
+  });
+  assert.equal(fixture.calls.historyReads, 2, "only the normal initial and repeat ledger history reads ran");
+  assert.equal(fixture.calls.enrichment, 2, "only the initial and existing repeat provider queries ran");
+  assert.equal(fixture.calls.reverse, 2, "only the normal initial and repeat location lookups ran");
 });
 
 test("ineligible first-CG shadow emits one evaluation with the currentness rejection", async () => {
