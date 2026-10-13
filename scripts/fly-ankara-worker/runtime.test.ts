@@ -52,6 +52,7 @@ function setup(options: {
   notifyAutoPublishFailure?: (failure: { publicationId: string; httpStatus?: number }) => Promise<{ ok: true } | {
     ok: false; reason: "timeout" | "network_error" | "http_error" | "invalid_response"; httpStatus?: number }>;
   autoPublish?: FlyAutoPublish;
+  schedule?: (delayMs: number, callback: () => void) => unknown;
 } = {}) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
   const memory = memoryStore();
@@ -65,6 +66,7 @@ function setup(options: {
     notifyPending: options.notifyPending,
     notifyAutoPublishFailure: options.notifyAutoPublishFailure,
     autoPublish: options.autoPublish,
+    schedule: options.schedule,
     reverse: options.reverse ?? (async (latitude, longitude) => ({
       latitude, longitude, provider: "fixture", displayLabel: "Çankaya, Ankara", locality: "Çankaya", district: "Çankaya",
       province: "Ankara", country: "Türkiye",
@@ -97,7 +99,7 @@ function qualifyingEvents(runtime: AnkaraFlyPipeline, time = baseNow, processing
 async function processOuterDistrictCandidate(memory: ReturnType<typeof memoryStore>, at: number,
   district: string, options: { province?: string; locality?: string; localityKind?: ReverseGeocodeResult["localityKind"];
     neighborhood?: string; cg?: boolean; missingDistrict?: boolean; notifyPending?: PendingPublicationNotifier;
-    autoPublish?: FlyAutoPublish } = {}) {
+    autoPublish?: FlyAutoPublish; schedule?: (delayMs: number, callback: () => void) => unknown } = {}) {
   const current = at;
   const locality = options.missingDistrict ? district : options.locality ?? "Yamak";
   const reverse = async (latitude: number, longitude: number): Promise<ReverseGeocodeResult> => ({
@@ -111,6 +113,7 @@ async function processOuterDistrictCandidate(memory: ReturnType<typeof memorySto
   });
   const fixture = setup({ store: memory.store, now: () => current, reverse,
     notifyPending: options.notifyPending, autoPublish: options.autoPublish,
+    schedule: options.schedule,
     enrich: async reference => options.cg ? verifiedCg(reference) : matchInitialCgEvents(reference, [], current) });
   qualifyingEvents(fixture.runtime, at, at);
   await fixture.runtime.drainCandidateWork();
@@ -831,6 +834,156 @@ test("provider_unavailable follows the existing HOLD policy", async () => {
   assert.equal(memory.records.length, 1);
   assert.equal(memory.records[0].decision, "HOLD");
   assert.equal(runtime.summary().pendingPublications, 0);
+});
+
+test("persisted initial ŞİMŞEK schedules one +3 minute shadow query with no publication side effects", async () => {
+  let current = baseNow;
+  const timers: Array<{ delayMs: number; callback: () => void }> = [];
+  const memory = memoryStore();
+  const calls = { enrichment: 0, reverse: 0, notifications: 0, admissions: 0, approvalReads: 0, dispatches: 0 };
+  const store: LedgerStore = { ...memory.store,
+    async admitCgPublication() { calls.admissions++; throw new Error("shadow must not admit CG"); } };
+  const autoPublish: FlyAutoPublish = {
+    approvalStore: {
+      async getPublicationForApproval() { calls.approvalReads++; throw new Error("shadow must not read approval"); },
+      async transitionPendingApproval() { throw new Error("shadow must not approve"); },
+    },
+    async dispatchPublisher() { calls.dispatches++; return { ok: true, httpStatus: 204 }; },
+  };
+  const fixture = setup({ store, now: () => current, autoPublish,
+    schedule: (delayMs, callback) => { timers.push({ delayMs, callback }); },
+    enrich: async reference => {
+      calls.enrichment++;
+      return calls.enrichment === 1
+        ? matchInitialCgEvents(reference, [], current, { tokens: 2 })
+        : matchInitialCgEvents(reference, [{ id: "delayed-cg-1", type: "cg", latitude: 39.9,
+          longitude: 32.66, eventTimeMs: baseNow - 50_000 }], current, { tokens: 5 });
+    },
+    reverse: async (latitude, longitude) => {
+      calls.reverse++;
+      return { latitude, longitude, provider: "fixture", displayLabel: "Çankaya, Ankara",
+        locality: "Çankaya", district: "Çankaya", province: "Ankara", country: "Türkiye" };
+    },
+    notifyPending: async () => { calls.notifications++; return { ok: true }; },
+  });
+  qualifyingEvents(fixture.runtime);
+  await fixture.runtime.drainCandidateWork();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delayMs, 180_000);
+  assert.equal(calls.enrichment, 1);
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.writes, 1);
+  const initialNotifications = calls.notifications;
+  const initialReads = memory.reads;
+  const initialApprovals = calls.approvalReads;
+  const initialDispatches = calls.dispatches;
+  current = baseNow + 180_000;
+  timers[0].callback();
+  await fixture.runtime.drainCandidateWork();
+
+  const records = fixture.events.filter(row => row.kind === "delayed_xweather_recheck_shadow");
+  assert.equal(records.length, 1);
+  const fields = records[0].fields!;
+  assert.equal(fields.publicationRecordId, memory.records[0].publicationId);
+  assert.equal(fields.originalEventKind, "#ŞİMŞEK");
+  assert.equal(fields.delayedProviderStatus, "cg_verified");
+  assert.equal(fields.delayedEnrichmentStatus, "cg_verified");
+  assert.equal(fields.selectedProviderEventId, "delayed-cg-1");
+  assert.equal(fields.selectedLatitude, 39.9);
+  assert.equal(fields.selectedLongitude, 32.66);
+  assert.equal(fields.selectedCgEventTimeMs, baseNow - 50_000);
+  assert.equal(fields.referenceTimeDeltaMs, 49_002);
+  assert.equal(fields.selectedProviderAgeMs, 230_000);
+  assert.equal(fields.providerCostTokens, 5);
+  assert.equal(fields.initialProviderCostTokens, 2);
+  assert.equal((fields.comparison as Record<string, unknown>).wouldSatisfyCurrentInitialCgAssociation, true);
+  assert.equal((fields.comparison as Record<string, unknown>).likelyProviderLatencyRecovery, true);
+  assert.equal((fields.comparison as Record<string, unknown>).initialPublicationToSelectedCgEventSeconds, -50);
+  assert.equal(fields.actualDelaySeconds, 180);
+  const expectedDistance = greatCircleDistanceKm({ latitude: 39.9, longitude: 32.6 },
+    { latitude: 39.9, longitude: 32.66, eventTimeMs: baseNow });
+  assert.ok(Math.abs((fields.selectedDistanceKm as number) - expectedDistance) < 0.001);
+  assert.ok(Math.abs(((fields.comparison as Record<string, number>).originalPublicationCoordinatesToSelectedCgDistanceKm) - expectedDistance) < 0.001);
+  assert.equal(calls.enrichment, 2);
+  assert.equal(calls.reverse, 1, "the recheck does not geocode again");
+  assert.equal(memory.records.length, 1, "the recheck does not add a publication record");
+  assert.equal(memory.writes, 1);
+  assert.equal(memory.reads, initialReads, "the recheck does not read ledger history");
+  assert.equal(calls.notifications, initialNotifications, "the recheck does not notify");
+  assert.equal(calls.approvalReads, initialApprovals, "the recheck does not enter approval");
+  assert.equal(calls.dispatches, initialDispatches, "the recheck does not dispatch a publisher");
+  assert.equal(calls.admissions, 0, "the recheck does not run CG admission");
+  assert.deepEqual(fixture.runtime.summary().delayedXweatherRechecks, {
+    scheduled: 1, executed: 1, cgVerified: 1, noMatch: 0, icOnly: 0, providerUnavailable: 0,
+    other: 0, providerCostTokensTotal: 5, changedToAcceptedCg: 1, likelyProviderLatencyRecoveries: 1,
+  });
+  assert.equal(fixture.events.find(row => row.kind === "enrichment_complete")?.fields?.providerCostTokens, 2);
+});
+
+test("delayed recheck logs no_match, IC-only, and provider-unavailable results distinctly", async () => {
+  for (const delayedStatus of ["no_match", "ic_only", "provider_unavailable"] as const) {
+    let current = baseNow;
+    const timers: Array<() => void> = [];
+    let enrichments = 0;
+    const fixture = setup({ now: () => current, schedule: (_delay, callback) => timers.push(callback),
+      enrich: async reference => {
+        enrichments++;
+        if (enrichments === 1 || delayedStatus === "no_match") return matchInitialCgEvents(reference, [], current);
+        if (delayedStatus === "ic_only") return matchInitialCgEvents(reference, [{ id: "delayed-ic", type: "ic",
+          latitude: reference.latitude, longitude: reference.longitude, eventTimeMs: reference.eventTimeMs }], current);
+        return { status: "provider_unavailable", provider: "xweather", reference,
+          thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error" };
+      } });
+    qualifyingEvents(fixture.runtime);
+    await fixture.runtime.drainCandidateWork();
+    assert.equal(timers.length, 1);
+    current += 180_000;
+    timers[0]();
+    await fixture.runtime.drainCandidateWork();
+    const fields = fixture.events.find(row => row.kind === "delayed_xweather_recheck_shadow")?.fields;
+    assert.ok(fields, delayedStatus);
+    const expected = delayedStatus === "provider_unavailable" ? "provider_unavailable" : delayedStatus;
+    assert.equal(fields.delayedEnrichmentStatus, expected, delayedStatus);
+    assert.equal(fields.providerCostTokens, null, delayedStatus);
+    assert.equal(fixture.runtime.summary().delayedXweatherRechecks.executed, 1);
+  }
+});
+
+test("initial CG, outer-district suppression, HOLD, and duplicate candidates do not schedule delayed rechecks", async () => {
+  const cgTimers: Array<() => void> = [];
+  const cg = setup({ schedule: (_delay, callback) => cgTimers.push(callback) });
+  qualifyingEvents(cg.runtime);
+  await cg.runtime.drainCandidateWork();
+  assert.equal(cgTimers.length, 0, "accepted initial CG does not schedule");
+
+  const suppressedTimers: Array<() => void> = [];
+  const outerMemory = memoryStore();
+  await processOuterDistrictCandidate(outerMemory, baseNow, "Haymana", {
+    schedule: (_delay, callback) => suppressedTimers.push(callback),
+  });
+  assert.equal(suppressedTimers.length, 0, "outer-district suppression does not schedule");
+
+  const holdTimers: Array<() => void> = [];
+  const hold = setup({ schedule: (_delay, callback) => holdTimers.push(callback), enrich: async reference => ({
+    status: "provider_unavailable", provider: "xweather", reference, thresholds: { ...DEFAULT_THRESHOLDS },
+    failure: "network_error",
+  }) });
+  qualifyingEvents(hold.runtime);
+  await hold.runtime.drainCandidateWork();
+  assert.equal(holdTimers.length, 0, "provider unavailable HOLD does not schedule");
+
+  const duplicateMemory = memoryStore();
+  const first = setup({ store: duplicateMemory.store,
+    enrich: async reference => matchInitialCgEvents(reference, [], baseNow) });
+  qualifyingEvents(first.runtime);
+  await first.runtime.drainCandidateWork();
+  const duplicateTimers: Array<() => void> = [];
+  const duplicate = setup({ store: duplicateMemory.store,
+    schedule: (_delay, callback) => duplicateTimers.push(callback),
+    enrich: async reference => matchInitialCgEvents(reference, [], baseNow) });
+  qualifyingEvents(duplicate.runtime);
+  await duplicate.runtime.drainCandidateWork();
+  assert.equal(duplicateTimers.length, 0, "duplicate/already-present record does not schedule");
 });
 
 test("candidate-processing failures are isolated from continuous event intake", async () => {

@@ -138,7 +138,7 @@ The most valuable live checks are:
 These are evidence-gathering experiments. Their results must not silently become publication policy; review real cases before proposing any behavior change.
 
 - `first_cg_transition_shadow` measures whether a later verified CG would provide meaningful new information after an earlier `#ŞİMŞEK`. It observes the normal live flow and does not activate the transition.
-- Delayed Xweather recheck (this PR) measures provider/reporting latency: whether an initial non-CG result becomes a current, acceptable CG on one query about 3 minutes later. It records actual provider cost-token values when Xweather reports them so query cost can be compared with normal enrichment.
+- Delayed Xweather recheck (this PR) measures provider/reporting latency: whether an initial non-CG result becomes a current, acceptable CG on one query about 3 minutes later. It records the actual `X-Cost-Tokens` response-header value when present so query cost can be compared with normal enrichment; absent headers stay null.
 - Storm evolution measures whether later electrical activity represents meaningful geographic evolution rather than repeat reporting.
 
 The delayed check is scheduled only after an initial non-CG candidate is persisted in the normal publication flow. It makes no publication or admission decision. Pending work is in memory only and may be lost on worker restart; no recovery persistence is added.
