@@ -5,6 +5,7 @@ import { DEFAULT_THRESHOLDS } from "../lightning-cg-enrichment/match.ts";
 import type { EnrichmentReference, EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { PublicationRecord } from "../lightning-publication-ledger/types.ts";
+import type { ApprovalCandidate } from "../lightning-publication-ledger/approval.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { extractProviderAddressHierarchy, makeDisplayLabel, normalizeNominatimAddress } from "../lightning-location-naming/normalize.ts";
@@ -114,6 +115,94 @@ async function processOuterDistrictCandidate(memory: ReturnType<typeof memorySto
   qualifyingEvents(fixture.runtime, at, at);
   await fixture.runtime.drainCandidateWork();
   return fixture;
+}
+
+async function evaluateFirstCgShadowFixture(staleAtEvaluation = false) {
+  let current = baseNow;
+  const calls = { enrichment: 0, reverse: 0, historyReads: 0, writes: 0,
+    notifications: 0, approvalReads: 0, approvalTransitions: 0, dispatches: 0 };
+  const records: PublicationRecord[] = [];
+  const approvalRows = new Map<string, ApprovalCandidate>();
+  const candidate = (record: PublicationRecord, messageText: string,
+    approvalStatus: ApprovalCandidate["approvalStatus"]): ApprovalCandidate => ({
+      publicationId: record.publicationId, decision: record.decision, platformPostId: null,
+      approvalStatus, messageFingerprint: record.messageFingerprint, messageText, mapUrl: record.mapUrl,
+    });
+  const store: LedgerStore = {
+    async loadRelevantPublicationHistory() {
+      calls.historyReads++;
+      if (staleAtEvaluation && calls.historyReads === 2) current = baseNow + 5 * 60_000;
+      return [];
+    },
+    async insertPublicationRecord(record, messageText) {
+      calls.writes++;
+      records.push(record);
+      approvalRows.set(record.publicationId, candidate(record, messageText,
+        record.decision === "WOULD_PUBLISH" ? "pending" : null));
+      return "inserted";
+    },
+    async admitCgPublication(_record, _messageText, request) {
+      assert.equal(request.kind, "repeat");
+      return { outcome: "suppressed", reason: "no_positive_cg_history" };
+    },
+  };
+  const autoPublish: FlyAutoPublish = {
+    approvalStore: {
+      async getPublicationForApproval(publicationId) {
+        calls.approvalReads++;
+        return approvalRows.get(publicationId) ?? null;
+      },
+      async transitionPendingApproval(publicationId, status) {
+        calls.approvalTransitions++;
+        const previous = approvalRows.get(publicationId);
+        if (!previous) return null;
+        const updated = { ...previous, approvalStatus: status };
+        approvalRows.set(publicationId, updated);
+        return updated;
+      },
+    },
+    async dispatchPublisher() {
+      calls.dispatches++;
+      return { ok: true, httpStatus: 204 };
+    },
+  };
+  const fixture = setup({
+    store, autoPublish, now: () => current,
+    notifyPending: async () => { calls.notifications++; return { ok: true }; },
+    enrich: async reference => {
+      calls.enrichment++;
+      if (calls.enrichment === 1) return { status: "no_match", provider: "xweather", reference,
+        thresholds: { ...DEFAULT_THRESHOLDS }, counts: { returned: 0, matched: 0, matchedCg: 0, matchedIc: 0 } };
+      return verifiedCg(reference);
+    },
+    reverse: async (latitude, longitude) => {
+      calls.reverse++;
+      return { latitude, longitude, provider: "fixture", displayLabel: "Aşağı Ayrancı, Çankaya",
+        locality: "Aşağı Ayrancı", district: "Çankaya", province: "Ankara", country: "Türkiye" };
+    },
+  });
+  qualifyingEvents(fixture.runtime);
+  await fixture.runtime.drainCandidateWork();
+  assert.equal(records.length, 1, "the earlier non-CG candidate is the only persisted record");
+
+  const incident = fixture.runtime.lifecycle.incidents.find(value => value.status === "active");
+  assert.ok(incident);
+  const internals = fixture.runtime as unknown as {
+    repeatReadyAtMs: number;
+    processRepeatProbe(probe: {
+      incident: (typeof fixture.runtime.lifecycle.incidents)[number];
+      observation: { sourceClusterId: string; eventTimeMs: number; receivedAtMs: number; latitude: number; longitude: number };
+      reason: "already_published_active_incident";
+    }): Promise<void>;
+  };
+  internals.repeatReadyAtMs = current;
+  await internals.processRepeatProbe({
+    incident,
+    observation: { sourceClusterId: incident.sourceClusterIds[0], eventTimeMs: baseNow - 1_000,
+      receivedAtMs: baseNow, latitude: incident.representativeLatitude, longitude: incident.representativeLongitude },
+    reason: "already_published_active_incident",
+  });
+  return { ...fixture, calls, records };
 }
 
 test("only unique events inside the Ankara polygon feed the lifecycle", () => {
@@ -529,6 +618,78 @@ test("missing Telegram configuration reports disabled while candidate persistenc
   await runtime.drainCandidateWork();
   assert.equal(memory.records[0].decision, "WOULD_PUBLISH");
   assert.equal(events.some(row => row.kind.startsWith("telegram_notification_")), false);
+});
+
+test("eligible first-CG shadow emits detailed telemetry without publication side effects", async () => {
+  const fixture = await evaluateFirstCgShadowFixture();
+  const events = fixture.events.filter(row => row.kind === "first_cg_transition_shadow");
+  assert.equal(events.length, 1);
+  const fields = events[0].fields!;
+  assert.equal(fields.opportunityDetected, true);
+  assert.equal(fields.eligible, true);
+  assert.equal(fields.eligibilityReason, "eligible");
+  assert.ok(fields.incidentId);
+  assert.ok(fields.scopeId);
+  assert.ok(Array.isArray(fields.clusterIds));
+  assert.ok(Number.isFinite(fields.evaluationAtMs as number));
+  assert.equal(fields.providerEventId, "xw-event-1");
+  assert.equal(fields.selectedEventTimeMs, baseNow - 1_000);
+  assert.equal(fields.selectedLatitude, 39.9);
+  assert.equal(fields.selectedLongitude, 32.6);
+  assert.equal(fields.selectedEventAgeMs, 1_000);
+  assert.equal(fields.referenceTimeMs, baseNow - 1_000);
+  assert.equal(fields.referenceTimeDeltaMs, 0);
+  assert.equal(fields.selectedDistanceKm, 0);
+  assert.equal(fields.enrichmentStatus, "cg_verified");
+  assert.equal(fields.currentnessPassed, true);
+  assert.equal(fields.actualAdmissionReason, "no_positive_cg_history");
+  assert.equal(fields.firstVerifiedCgObservedForScope, true);
+  assert.equal(fields.providerEventAlreadyRecorded, false);
+  assert.equal(fields.equivalentCgPublicationExists, false);
+  assert.deepEqual(fields.earlierPublication, {
+    isNonCg: null, publicationRecordId: null, eventKind: null, providerStatus: null,
+    publishedAt: null, latitude: null, longitude: null, locationLabel: null, structuredLocation: null,
+    unavailableReason: "not_returned_by_cg_admission_result",
+  });
+  assert.deepEqual(fields.transitionElapsedSeconds, {
+    earlierPublicationToCg: null, earlierPublicationToEvaluation: null,
+    earlierPublicationToCgDistanceKm: null, firstVerifiedCgObservedForScope: true,
+  });
+  assert.equal(fixture.records.length, 1, "shadow evaluation must not persist another publication");
+  assert.equal(fixture.calls.writes, 1);
+  assert.equal(fixture.calls.notifications, 1);
+  assert.equal(fixture.calls.approvalReads, 1);
+  assert.equal(fixture.calls.approvalTransitions, 1);
+  assert.equal(fixture.calls.dispatches, 1);
+  assert.equal(fixture.calls.enrichment, 2, "only initial enrichment and the existing repeat probe ran");
+  assert.equal(fixture.calls.reverse, 2, "only normal initial and repeat location resolution ran");
+  assert.equal(fixture.calls.historyReads, 2, "no telemetry-only ledger read was added");
+  assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowOpportunities, 1);
+  assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowEligible, 1);
+});
+
+test("ineligible first-CG shadow emits one evaluation with the currentness rejection", async () => {
+  const fixture = await evaluateFirstCgShadowFixture(true);
+  const events = fixture.events.filter(row => row.kind === "first_cg_transition_shadow");
+  assert.equal(events.length, 1);
+  const fields = events[0].fields!;
+  assert.equal(fields.opportunityDetected, true);
+  assert.equal(fields.eligible, false);
+  assert.equal(fields.eligibilityReason, "selected_event_not_current");
+  assert.equal(fields.currentnessPassed, false);
+  assert.ok((fields.selectedEventAgeMs as number) > 240_000);
+  assert.ok((fields.otherBlockers as string[]).includes("selected_event_not_current"));
+  assert.equal(fixture.records.length, 1);
+  assert.equal(fixture.calls.writes, 1);
+  assert.equal(fixture.calls.notifications, 1);
+  assert.equal(fixture.calls.approvalReads, 1);
+  assert.equal(fixture.calls.approvalTransitions, 1);
+  assert.equal(fixture.calls.dispatches, 1);
+  assert.equal(fixture.calls.enrichment, 2);
+  assert.equal(fixture.calls.reverse, 2);
+  assert.equal(fixture.calls.historyReads, 2);
+  assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowOpportunities, 1);
+  assert.equal(fixture.runtime.summary(baseNow).cgRepeat.firstCgShadowEligible, 0);
 });
 
 test("closed lifecycle state is retained until asynchronous candidate work completes", async () => {
