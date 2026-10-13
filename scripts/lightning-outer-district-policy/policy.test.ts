@@ -8,7 +8,7 @@ test("only the explicit Ankara district allowlist resolves, with Bala canonicali
       { outcome: "target", canonicalDistrict: "Balâ" });
   }
   for (const district of ["Şereflikoçhisar", "Haymana", "Polatlı", "Beypazarı", "Nallıhan",
-    "Güdül", "Çamlıdere", "Kızılcahamam", "Çubuk", "Kalecik"]) {
+    "Güdül", "Çamlıdere", "Kızılcahamam", "Çubuk", "Kalecik", "Evren"]) {
     assert.equal(resolveOuterDistrict({ district, province: "Ankara" }).outcome, "target");
   }
   assert.equal(resolveOuterDistrict({ district: "Çankaya", province: "Ankara" }).outcome, "not_applicable_district");
@@ -26,6 +26,11 @@ test("town locality identifies a selected district, but village locality does no
     "location_unavailable");
   assert.equal(resolveOuterDistrict({ locality: "Çankaya", localityKind: "town", province: "Ankara" }).outcome,
     "not_applicable_district");
+});
+
+test("town-level Evren locality resolves as the selected district", () => {
+  assert.deepEqual(resolveOuterDistrict({ locality: "Evren", localityKind: "town", province: "Ankara" }),
+    { outcome: "target", canonicalDistrict: "Evren" });
 });
 
 test("conflicting selected district and town identities remain unavailable", () => {
