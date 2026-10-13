@@ -5,7 +5,7 @@ const DISTRICTS = new Map<string, string>([
   ["sereflikochisar", "Şereflikoçhisar"], ["bala", "Balâ"], ["haymana", "Haymana"],
   ["polatli", "Polatlı"], ["beypazari", "Beypazarı"], ["nallihan", "Nallıhan"],
   ["gudul", "Güdül"], ["camlidere", "Çamlıdere"], ["kizilcahamam", "Kızılcahamam"],
-  ["cubuk", "Çubuk"], ["kalecik", "Kalecik"],
+  ["cubuk", "Çubuk"], ["kalecik", "Kalecik"], ["evren", "Evren"],
 ]);
 
 function key(value: string): string {
