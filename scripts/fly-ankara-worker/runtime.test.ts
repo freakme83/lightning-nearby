@@ -371,6 +371,23 @@ test("outer-district CG remains eligible after non-CG suppression; central non-C
   assert.equal(memory.records.length, 2);
 });
 
+test("Evren non-CG is suppressed while verified CG remains eligible", async () => {
+  const memory = memoryStore();
+  const nonCg = await processOuterDistrictCandidate(memory, baseNow, "Evren");
+  assert.equal(nonCg.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields?.canonicalDistrict,
+    "Evren");
+  assert.equal(nonCg.events.some(row => row.kind === "candidate_outcome" &&
+    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
+  assert.equal(memory.records.length, 0);
+
+  const cg = await processOuterDistrictCandidate(memory, baseNow + 2 * 60_000, "Evren", { cg: true });
+  assert.equal(cg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
+  const cgMessage = cg.events.find(row => row.kind === "publication_pending")?.fields?.messageText as string;
+  assert.match(cgMessage, /^#YILDIRIM\n/);
+});
+
 test("raw CG matches failing each initial condition fall back to non-CG without a CG map", async () => {
   const cases = [
     { name: "distance", longitude: 32.724, time: baseNow - 1_000, referenceTime: baseNow,
