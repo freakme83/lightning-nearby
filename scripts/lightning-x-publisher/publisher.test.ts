@@ -7,7 +7,7 @@ import { renderPublisherSummary } from "./summary.ts";
 import type { XPostResult } from "./x-adapter.ts";
 
 const id = "pub_" + "a".repeat(32);
-const text = "#YILDIRIM\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.\n\n39.901, 32.859";
+const text = "#YILDIRIM ⚡\nAnkara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında yere ulaşan yıldırım kaydedildi.\n\nKonum:\n39.901, 32.859";
 const attemptId = "12345678-1234-4123-8123-123456789abc";
 const nextAttemptId = "12345678-1234-4123-8123-123456789abd";
 function candidate(patch: Partial<PublishRow> = {}): PublishRow {
@@ -58,6 +58,44 @@ function harness(initial = candidate(), xResult: XPostResult = { outcome: "confi
     setRow(value: PublishRow) { row = value; }, setXOutcome(value: XPostResult) { xOutcome = value; } };
 }
 
+test("current PR #100 CG and generic message contract passes approved-record eligibility through a mock-only path", async () => {
+  const currentGenericText = "Ankara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında şimşek/yıldırım aktivitesi kaydedildi.\n\nKonum:\n39.901, 32.859";
+  for (const [messageText, enrichmentStatus] of [[text, "cg_verified"], [currentGenericText, "no_match"]] as const) {
+    const row = candidate({
+      enrichmentStatus,
+      messageText,
+      messageFingerprint: fingerprintMessage(messageText),
+    });
+    const h = harness(row, { outcome: "definite_failure", status: 403 });
+    const result = await h.run();
+    assert.equal(result.outcome, "definite_failure", "approved current-contract record passed eligibility and reached only the mocked X adapter");
+    assert.equal(h.claims, 1);
+    assert.equal(h.xCalls, 1);
+    assert.equal(h.releases, 1);
+    assert.equal(h.row.publishAttemptId, null);
+    assert.equal(h.row.decision, "WOULD_PUBLISH");
+  }
+});
+
+test("strict current format rejects unapproved verbs, stale shapes, malformed blocks, and arbitrary text", async () => {
+  const badCases: Array<[string, PublishRow["enrichmentStatus"]]> = [
+    ["Ankara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında şimşek/yıldırım aktivitesi teyit edildi.\n\nKonum:\n39.901, 32.859", "no_match"],
+    ["#ŞİMŞEK\nAnkara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında şimşek/yıldırım aktivitesi kaydedildi.\n\nKonum:\n39.901, 32.859", "no_match"],
+    [text.replace("#YILDIRIM ⚡", "#YILDIRIM"), "cg_verified"],
+    [text.replace("Konum:\n", ""), "cg_verified"],
+    [text.replace("39.901, 32.859", "39.90, 32.859"), "cg_verified"],
+    [text.replace("Konum:\n39.901, 32.859", "39.901, 32.859\nKonum:"), "cg_verified"],
+    ["arbitrary free text", "no_match"],
+    ["#YILDIRIM\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.\n\n39.901, 32.859", "cg_verified"],
+  ];
+  for (const [value, enrichmentStatus] of badCases) {
+    const h = harness(candidate({ enrichmentStatus, messageText: value, messageFingerprint: fingerprintMessage(value) }));
+    assert.equal((await h.run()).outcome, "not_eligible");
+    assert.equal(h.claims, 0);
+    assert.equal(h.xCalls, 0);
+  }
+});
+
 test("approved persisted text posts once, stores ID and timestamp, and rerun is idempotent", async () => {
   const h = harness();
   const first = await h.run();
@@ -99,7 +137,7 @@ test("pending, skipped, HOLD, legacy null approval, missing text, and fingerprin
 
 test("legacy URL text and non-CG coordinate text are rejected despite matching fingerprints", async () => {
   const legacy = text + "\nhttps://www.google.com/maps?q=39.901,32.859";
-  const nonCg = "#ŞİMŞEK\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında şimşek kaydedildi.\n\n39.901, 32.859";
+  const nonCg = "#ŞİMŞEK\nAnkara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında şimşek/yıldırım aktivitesi kaydedildi.\n\nKonum:\n39.901, 32.859";
   for (const [value, enrichmentStatus] of [[legacy, "cg_verified"], [nonCg, "ic_only"]] as const) {
     const h = harness(candidate({ messageText: value, messageFingerprint: fingerprintMessage(value), enrichmentStatus }));
     assert.equal((await h.run()).outcome, "not_eligible");
@@ -107,13 +145,13 @@ test("legacy URL text and non-CG coordinate text are rejected despite matching f
   }
 });
 
-test("non-CG persisted composer text is passed unchanged and remains URL-free", async () => {
-  const value = "#ŞİMŞEK\n8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı / Çankaya civarında şimşek kaydedildi.  \n";
+test("generic current public text is passed unchanged and remains URL-free", async () => {
+  const value = "Ankara’da, 8 Ekim 2026, 16:31 TSİ\nAşağı Ayrancı, Çankaya civarında şimşek/yıldırım aktivitesi kaydedildi.\n\nKonum:\n39.901, 32.859";
   const h = harness(candidate({ messageText: value, messageFingerprint: fingerprintMessage(value), enrichmentStatus: "ic_only" }));
   const result = await h.run();
   assert.equal(result.outcome, "published");
   assert.equal(result.messageText, value);
-  assert.ok(renderPublisherSummary(result).includes("```text\n" + value + "```"));
+  assert.ok(renderPublisherSummary(result).includes("```text\n" + value + "\n```"));
   assert.equal(h.xCalls, 1);
 });
 
