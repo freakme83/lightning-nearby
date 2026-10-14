@@ -31,7 +31,7 @@ Konum:
 
 The composer formats the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, with Turkish month names and no seconds. The first comma in the normalized display label is rendered as `, `; structured location identity is unchanged. Public coordinates use the existing three-decimal numeric formatter. The CG map URL uses full-precision coordinates from the selected matched Xweather CG event; the public CG coordinate line uses that same event. Generic coordinates use the incident/reference point and do not use a rejected/evaluated provider event. The selected CG point is an approximate observation location, not proof of physical flash identity.
 
-Public templates retain the fixed verb `kaydedildi`. The legacy incident-ID verb helper remains deterministic for existing research callers. `characterCount` counts Unicode code points in the complete raw text, including line breaks and the labeled coordinate block, excluding the internal URL. The default maximum is 280; oversized messages fail without truncation or splitting.
+Public verbs are deterministic from the stable incident ID. Generic/unverified activity uses only `tespit edildi` or `kaydedildi`; verified CG may also use `teyit edildi`. `characterCount` counts Unicode code points in the complete raw text, including line breaks and the labeled coordinate block, excluding the internal URL. The default maximum is 280; oversized messages fail without truncation or splitting.
 
 Manual preview from synthetic fixtures:
 

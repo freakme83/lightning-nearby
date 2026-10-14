@@ -24,7 +24,7 @@ test("CG uses selected CG coordinates for the labeled public block and full-prec
   assert.equal(result.eventKind, "cg_verified");
   assert.equal(result.dateTimeText, "Ankara’da, 6 Ekim 2026, 16:48 TSİ");
   assert.equal(result.locationText, "Aşağı Ayrancı, Çankaya");
-  assert.equal(result.eventText, "Aşağı Ayrancı, Çankaya civarında yere ulaşan yıldırım kaydedildi.");
+  assert.equal(result.eventText, `Aşağı Ayrancı, Çankaya civarında yere ulaşan yıldırım ${verbForIncident(input.incident.id, "cg_verified")}.`);
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.902742,32.851494");
   assert.deepEqual(result.text.split("\n"), ["#YILDIRIM ⚡", result.dateTimeText, result.eventText, "", "Konum:", "39.903, 32.851"]);
   assert.equal(result.text.includes("40.1,33.1"), false);
@@ -51,19 +51,47 @@ for (const [name, input] of Object.entries({
     assert.match(result.dateTimeText, /^Ankara’da, /);
     assert.doesNotMatch(result.text, /#|https?:\/\//);
     assert.deepEqual(result.text.split("\n"), [result.dateTimeText, result.eventText, "", "Konum:", result.coordinateText]);
-    assert.match(result.eventText, / civarında şimşek\/yıldırım aktivitesi kaydedildi\.$/);
+    assert.match(result.eventText, / civarında şimşek\/yıldırım aktivitesi (tespit edildi|kaydedildi)\.$/);
     assert.equal(result.text.includes("#ŞİMŞEK"), false);
     assert.doesNotMatch(result.text, /CG|Xweather|provider|unavailable|no_match|doğrulanamadı|yere ulaşan|google\.com\/maps/i);
   });
 }
 
-test("public templates always use kaydedildi while the legacy verb helper remains deterministic", () => {
-  const first = compose(generic);
-  assert.deepEqual(first, compose(generic));
-  assert.equal(first.ok, true);
-  if (first.ok) assert.match(first.eventText, / kaydedildi\.$/);
-  const verbs = new Set(Object.values(COMPOSER_FIXTURES).map(item => verbForIncident(item.incident.id)));
-  assert.deepEqual(verbs, new Set(["tespit edildi", "kaydedildi"]));
+test("generic public verbs stay within the neutral deterministic set", () => {
+  const genericInputs = [generic, COMPOSER_FIXTURES.no_match_urban, COMPOSER_FIXTURES.provider_unavailable_urban];
+  const verbs = new Set<string>();
+  for (const input of genericInputs) {
+    const result = compose(input);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    const expectedVerb = verbForIncident(input.incident.id, input.enrichment.status);
+    verbs.add(expectedVerb);
+    assert.ok(["tespit edildi", "kaydedildi"].includes(expectedVerb));
+    assert.ok(result.eventText.endsWith(` ${expectedVerb}.`));
+    assert.doesNotMatch(result.text, /teyit edildi|#ŞİMŞEK|#/);
+    assert.deepEqual(result, compose(input), "same incident and status are stable across retries/previews");
+  }
+  assert.deepEqual([...verbs].sort(), ["kaydedildi", "tespit edildi"]);
+});
+
+test("verified CG deterministically supports all three approved verbs", () => {
+  const idsByVerb = new Map([
+    ["cg-verb-fixture-0", "tespit edildi"],
+    ["cg-verb-fixture-3", "kaydedildi"],
+    ["cg-verb-fixture-1", "teyit edildi"],
+  ]);
+  for (const [incidentId, expectedVerb] of idsByVerb) {
+    const input = { ...urban, incident: { ...urban.incident, id: incidentId } };
+    assert.equal(verbForIncident(incidentId, "cg_verified"), expectedVerb);
+    assert.equal(verbForIncident(incidentId, "cg_verified"), verbForIncident(incidentId, "cg_verified"));
+    const result = compose(input);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.ok(result.text.startsWith("#YILDIRIM ⚡\n"));
+    assert.ok(result.eventText.endsWith(` ${expectedVerb}.`));
+    assert.deepEqual(result, compose(input), "same incident and status are stable across retries/previews");
+  }
+  assert.equal(verbForIncident("cg-verb-fixture-1"), "kaydedildi");
 });
 
 test("selected CG coordinates round deterministically to three decimals, preserving zeros and signs", () => {

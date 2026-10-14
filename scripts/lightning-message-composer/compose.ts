@@ -35,11 +35,15 @@ function formatLocation(label: string): string | null {
   return first && rest ? `${first}, ${rest}` : null;
 }
 
-// FNV-1a over the stable incident ID; retained for compatibility with older research callers.
-export function verbForIncident(incidentId: string): "tespit edildi" | "kaydedildi" {
+// FNV-1a over the stable incident ID. Generic wording stays binary; only verified CG may say "teyit edildi".
+export function verbForIncident(incidentId: string, status: ComposerEnrichmentStatus = "no_match"):
+  "tespit edildi" | "kaydedildi" | "teyit edildi" {
   let hash = 0x811c9dc5;
   for (const character of incidentId) {
     hash = Math.imul(hash ^ character.codePointAt(0)!, 0x01000193);
+  }
+  if (status === "cg_verified") {
+    return (["tespit edildi", "kaydedildi", "teyit edildi"] as const)[(hash >>> 0) % 3];
   }
   return (hash & 1) === 0 ? "tespit edildi" : "kaydedildi";
 }
@@ -96,9 +100,10 @@ export function composeLightningMessage(input: ComposerInput, options: ComposerO
   const hashtag = status === "cg_verified" ? "#YILDIRIM" : "#ŞİMŞEK";
   const publicHeader = status === "cg_verified" ? "#YILDIRIM ⚡" : null;
   const dateTimeText = formatDateTime(eventTimeMs);
+  const verb = verbForIncident(input.incident.id, status);
   const eventText = status === "cg_verified"
-    ? `${locationText} civarında yere ulaşan yıldırım kaydedildi.`
-    : `${locationText} civarında şimşek/yıldırım aktivitesi kaydedildi.`;
+    ? `${locationText} civarında yere ulaşan yıldırım ${verb}.`
+    : `${locationText} civarında şimşek/yıldırım aktivitesi ${verb}.`;
   const text = [
     ...(publicHeader ? [publicHeader] : []),
     dateTimeText,

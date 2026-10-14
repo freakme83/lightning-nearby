@@ -27,7 +27,7 @@ Konum:
 
 `ic_only`, `no_match`, and `provider_unavailable` have no public hashtag. Lack of a verified CG match does not classify the activity as IC. Generic coordinates use the LightningMaps/incident reference point, never a rejected or evaluated Xweather event. Every current message includes `Konum:` on its own line before the coordinates. Location labels render the first separator as a comma, without changing structured location identity.
 
-Both formats use the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, Turkish month names, no seconds, and the fixed verb `kaydedildi`. The internal event marker may retain `#ŞİMŞEK` for runtime policy compatibility, but it is never rendered in public text. Public text remains subject to the 280 Unicode-code-point limit and is never truncated.
+Both formats use the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, Turkish month names, and no seconds. Verbs are deterministic from the stable incident ID: generic/unverified activity uses only `tespit edildi` or `kaydedildi`, while verified CG may also use `teyit edildi`. The internal event marker may retain `#ŞİMŞEK` for runtime policy compatibility, but it is never rendered in public text. Public text remains subject to the 280 Unicode-code-point limit and is never truncated.
 
 ## Internal metadata and persistence
 
@@ -49,6 +49,6 @@ The end-to-end and fixture preview summaries distinguish **Internal map URL avai
 
 ## Validation and later acceptance
 
-Focused regressions cover the explicit `Ankara’da` date/time line, fixed `kaydedildi` wording, selected coordinate provenance, zeros/negative rounding, non-CG isolation, exact 280-character boundaries, public-only fingerprints, durable map serialization, unchanged approval text, historical payloads, and separate operator summaries. Existing composer, preview, ledger v1B.1/v1B.2, manual approval, publish-decision, dry-run, paired-validation, enrichment, naming, and lifecycle suites remain applicable.
+Focused regressions cover the explicit `Ankara’da` date/time line, status-dependent deterministic verb wording, selected coordinate provenance, zeros/negative rounding, non-CG isolation, exact 280-character boundaries, public-only fingerprints, durable map serialization, unchanged approval text, historical payloads, and separate operator summaries. Existing composer, preview, ledger v1B.1/v1B.2, manual approval, publish-decision, dry-run, paired-validation, enrichment, naming, and lifecycle suites remain applicable.
 
 After merge into `merge-ready`, run the manual live dry run and confirm a CG candidate has the current Ankara-scoped text, a selected three-decimal coordinate under `Konum:`, pending approval, and full-precision `map_url`. Manual approval must show exactly the same persisted candidate plus the separate internal map. This PR does not run live acceptance or publish anything.

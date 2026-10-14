@@ -49,7 +49,7 @@ for (const [name, artifact] of Object.entries({
     assert.equal(result.composer.hashtag, "#ŞİMŞEK"); // Internal kind marker remains available to runtime policy gates.
     assert.doesNotMatch(result.text, /#/);
     assert.equal(result.mapUrl, null);
-    assert.match(result.text, /Bahçelievler, Çankaya civarında şimşek\/yıldırım aktivitesi kaydedildi\./);
+    assert.match(result.text, /Bahçelievler, Çankaya civarında şimşek\/yıldırım aktivitesi (tespit edildi|kaydedildi)\./);
     assert.ok(result.text.endsWith(`Konum:\n${artifact.incident.latitude.toFixed(3)}, ${artifact.incident.longitude.toFixed(3)}`));
     assert.doesNotMatch(result.text, /CG|Xweather|provider|unavailable|no_match|doğrulanamadı|yere ulaşan|google\.com/i);
   });
