@@ -11,7 +11,7 @@ const urban = COMPOSER_FIXTURES.cg_verified_urban;
 const generic = COMPOSER_FIXTURES.ic_only_urban;
 const compose = (input: ComposerInput) => composeLightningMessage(input);
 
-test("CG produces URL-free public coordinates and a full-precision internal map", () => {
+test("CG uses selected CG coordinates for the labeled public block and full-precision internal map", () => {
   const input = {
     ...urban,
     incident: { ...urban.incident, representativeLatitude: 40.1, representativeLongitude: 33.1 },
@@ -20,13 +20,15 @@ test("CG produces URL-free public coordinates and a full-precision internal map"
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.hashtag, "#YILDIRIM");
+  assert.ok(result.text.startsWith("#YILDIRIM ⚡\n"));
   assert.equal(result.eventKind, "cg_verified");
   assert.equal(result.dateTimeText, "Ankara’da, 6 Ekim 2026, 16:48 TSİ");
-  assert.equal(result.locationText, "Aşağı Ayrancı / Çankaya");
-  assert.equal(result.eventText, "Aşağı Ayrancı / Çankaya civarında yere ulaşan yıldırım kaydedildi.");
+  assert.equal(result.locationText, "Aşağı Ayrancı, Çankaya");
+  assert.equal(result.eventText, `Aşağı Ayrancı, Çankaya civarında yere ulaşan yıldırım ${verbForIncident(input.incident.id, "cg_verified")}.`);
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.902742,32.851494");
-  assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText, "", "39.903, 32.851"]);
+  assert.deepEqual(result.text.split("\n"), ["#YILDIRIM ⚡", result.dateTimeText, result.eventText, "", "Konum:", "39.903, 32.851"]);
   assert.equal(result.text.includes("40.1,33.1"), false);
+  assert.match(result.text, /Konum:\n39\.903, 32\.851$/);
   assert.equal(result.coordinateText, "39.903, 32.851");
   assert.doesNotMatch(result.text, /https?:\/\//);
   assert.equal(result.characterCount, [...result.text].length);
@@ -38,29 +40,58 @@ for (const [name, input] of Object.entries({
   no_match: COMPOSER_FIXTURES.no_match_urban,
   provider_unavailable: COMPOSER_FIXTURES.provider_unavailable_urban,
 })) {
-  test(`${name} uses the generic three-line message without CG claim or map URL`, () => {
+  test(`${name} uses neutral generic wording without a public hashtag or map URL`, () => {
     const result = compose(input);
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.eventKind, name);
     assert.equal(result.hashtag, "#ŞİMŞEK");
     assert.equal(result.mapUrl, null);
-    assert.equal(result.coordinateText, null);
+    assert.equal(result.coordinateText, `${input.incident.latitude.toFixed(3)}, ${input.incident.longitude.toFixed(3)}`);
     assert.match(result.dateTimeText, /^Ankara’da, /);
-    assert.doesNotMatch(result.text, /https?:\/\/|^-?\d+\.\d+, -?\d+\.\d+$/m);
-    assert.deepEqual(result.text.split("\n"), [result.hashtag, result.dateTimeText, result.eventText]);
-    assert.match(result.eventText, / civarında şimşek kaydedildi\.$/);
+    assert.doesNotMatch(result.text, /#|https?:\/\//);
+    assert.deepEqual(result.text.split("\n"), [result.dateTimeText, result.eventText, "", "Konum:", result.coordinateText]);
+    assert.match(result.eventText, / civarında şimşek\/yıldırım aktivitesi (tespit edildi|kaydedildi)\.$/);
+    assert.equal(result.text.includes("#ŞİMŞEK"), false);
     assert.doesNotMatch(result.text, /CG|Xweather|provider|unavailable|no_match|doğrulanamadı|yere ulaşan|google\.com\/maps/i);
   });
 }
 
-test("public templates always use kaydedildi while the legacy verb helper remains deterministic", () => {
-  const first = compose(generic);
-  assert.deepEqual(first, compose(generic));
-  assert.equal(first.ok, true);
-  if (first.ok) assert.match(first.eventText, / kaydedildi\.$/);
-  const verbs = new Set(Object.values(COMPOSER_FIXTURES).map(item => verbForIncident(item.incident.id)));
-  assert.deepEqual(verbs, new Set(["tespit edildi", "kaydedildi"]));
+test("generic public verbs stay within the neutral deterministic set", () => {
+  const genericInputs = [generic, COMPOSER_FIXTURES.no_match_urban, COMPOSER_FIXTURES.provider_unavailable_urban];
+  const verbs = new Set<string>();
+  for (const input of genericInputs) {
+    const result = compose(input);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    const expectedVerb = verbForIncident(input.incident.id, input.enrichment.status);
+    verbs.add(expectedVerb);
+    assert.ok(["tespit edildi", "kaydedildi"].includes(expectedVerb));
+    assert.ok(result.eventText.endsWith(` ${expectedVerb}.`));
+    assert.doesNotMatch(result.text, /teyit edildi|#ŞİMŞEK|#/);
+    assert.deepEqual(result, compose(input), "same incident and status are stable across retries/previews");
+  }
+  assert.deepEqual([...verbs].sort(), ["kaydedildi", "tespit edildi"]);
+});
+
+test("verified CG deterministically supports all three approved verbs", () => {
+  const idsByVerb = new Map([
+    ["cg-verb-fixture-0", "tespit edildi"],
+    ["cg-verb-fixture-3", "kaydedildi"],
+    ["cg-verb-fixture-1", "teyit edildi"],
+  ]);
+  for (const [incidentId, expectedVerb] of idsByVerb) {
+    const input = { ...urban, incident: { ...urban.incident, id: incidentId } };
+    assert.equal(verbForIncident(incidentId, "cg_verified"), expectedVerb);
+    assert.equal(verbForIncident(incidentId, "cg_verified"), verbForIncident(incidentId, "cg_verified"));
+    const result = compose(input);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.ok(result.text.startsWith("#YILDIRIM ⚡\n"));
+    assert.ok(result.eventText.endsWith(` ${expectedVerb}.`));
+    assert.deepEqual(result, compose(input), "same incident and status are stable across retries/previews");
+  }
+  assert.equal(verbForIncident("cg-verb-fixture-1"), "kaydedildi");
 });
 
 test("selected CG coordinates round deterministically to three decimals, preserving zeros and signs", () => {
@@ -76,7 +107,7 @@ test("selected CG coordinates round deterministically to three decimals, preserv
     assert.equal(result.ok, true);
     if (!result.ok) continue;
     assert.equal(result.coordinateText, expected);
-    assert.ok(result.text.endsWith(`\n\n${expected}`));
+    assert.ok(result.text.endsWith(`\n\nKonum:\n${expected}`));
     assert.equal(result.mapUrl, `https://www.google.com/maps?q=${latitude},${longitude}`);
     assert.doesNotMatch(result.text, /https?:\/\//);
     assert.equal(result.characterCount, [...result.text].length);
@@ -102,7 +133,7 @@ test("CG public character budget excludes internal URL and still enforces exactl
 });
 
 test("Ankara scope, Istanbul time, Turkish month, year, minutes, and TSİ suffix are explicit", () => {
-  const input = { ...generic, incident: { id: "september", lastActivityTimeMs: Date.parse("2026-09-21T17:51:42Z") } };
+  const input = { ...generic, incident: { ...generic.incident, id: "september", lastActivityTimeMs: Date.parse("2026-09-21T17:51:42Z") } };
   const result = compose(input);
   assert.equal(result.ok, true);
   if (!result.ok) return;
@@ -112,12 +143,12 @@ test("Ankara scope, Istanbul time, Turkish month, year, minutes, and TSİ suffix
 
 test("location separators and meaningful qualifiers are preserved", () => {
   for (const [label, expected] of [
-    ["Aşağı Ayrancı, Çankaya", "Aşağı Ayrancı / Çankaya"],
-    ["Yukarı Bahçelievler, Çankaya", "Yukarı Bahçelievler / Çankaya"],
-    ["Eski Mahalle, Çankaya", "Eski Mahalle / Çankaya"],
-    ["Yeni Mahalle, Çankaya", "Yeni Mahalle / Çankaya"],
-    ["Beynam, Balâ", "Beynam / Balâ"],
-    ["Keskin, Kırıkkale", "Keskin / Kırıkkale"],
+    ["Aşağı Ayrancı, Çankaya", "Aşağı Ayrancı, Çankaya"],
+    ["Yukarı Bahçelievler, Çankaya", "Yukarı Bahçelievler, Çankaya"],
+    ["Eski Mahalle, Çankaya", "Eski Mahalle, Çankaya"],
+    ["Yeni Mahalle, Çankaya", "Yeni Mahalle, Çankaya"],
+    ["Beynam, Balâ", "Beynam, Balâ"],
+    ["Keskin, Kırıkkale", "Keskin, Kırıkkale"],
     ["Ankara", "Ankara"],
   ]) {
     const result = compose({ ...generic, locationDisplayLabel: label });
@@ -129,20 +160,27 @@ test("rural CG fixture uses its own selected CG match", () => {
   const result = compose(COMPOSER_FIXTURES.cg_verified_rural);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.locationText, "Beynam / Balâ");
+  assert.equal(result.locationText, "Beynam, Balâ");
   assert.equal(result.mapUrl, "https://www.google.com/maps?q=39.682564,32.859372");
 });
 
-test("a CG match in any non-CG status never adds coordinates, a map, or CG wording", () => {
+test("a rejected CG match never supplies generic coordinates, a map, or CG wording", () => {
   for (const status of ["ic_only", "no_match", "provider_unavailable"] as const) {
     const result = compose({ ...generic, enrichment: { status, match: urban.enrichment.match } });
     assert.equal(result.ok, true);
     if (!result.ok) continue;
     assert.equal(result.mapUrl, null);
-    assert.equal(result.coordinateText, null);
-    assert.doesNotMatch(result.text, /https?:\/\/|^-?\d+\.\d+, -?\d+\.\d+$/m);
+    assert.equal(result.coordinateText, `${generic.incident.latitude.toFixed(3)}, ${generic.incident.longitude.toFixed(3)}`);
+    assert.doesNotMatch(result.text, /https?:\/\//);
     assert.doesNotMatch(result.text, /yere ulaşan|google\.com/);
+    assert.ok(result.text.endsWith(`Konum:\n${generic.incident.latitude.toFixed(3)}, ${generic.incident.longitude.toFixed(3)}`));
   }
+});
+
+test("generic messages require valid LightningMaps incident coordinates", () => {
+  const result = compose({ ...generic, incident: { ...generic.incident, latitude: NaN } });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.code, "missing_incident_coordinates");
 });
 
 test("missing or unsafe location returns a structured error and no public post", () => {
@@ -171,8 +209,8 @@ test("CG without a selected valid CG coordinate fails instead of inventing a map
 
 test("invalid timestamp, incident ID, status, and character budget yield structured errors", () => {
   const cases = [
-    [compose({ ...generic, incident: { id: " ", lastActivityTimeMs: generic.incident.lastActivityTimeMs } }), "invalid_incident_id"],
-    [compose({ ...generic, incident: { id: "valid", lastActivityTimeMs: NaN } }), "invalid_event_time"],
+    [compose({ ...generic, incident: { ...generic.incident, id: " " } }), "invalid_incident_id"],
+    [compose({ ...generic, incident: { ...generic.incident, id: "valid", lastActivityTimeMs: NaN } }), "invalid_event_time"],
     [compose({ ...generic, enrichment: { status: "invalid" as "ic_only" } }), "invalid_enrichment"],
     [composeLightningMessage(generic, { maxCharacters: 0 }), "invalid_character_budget"],
   ] as const;

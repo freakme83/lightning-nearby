@@ -49,7 +49,8 @@ export function previewPairedMessage(input: PairedPreviewInput): PairedMessagePr
     typeof selectedEventTimeMs === "number" && Number.isSafeInteger(selectedEventTimeMs) && selectedEventTimeMs >= 0
     ? selectedEventTimeMs : incident.lastActivityTimeMs;
   const composerInput: ComposerInput = {
-    incident: { id: incident.incidentId, lastActivityTimeMs: messageTimeMs },
+    incident: { id: incident.incidentId, lastActivityTimeMs: messageTimeMs,
+      latitude: incident.latitude, longitude: incident.longitude },
     locationDisplayLabel: input.locationDisplayLabel,
     enrichment: { status: enrichmentStatus, match },
   };

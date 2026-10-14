@@ -1,30 +1,37 @@
 # Lightning Message Composer v1.1
 
-Public CG messages are URL-free. Only `cg_verified` adds a blank line and the selected Xweather CG latitude/longitude formatted to exactly three decimal places:
+The current public message format distinguishes positively verified CG from generic lightning activity whose CG status is not positively confirmed.
+
+Verified CG:
 
 ```text
-#YILDIRIM
+#YILDIRIM ⚡
 Ankara’da, 8 Ekim 2026, 16:31 TSİ
-Salandra / Matera civarında yere ulaşan yıldırım kaydedildi.
+Salandra, Matera civarında yere ulaşan yıldırım kaydedildi.
 
+Konum:
 40.512, 16.361
 ```
 
-The composer uses the same selected `enrichment.match` CG event used for its internal Maps URL. It never substitutes the incident centroid, LightningMaps raw coordinate, Nominatim lookup coordinate, map center, or rounded location point. Both numbers use JavaScript `Number.toFixed(3)`, a deterministic numeric format independent of locale: `40.5118` becomes `40.512`, `39.9` becomes `39.900`, and `-73.98765` becomes `-73.988`. Trailing zeros remain. This display precision conveys an approximate observation location, not proof of an exact physical impact point.
+Only `cg_verified` uses the public hashtag `#YILDIRIM ⚡` and the wording `yere ulaşan yıldırım`. The labeled coordinate block and internal Maps URL use the selected Xweather CG event: the public values are rounded to three decimals, while the internal URL retains the original precision.
 
-The existing generic `ic_only`, `no_match`, and `provider_unavailable` format has neither coordinates nor a URL:
+Generic/unverified lightning activity:
 
 ```text
-#ŞİMŞEK
 Ankara’da, 8 Ekim 2026, 16:31 TSİ
-Salandra / Matera civarında şimşek kaydedildi.
+Salandra, Matera civarında şimşek/yıldırım aktivitesi kaydedildi.
+
+Konum:
+39.900, 32.800
 ```
 
-The public templates explicitly include `Ankara’da` on the date/time line and use the fixed verb `kaydedildi`. Hashtags, Turkish months, Europe/Istanbul time, first-comma slash formatting, event wording, CG coordinate provenance, and URL-free public output remain otherwise unchanged. The explicit scope keeps “Ankara” in each automatic post without adding another hashtag.
+`ic_only`, `no_match`, and `provider_unavailable` have no public hashtag. Lack of a verified CG match does not classify the activity as IC. Generic coordinates use the LightningMaps/incident reference point, never a rejected or evaluated Xweather event. Every current message includes `Konum:` on its own line before the coordinates. Location labels render the first separator as a comma, without changing structured location identity.
+
+Both formats use the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, Turkish month names, and no seconds. Verbs are deterministic from the stable incident ID: generic/unverified activity uses only `tespit edildi` or `kaydedildi`, while verified CG may also use `teyit edildi`. The internal event marker may retain `#ŞİMŞEK` for runtime policy compatibility, but it is never rendered in public text. Public text remains subject to the 280 Unicode-code-point limit and is never truncated.
 
 ## Internal metadata and persistence
 
-The composer retains `mapUrl` for CG at the original selected numeric precision, e.g. `https://www.google.com/maps?q=40.5118,16.3612`; for non-CG it remains `null`. The additive `coordinateText` field describes only the public line and is `null` for non-CG. All other result fields remain. Paired artifacts still retain selected event coordinates and provider metadata.
+The composer retains `mapUrl` for CG at the original selected numeric precision, e.g. `https://www.google.com/maps?q=40.5118,16.3612`; for generic activity it remains `null`. `coordinateText` describes the labeled public coordinate line for both formats, sourced from the selected CG event or the incident reference as applicable. Paired artifacts still retain selected event coordinates and provider metadata.
 
 The publication record now carries internal `mapUrl`, and the existing storage adapter writes it to the nullable `public.publication_records.map_url` column in the same insert as `message_text`. A read-only inspection of the prepared ledger project on 8 October 2026 confirmed that this column already exists, is nullable, has no default, and table RLS remains enabled. **No schema migration or live database write was needed.** A separately provisioned ledger must also include this nullable text column before using this adapter.
 
@@ -42,6 +49,6 @@ The end-to-end and fixture preview summaries distinguish **Internal map URL avai
 
 ## Validation and later acceptance
 
-Focused regressions cover the explicit `Ankara’da` date/time line, fixed `kaydedildi` wording, selected coordinate provenance, zeros/negative rounding, non-CG isolation, exact 280-character boundaries, public-only fingerprints, durable map serialization, unchanged approval text, historical payloads, and separate operator summaries. Existing composer, preview, ledger v1B.1/v1B.2, manual approval, publish-decision, dry-run, paired-validation, enrichment, naming, and lifecycle suites remain applicable.
+Focused regressions cover the explicit `Ankara’da` date/time line, status-dependent deterministic verb wording, selected coordinate provenance, zeros/negative rounding, non-CG isolation, exact 280-character boundaries, public-only fingerprints, durable map serialization, unchanged approval text, historical payloads, and separate operator summaries. Existing composer, preview, ledger v1B.1/v1B.2, manual approval, publish-decision, dry-run, paired-validation, enrichment, naming, and lifecycle suites remain applicable.
 
-After merge into `merge-ready`, run the manual live dry run and confirm a CG candidate has the new Ankara-scoped URL-free text, a selected three-decimal coordinate, pending approval, and full-precision `map_url`. Manual approval must show exactly the same persisted candidate plus the separate internal map. This PR does not run live acceptance or publish anything.
+After merge into `merge-ready`, run the manual live dry run and confirm a CG candidate has the current Ankara-scoped text, a selected three-decimal coordinate under `Konum:`, pending approval, and full-precision `map_url`. Manual approval must show exactly the same persisted candidate plus the separate internal map. This PR does not run live acceptance or publish anything.
