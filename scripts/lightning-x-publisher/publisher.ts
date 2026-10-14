@@ -15,16 +15,35 @@ export type PublishRow = {
   publishedAt: string | null;
 };
 
+// Canonical strict validator for the public message contract emitted by the composer.
 function safePublicText(row: PublishRow): boolean {
   const value = row.messageText;
-  if (!value || /https?:\/\/|www\./i.test(value)) return false;
-  const coordinate = /\n\n(-?\d{1,2}(?:\.\d{3})), (-?\d{1,3}(?:\.\d{3}))$/;
-  if (row.enrichmentStatus !== "cg_verified") {
-    return value.startsWith("#ŞİMŞEK\n") && !/(?:^|\n)-?\d+(?:\.\d+)?,\s*-?\d+(?:\.\d+)?(?:\n|$)/.test(value);
-  }
-  const match = coordinate.exec(value);
-  return value.startsWith("#YILDIRIM\n") && !!match &&
-    Math.abs(Number(match[1])) <= 90 && Math.abs(Number(match[2])) <= 180;
+  if (!value || value.length === 0 || [...value].length > 280 || /https?:\/\/|www\.|\r/i.test(value)) return false;
+
+  const lines = value.split("\n");
+  const cg = row.enrichmentStatus === "cg_verified";
+  if (lines.length !== (cg ? 6 : 5)) return false;
+
+  const dateLine = cg ? lines[1] : lines[0];
+  const eventLine = cg ? lines[2] : lines[1];
+  const coordinateLine = lines[cg ? 5 : 4];
+  if (cg && lines[0] !== "#YILDIRIM ⚡") return false;
+  if (lines[cg ? 3 : 2] !== "" || lines[cg ? 4 : 3] !== "Konum:") return false;
+
+  const validDateLine = /^Ankara’da, (?:[1-9]|[12][0-9]|3[01]) (?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık) [0-9]{4}, (?:[01][0-9]|2[0-3]):[0-5][0-9] TSİ$/u;
+  if (!validDateLine.test(dateLine)) return false;
+
+  // Normalized place labels may contain Turkish letters, digits, spaces, and common name punctuation.
+  // Excluding # and URL/control punctuation prevents arbitrary text or hashtags from entering the event line.
+  const location = String.raw`[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} .,'’()/-]*`;
+  const eventPattern = cg
+    ? new RegExp(String.raw`^${location} civarında yere ulaşan yıldırım (?:tespit edildi|kaydedildi|teyit edildi)\.$`, "u")
+    : new RegExp(String.raw`^${location} civarında şimşek/yıldırım aktivitesi (?:tespit edildi|kaydedildi)\.$`, "u");
+  if (!eventPattern.test(eventLine)) return false;
+
+  const coordinates = /^(-?[0-9]{1,2}\.[0-9]{3}), (-?[0-9]{1,3}\.[0-9]{3})$/;
+  const match = coordinates.exec(coordinateLine);
+  return !!match && Math.abs(Number(match[1])) <= 90 && Math.abs(Number(match[2])) <= 180;
 }
 export type PublisherStore = {
   get(publicationId: string): Promise<PublishRow | null>;
