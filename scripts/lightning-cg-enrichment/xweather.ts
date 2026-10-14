@@ -6,6 +6,7 @@ import type {
 } from "./types.ts";
 
 const API_URL = "https://data.api.xweather.com/lightning/closest";
+const XWEATHER_REQUEST_TIMEOUT_MS = 8_000;
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -92,21 +93,36 @@ async function queryXweather(reference: EnrichmentReference, options: Enrichment
   const clientSecret = env.XWEATHER_CLIENT_SECRET;
   if (!clientId || !clientSecret) return unavailable(reference, thresholds, "missing_credentials");
   const url = buildXweatherUrl(reference, thresholds.radiusKm, thresholds.limit, { clientId, clientSecret });
-  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), XWEATHER_REQUEST_TIMEOUT_MS);
   try {
-    response = await (dependencies.fetch ?? fetch)(url, { method: "GET", cache: "no-store", headers: { Accept: "application/json" } });
-  } catch {
-    return unavailable(reference, thresholds, "network_error");
-  }
-  const cost = parseCostDiagnostics(response.headers);
-  if (!response.ok) return { ...unavailable(reference, thresholds, "http_error", response.status), cost };
-  let payload: unknown;
-  try { payload = await response.json(); } catch { return { ...unavailable(reference, thresholds, "malformed_response", response.status), cost }; }
-  try {
-    const parsed = parseXweatherPayload(payload, response.headers);
-    return classify(parsed, thresholds);
-  } catch {
-    return { ...unavailable(reference, thresholds, "malformed_response", response.status), cost };
+    let response: Response;
+    try {
+      response = await (dependencies.fetch ?? fetch)(url, {
+        method: "GET", cache: "no-store", headers: { Accept: "application/json" }, signal: controller.signal,
+      });
+    } catch {
+      return unavailable(reference, thresholds, "network_error");
+    }
+    if (controller.signal.aborted) return unavailable(reference, thresholds, "network_error");
+    const cost = parseCostDiagnostics(response.headers);
+    if (!response.ok) return { ...unavailable(reference, thresholds, "http_error", response.status), cost };
+    let payload: unknown;
+    try { payload = await response.json(); }
+    catch (error) {
+      const failure = controller.signal.aborted || (error instanceof Error && error.name === "AbortError")
+        ? "network_error" : "malformed_response";
+      return { ...unavailable(reference, thresholds, failure, response.status), cost };
+    }
+    if (controller.signal.aborted) return { ...unavailable(reference, thresholds, "network_error", response.status), cost };
+    try {
+      const parsed = parseXweatherPayload(payload, response.headers);
+      return classify(parsed, thresholds);
+    } catch {
+      return { ...unavailable(reference, thresholds, "malformed_response", response.status), cost };
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
