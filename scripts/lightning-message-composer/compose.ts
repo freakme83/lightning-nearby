@@ -32,7 +32,7 @@ function formatLocation(label: string): string | null {
   if (separator < 0) return trimmed;
   const first = trimmed.slice(0, separator).trim();
   const rest = trimmed.slice(separator + 1).trim();
-  return first && rest ? `${first} / ${rest}` : null;
+  return first && rest ? `${first}, ${rest}` : null;
 }
 
 // FNV-1a over the stable incident ID; retained for compatibility with older research callers.
@@ -42,6 +42,15 @@ export function verbForIncident(incidentId: string): "tespit edildi" | "kaydedil
     hash = Math.imul(hash ^ character.codePointAt(0)!, 0x01000193);
   }
   return (hash & 1) === 0 ? "tespit edildi" : "kaydedildi";
+}
+
+function validCoordinates(latitude: unknown, longitude: unknown): boolean {
+  return typeof latitude === "number" && Number.isFinite(latitude) && Math.abs(latitude) <= 90 &&
+    typeof longitude === "number" && Number.isFinite(longitude) && Math.abs(longitude) <= 180;
+}
+
+function formatCoordinates(latitude: number, longitude: number): string {
+  return `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`;
 }
 
 export function composeLightningMessage(input: ComposerInput, options: ComposerOptions = {}): ComposeResult {
@@ -65,22 +74,39 @@ export function composeLightningMessage(input: ComposerInput, options: ComposerO
   if (!status || !supportedStatuses.has(status)) return error("invalid_enrichment", "An enrichment state is required.");
 
   let mapUrl: string | null = null;
-  let coordinateText: string | null = null;
+  let coordinateText: string;
   if (status === "cg_verified") {
     const match = input.enrichment.match;
-    if (match?.type !== "cg" || typeof match.latitude !== "number" || typeof match.longitude !== "number" ||
-        !Number.isFinite(match.latitude) || !Number.isFinite(match.longitude) ||
-        Math.abs(match.latitude) > 90 || Math.abs(match.longitude) > 180) {
+    if (match?.type !== "cg" || !validCoordinates(match.latitude, match.longitude)) {
       return error("missing_cg_match", "A selected CG match with valid coordinates is required.");
     }
-    mapUrl = `https://www.google.com/maps?q=${match.latitude},${match.longitude}`;
-    coordinateText = `${match.latitude.toFixed(3)}, ${match.longitude.toFixed(3)}`;
+    const latitude = match.latitude!;
+    const longitude = match.longitude!;
+    mapUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+    coordinateText = formatCoordinates(latitude, longitude);
+  } else {
+    const { latitude, longitude } = input.incident;
+    if (!validCoordinates(latitude, longitude)) {
+      return error("missing_incident_coordinates", "Valid incident/reference coordinates are required for generic lightning activity.");
+    }
+    coordinateText = formatCoordinates(latitude, longitude);
   }
 
+  // Preserve the internal event marker for lifecycle compatibility; only the CG marker is public.
   const hashtag = status === "cg_verified" ? "#YILDIRIM" : "#ŞİMŞEK";
+  const publicHeader = status === "cg_verified" ? "#YILDIRIM ⚡" : null;
   const dateTimeText = formatDateTime(eventTimeMs);
-  const eventText = `${locationText} civarında ${status === "cg_verified" ? "yere ulaşan yıldırım" : "şimşek"} kaydedildi.`;
-  const text = [hashtag, dateTimeText, eventText, ...(coordinateText ? ["", coordinateText] : [])].join("\n");
+  const eventText = status === "cg_verified"
+    ? `${locationText} civarında yere ulaşan yıldırım kaydedildi.`
+    : `${locationText} civarında şimşek/yıldırım aktivitesi kaydedildi.`;
+  const text = [
+    ...(publicHeader ? [publicHeader] : []),
+    dateTimeText,
+    eventText,
+    "",
+    "Konum:",
+    coordinateText,
+  ].join("\n");
   const characterCount = [...text].length;
   if (characterCount > maxCharacters) {
     return { ok: false, error: { code: "message_too_long", message: "Message exceeds the configured character budget." }, characterCount };

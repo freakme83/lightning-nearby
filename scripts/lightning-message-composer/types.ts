@@ -1,7 +1,7 @@
 export type ComposerEnrichmentStatus = "cg_verified" | "ic_only" | "no_match" | "provider_unavailable";
 
 export type ComposerInput = {
-  incident: { id: string; lastActivityTimeMs: number };
+  incident: { id: string; lastActivityTimeMs: number; latitude: number; longitude: number };
   locationDisplayLabel: string | null;
   enrichment: {
     status: ComposerEnrichmentStatus;
@@ -19,7 +19,7 @@ export type ComposedMessage = {
   locationText: string;
   eventText: string;
   mapUrl: string | null;
-  coordinateText: string | null;
+  coordinateText: string;
   characterCount: number;
   eventKind: ComposerEnrichmentStatus;
 };
@@ -32,7 +32,8 @@ export type ComposerErrorCode =
   | "invalid_enrichment"
   | "missing_cg_match"
   | "invalid_character_budget"
-  | "message_too_long";
+  | "message_too_long"
+  | "missing_incident_coordinates";
 
 export type ComposeResult =
   | ComposedMessage
