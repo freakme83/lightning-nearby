@@ -30,7 +30,6 @@ Konum:
 Both formats use the incident's `lastActivityTimeMs` in `Europe/Istanbul` as `Ankara’da, D MMMM YYYY, HH:mm TSİ`, Turkish month names, no seconds, and the fixed verb `kaydedildi`. The internal event marker may retain `#ŞİMŞEK` for runtime policy compatibility, but it is never rendered in public text. Public text remains subject to the 280 Unicode-code-point limit and is never truncated.
 
 ## Internal metadata and persistence
-## Internal metadata and persistence
 
 The composer retains `mapUrl` for CG at the original selected numeric precision, e.g. `https://www.google.com/maps?q=40.5118,16.3612`; for generic activity it remains `null`. `coordinateText` describes the labeled public coordinate line for both formats, sourced from the selected CG event or the incident reference as applicable. Paired artifacts still retain selected event coordinates and provider metadata.
 
