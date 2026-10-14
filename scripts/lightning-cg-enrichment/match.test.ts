@@ -79,6 +79,79 @@ test("network failure is provider_unavailable without leaking thrown text", asyn
   assert.equal(JSON.stringify(result).includes("hidden-secret"), false);
 });
 
+function rejectPendingOnAbort(signal: AbortSignal, reject: (reason: unknown) => void): void {
+  const abort = () => reject(new DOMException("The operation was aborted", "AbortError"));
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+}
+
+test("a fetch that never resolves is aborted by the request timeout", async () => {
+  const observed: { signal?: AbortSignal } = {};
+  const startedAt = Date.now();
+  const result = await enrichIncidentWithLightningType(reference, {}, {
+    env: { XWEATHER_CLIENT_ID: "id", XWEATHER_CLIENT_SECRET: "secret" },
+    fetch: (_input, init) => {
+      assert.ok(init?.signal instanceof AbortSignal);
+      observed.signal = init.signal;
+      return new Promise<Response>((_resolve, reject) => rejectPendingOnAbort(observed.signal!, reject));
+    },
+  });
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(result.status, "provider_unavailable");
+  assert.equal(result.failure, "network_error");
+  assert.equal(observed.signal?.aborted, true);
+  assert.ok(elapsedMs >= 7_500 && elapsedMs < 11_000, `timeout took ${elapsedMs}ms`);
+});
+
+test("a response body that never resolves is bounded by the same request timeout", async () => {
+  const observed: { signal?: AbortSignal } = {};
+  const startedAt = Date.now();
+  const result = await enrichIncidentWithLightningType(reference, {}, {
+    env: { XWEATHER_CLIENT_ID: "id", XWEATHER_CLIENT_SECRET: "secret" },
+    fetch: async (_input, init) => {
+      assert.ok(init?.signal instanceof AbortSignal);
+      observed.signal = init.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: () => new Promise<unknown>((_resolve, reject) => rejectPendingOnAbort(observed.signal!, reject)),
+      } as Response;
+    },
+  });
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(result.status, "provider_unavailable");
+  assert.equal(result.failure, "network_error");
+  assert.equal(observed.signal?.aborted, true);
+  assert.ok(elapsedMs >= 7_500 && elapsedMs < 11_000, `timeout took ${elapsedMs}ms`);
+});
+
+test("normal Xweather response keeps classification and clears the timeout without aborting", async () => {
+  const observed: { signal?: AbortSignal } = {};
+  const result = await enrichIncidentWithLightningType(reference, {}, {
+    env: { XWEATHER_CLIENT_ID: "id", XWEATHER_CLIENT_SECRET: "secret" },
+    fetch: async (_input, init) => {
+      assert.ok(init?.signal instanceof AbortSignal);
+      observed.signal = init.signal;
+      const payload = { success: true, response: [{ id: "cg-normal", loc: { lat: reference.latitude, long: reference.longitude },
+        ob: { timestampMS: reference.eventTimeMs, pulse: { type: "cg" } } }] };
+      return new Response(JSON.stringify(payload), { status: 200 });
+    },
+  });
+  assert.equal(result.status, "cg_verified");
+  assert.equal(result.match?.id, "cg-normal");
+  assert.equal(observed.signal?.aborted, false);
+});
+
+test("malformed JSON remains a malformed-response failure", async () => {
+  const result = await enrichIncidentWithLightningType(reference, {}, {
+    env: { XWEATHER_CLIENT_ID: "id", XWEATHER_CLIENT_SECRET: "secret" },
+    fetch: async () => new Response("{ invalid json", { status: 200 }),
+  });
+  assert.equal(result.status, "provider_unavailable");
+  assert.equal(result.failure, "malformed_response");
+});
+
 test("one enrichment invocation makes exactly one provider request", async () => {
   let calls = 0;
   const result = await enrichIncidentWithLightningType(reference, {}, {
