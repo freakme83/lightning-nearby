@@ -102,10 +102,10 @@ function feedSparseEvent(runtime: AnkaraFlyPipeline, index: number, latitude: nu
   runtime.acceptEvent(event(index, { latitude, longitude, eventTimeMs, receivedAtMs: processingTimeMs }), processingTimeMs);
 }
 
-function primaryPairWithNeighbor(runtime: AnkaraFlyPipeline, neighborLongitude = 32.68): void {
-  feedSparseEvent(runtime, 100, 39.9, 32.6, baseNow - 2_000);
-  feedSparseEvent(runtime, 101, 39.901, 32.6, baseNow - 1_000);
-  feedSparseEvent(runtime, 102, 39.9, neighborLongitude, baseNow - 500);
+function primaryPairWithNeighbor(runtime: AnkaraFlyPipeline, neighborLongitude = 32.0): void {
+  feedSparseEvent(runtime, 100, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(runtime, 101, 40.1447, 31.9162, baseNow - 1_000);
+  feedSparseEvent(runtime, 102, 40.1437, neighborLongitude, baseNow - 500);
 }
 
 async function processOuterDistrictCandidate(memory: ReturnType<typeof memoryStore>, at: number,
@@ -293,26 +293,26 @@ test("neighbor-supported two-event candidate emits one shadow opportunity withou
 
 test("only separate fresh neighboring events inside both sparse windows qualify", () => {
   const isolated = setup();
-  feedSparseEvent(isolated.runtime, 110, 39.9, 32.6, baseNow - 2_000);
-  feedSparseEvent(isolated.runtime, 111, 39.901, 32.6, baseNow - 1_000);
+  feedSparseEvent(isolated.runtime, 110, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(isolated.runtime, 111, 40.1447, 31.9162, baseNow - 1_000);
   assert.equal(isolated.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false);
 
   for (const neighbor of [
-    { name: "stale", longitude: 32.68, time: baseNow - 11 * 60_000 },
-    { name: "future", longitude: 32.68, time: baseNow + 1 },
-    { name: "distant", longitude: 32.8, time: baseNow - 500 },
+    { name: "stale", longitude: 32.0, time: baseNow - 11 * 60_000 },
+    { name: "future", longitude: 32.0, time: baseNow + 1 },
+    { name: "distant", longitude: 32.11, time: baseNow - 500 },
   ]) {
     const fixture = setup();
-    feedSparseEvent(fixture.runtime, 120, 39.9, 32.6, baseNow - 2_000);
-    feedSparseEvent(fixture.runtime, 121, 39.901, 32.6, baseNow - 1_000);
-    feedSparseEvent(fixture.runtime, 122, 39.9, neighbor.longitude, neighbor.time);
+    feedSparseEvent(fixture.runtime, 120, 40.1437, 31.9162, baseNow - 2_000);
+    feedSparseEvent(fixture.runtime, 121, 40.1447, 31.9162, baseNow - 1_000);
+    feedSparseEvent(fixture.runtime, 122, 40.1437, neighbor.longitude, neighbor.time);
     assert.equal(fixture.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false, neighbor.name);
   }
 
   const sameCluster = setup({ enrich: async reference => matchInitialCgEvents(reference, [], baseNow) });
-  feedSparseEvent(sameCluster.runtime, 130, 39.9, 32.6, baseNow - 2_000);
-  feedSparseEvent(sameCluster.runtime, 131, 39.901, 32.6, baseNow - 1_000);
-  feedSparseEvent(sameCluster.runtime, 132, 39.9, 32.601, baseNow - 500);
+  feedSparseEvent(sameCluster.runtime, 130, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(sameCluster.runtime, 131, 40.1447, 31.9162, baseNow - 1_000);
+  feedSparseEvent(sameCluster.runtime, 132, 40.1437, 31.9172, baseNow - 500);
   assert.equal(sameCluster.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false,
     "same-cluster events remain primary evidence and are never recounted as neighbors");
   assert.equal(sameCluster.runtime.lifecycle.snapshot().activeIncidents, 1,
@@ -330,7 +330,7 @@ test("sparse opportunity correlates later normal promotion and its existing prov
 
   const promotionAt = baseNow + 120_000;
   fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
-  feedSparseEvent(fixture.runtime, 103, 39.9, 32.6, promotionAt, promotionAt);
+  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
   await fixture.runtime.drainCandidateWork();
 
   const outcome = fixture.events.find(row => row.kind === "neighbor_supported_sparse_outcome")?.fields;
@@ -371,8 +371,8 @@ test("sparse opportunity reports normal candidate expiry without triggering enri
 test("sparse opportunity state remains isolated between candidate incidents", () => {
   const fixture = setup();
   primaryPairWithNeighbor(fixture.runtime);
-  feedSparseEvent(fixture.runtime, 140, 39.9, 33.05, baseNow - 2_000);
-  feedSparseEvent(fixture.runtime, 141, 39.901, 33.05, baseNow - 1_000);
+  feedSparseEvent(fixture.runtime, 140, 40.1437, 32.65, baseNow - 2_000);
+  feedSparseEvent(fixture.runtime, 141, 40.1447, 32.65, baseNow - 1_000);
   const opportunities = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_activity");
   assert.equal(opportunities.length, 1);
   assert.equal(fixture.runtime.lifecycle.snapshot().candidates, 3);
