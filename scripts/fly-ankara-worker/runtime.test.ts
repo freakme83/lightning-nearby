@@ -56,7 +56,8 @@ function setup(options: {
 } = {}) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
   const memory = memoryStore();
-  const now = options.now ?? (() => baseNow);
+  let currentNow = baseNow;
+  const now = options.now ?? (() => currentNow);
   const startedAt = now();
   const runtime = new AnkaraFlyPipeline({
     store: options.store ?? memory.store,
@@ -76,7 +77,7 @@ function setup(options: {
   });
   runtime.markConnecting(startedAt - 1000);
   runtime.recordFrame(startedAt);
-  return { runtime, events, memory };
+  return { runtime, events, memory, setNow(value: number) { currentNow = value; } };
 }
 
 function event(index: number, overrides: Partial<LightningEvent> = {}): LightningEvent {
@@ -94,6 +95,17 @@ function qualifyingEvents(runtime: AnkaraFlyPipeline, time = baseNow, processing
     latitude: 39.9,
     longitude: 32.6,
   }), processingTimeMs);
+}
+
+function feedSparseEvent(runtime: AnkaraFlyPipeline, index: number, latitude: number, longitude: number,
+  eventTimeMs: number, processingTimeMs = baseNow): void {
+  runtime.acceptEvent(event(index, { latitude, longitude, eventTimeMs, receivedAtMs: processingTimeMs }), processingTimeMs);
+}
+
+function primaryPairWithNeighbor(runtime: AnkaraFlyPipeline, neighborLongitude = 32.0): void {
+  feedSparseEvent(runtime, 100, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(runtime, 101, 40.1447, 31.9162, baseNow - 1_000);
+  feedSparseEvent(runtime, 102, 40.1437, neighborLongitude, baseNow - 500);
 }
 
 async function processOuterDistrictCandidate(memory: ReturnType<typeof memoryStore>, at: number,
@@ -240,6 +252,183 @@ test("worker summaries omit event arrays without altering clustering snapshots",
   assert.equal(runtime.pipeline.clusterer.clusters[0].recentEvents.length, 3);
   assert.equal(summary.cgRepeat.queued, 0);
   assert.equal(JSON.stringify(summary.stormEvolution).includes("recentEvents"), false);
+});
+
+test("neighbor-supported two-event candidate emits one shadow opportunity without production side effects", () => {
+  let providerCalls = 0; let notifications = 0;
+  const { runtime, events, memory } = setup({
+    enrich: async reference => { providerCalls++; return matchInitialCgEvents(reference, [], baseNow); },
+    notifyPending: async () => { notifications++; return { ok: true }; },
+  });
+  primaryPairWithNeighbor(runtime);
+  const opportunities = events.filter(row => row.kind === "neighbor_supported_sparse_activity");
+  assert.equal(opportunities.length, 1);
+  const fields = opportunities[0].fields!;
+  assert.equal(fields.primaryEventCount, 2);
+  assert.ok(fields.incidentId);
+  assert.ok(Array.isArray(fields.primaryClusterIds));
+  assert.ok((fields.neighborClusterIds as string[]).length > 0);
+  assert.equal(fields.neighborFreshEventCount, 1);
+  assert.ok((fields.nearestNeighborDistanceKm as number) > 1 &&
+    (fields.nearestNeighborDistanceKm as number) < 15);
+  assert.equal(fields.nearestNeighborTimeDeltaSeconds, .5);
+  assert.equal(fields.sourceHealthy, true);
+  assert.equal(fields.promotionThreshold, 3);
+  assert.equal(fields.spatialWindowKm, 15);
+  assert.equal(fields.temporalWindowMinutes, 10);
+  assert.equal(fields.shadowOnly, true);
+  assert.equal(runtime.summary().profile.promotionMinEvents, 3);
+  assert.equal(runtime.lifecycle.snapshot().activeIncidents, 0);
+  assert.equal(runtime.lifecycle.snapshot().incidents.find(item => item.id === fields.incidentId)?.totalEvents, 2,
+    "neighbor events do not become candidate events");
+  assert.equal(providerCalls, 0, "the opportunity itself does not trigger enrichment");
+  assert.equal(memory.records.length, 0);
+  assert.equal(memory.writes, 0);
+  assert.equal(notifications, 0);
+  assert.deepEqual(runtime.summary().neighborSupportedSparseActivity, { opportunities: 1, promoted: 0, expired: 0 });
+  // Rechecking an unchanged candidate state does not repeat the event.
+  runtime.summary();
+  assert.equal(events.filter(row => row.kind === "neighbor_supported_sparse_activity").length, 1);
+});
+
+test("only separate fresh neighboring events inside both sparse windows qualify", () => {
+  const isolated = setup();
+  feedSparseEvent(isolated.runtime, 110, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(isolated.runtime, 111, 40.1447, 31.9162, baseNow - 1_000);
+  assert.equal(isolated.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false);
+
+  for (const neighbor of [
+    { name: "stale", longitude: 32.0, time: baseNow - 11 * 60_000 },
+    { name: "future", longitude: 32.0, time: baseNow + 1 },
+    { name: "distant", longitude: 32.11, time: baseNow - 500 },
+  ]) {
+    const fixture = setup();
+    feedSparseEvent(fixture.runtime, 120, 40.1437, 31.9162, baseNow - 2_000);
+    feedSparseEvent(fixture.runtime, 121, 40.1447, 31.9162, baseNow - 1_000);
+    feedSparseEvent(fixture.runtime, 122, 40.1437, neighbor.longitude, neighbor.time);
+    assert.equal(fixture.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false, neighbor.name);
+  }
+
+  const sameCluster = setup({ enrich: async reference => matchInitialCgEvents(reference, [], baseNow) });
+  feedSparseEvent(sameCluster.runtime, 130, 40.1437, 31.9162, baseNow - 2_000);
+  feedSparseEvent(sameCluster.runtime, 131, 40.1447, 31.9162, baseNow - 1_000);
+  feedSparseEvent(sameCluster.runtime, 132, 40.1437, 31.9172, baseNow - 500);
+  assert.equal(sameCluster.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false,
+    "same-cluster events remain primary evidence and are never recounted as neighbors");
+  assert.equal(sameCluster.runtime.lifecycle.snapshot().activeIncidents, 1,
+    "normal three-event promotion remains unchanged");
+});
+
+test("sparse opportunity correlates later normal promotion and its existing provider result", async () => {
+  let enrichmentCalls = 0;
+  const fixture = setup({ enrich: async reference => {
+    enrichmentCalls++;
+    return matchInitialCgEvents(reference, [], baseNow);
+  } });
+  primaryPairWithNeighbor(fixture.runtime);
+  assert.equal(enrichmentCalls, 0);
+
+  const promotionAt = baseNow + 120_000;
+  fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
+  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
+  await fixture.runtime.drainCandidateWork();
+
+  const outcome = fixture.events.find(row => row.kind === "neighbor_supported_sparse_outcome")?.fields;
+  assert.equal(outcome?.outcome, "promoted_normally");
+  assert.equal(outcome?.normalPromotionDelaySeconds, 120);
+  assert.equal(outcome?.resultingIncidentId, outcome?.incidentId);
+  const normalResult = fixture.events.find(row => row.kind === "neighbor_supported_sparse_normal_result")?.fields;
+  assert.equal(normalResult?.eventualProviderStatus, "no_match");
+  assert.equal(normalResult?.publicationDecision, "WOULD_PUBLISH");
+  assert.equal(enrichmentCalls, 1, "only the normal promoted-candidate enrichment ran");
+  assert.equal(fixture.memory.records.length, 1, "only the unchanged normal publication flow wrote a record");
+  assert.deepEqual(fixture.runtime.summary().neighborSupportedSparseActivity,
+    { opportunities: 1, promoted: 1, expired: 0 });
+});
+
+test("sparse normal result retains provider outcome when outer-district policy suppresses publication", async () => {
+  let enrichmentCalls = 0; let notifications = 0; let approvals = 0; let dispatches = 0;
+  const fixture = setup({
+    enrich: async reference => {
+      enrichmentCalls++;
+      return matchInitialCgEvents(reference, [], baseNow);
+    },
+    reverse: async (latitude, longitude) => ({ latitude, longitude, provider: "fixture",
+      displayLabel: "Beypazarı, Ankara", locality: "Beypazarı", localityKind: "town",
+      district: "Beypazarı", province: "Ankara", country: "Türkiye" }),
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    autoPublish: {
+      approvalStore: {
+        async getPublicationForApproval() { approvals++; return null; },
+        async transitionPendingApproval() { approvals++; return null; },
+      },
+      dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; },
+    },
+  });
+  primaryPairWithNeighbor(fixture.runtime);
+  const opportunity = fixture.events.find(row => row.kind === "neighbor_supported_sparse_activity")?.fields;
+  assert.ok(opportunity?.incidentId);
+
+  const promotionAt = baseNow + 120_000;
+  fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
+  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
+  await fixture.runtime.drainCandidateWork();
+
+  const sparseResults = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_normal_result");
+  assert.equal(sparseResults.length, 1);
+  const normalResult = sparseResults[0].fields!;
+  assert.equal(normalResult.incidentId, opportunity.incidentId);
+  assert.equal(normalResult.eventualProviderStatus, "no_match");
+  assert.equal(normalResult.rawProviderStatus, "no_match");
+  assert.equal(normalResult.normalPromotionDelaySeconds, 120);
+  assert.equal(normalResult.publicationDecision, "WOULD_PUBLISH", "retains the pre-policy decision separately");
+  assert.equal(normalResult.productionOutcome, "HOLD");
+  assert.equal(normalResult.suppressionReason, "outer_district_non_cg_suppressed");
+  assert.equal(normalResult.publicationRecordId, null);
+  assert.equal(fixture.events.some(row => row.kind === "outer_district_non_cg_suppressed" &&
+    row.fields?.canonicalDistrict === "Beypazarı"), true);
+  assert.equal(fixture.events.some(row => row.kind === "candidate_outcome" &&
+    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
+  assert.equal(enrichmentCalls, 1, "only normal promoted-candidate enrichment ran");
+  assert.equal(fixture.runtime.summary().profile.promotionMinEvents, 3);
+  assert.equal(fixture.memory.records.length, 0);
+  assert.equal(fixture.memory.writes, 0);
+  assert.equal(notifications, 0);
+  assert.equal(approvals, 0);
+  assert.equal(dispatches, 0);
+});
+
+test("sparse opportunity reports normal candidate expiry without triggering enrichment", () => {
+  let providerCalls = 0;
+  const fixture = setup({ enrich: async reference => {
+    providerCalls++;
+    return matchInitialCgEvents(reference, [], baseNow);
+  } });
+  primaryPairWithNeighbor(fixture.runtime);
+  for (let minute = 1; minute <= 10; minute++) {
+    const at = baseNow + minute * 60_000;
+    fixture.setNow(at); fixture.runtime.recordFrame(at); fixture.runtime.summary(at);
+  }
+  const outcome = fixture.events.find(row => row.kind === "neighbor_supported_sparse_outcome")?.fields;
+  assert.equal(outcome?.outcome, "expired_without_promotion");
+  assert.equal(outcome?.expiredWithoutPromotion, true);
+  assert.ok(fixture.events.some(row => row.kind === "candidate_expired" &&
+    row.fields?.incidentId === outcome?.incidentId), "the candidate still expires through its normal lifecycle");
+  assert.equal(providerCalls, 0);
+  assert.equal(fixture.memory.records.length, 0);
+  assert.deepEqual(fixture.runtime.summary().neighborSupportedSparseActivity,
+    { opportunities: 1, promoted: 0, expired: 1 });
+});
+
+test("sparse opportunity state remains isolated between candidate incidents", () => {
+  const fixture = setup();
+  primaryPairWithNeighbor(fixture.runtime);
+  feedSparseEvent(fixture.runtime, 140, 40.1437, 32.65, baseNow - 2_000);
+  feedSparseEvent(fixture.runtime, 141, 40.1447, 32.65, baseNow - 1_000);
+  const opportunities = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_activity");
+  assert.equal(opportunities.length, 1);
+  assert.equal(fixture.runtime.lifecycle.snapshot().candidates, 3);
+  assert.equal(fixture.runtime.summary().neighborSupportedSparseActivity.opportunities, 1);
 });
 
 test("published active incident's new supported neighborhood is shadow-only", async () => {
