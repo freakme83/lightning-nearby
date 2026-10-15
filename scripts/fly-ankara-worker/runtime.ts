@@ -30,6 +30,7 @@ import { DEFAULT_THRESHOLDS, greatCircleDistanceKm } from "../lightning-cg-enric
 import type { EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
 import { StormEvolutionShadow } from "./storm-evolution.ts";
 import { resolveOuterDistrict } from "../lightning-outer-district-policy/policy.ts";
+import { RollingCandidateWindowShadow } from "./rolling-candidate-shadow.ts";
 
 type RepeatProbe = { incident: LightningIncident; observation: ClusterObservation; reason: CgRepeatReason; predecessorId?: string };
 type EarlierNonCgPublication = {
@@ -172,6 +173,8 @@ export class AnkaraFlyPipeline {
   private readonly repeatPredecessors = new Map<string, string>();
   private readonly neighborSupportedSparseOpportunities = new Map<string, NeighborSupportedSparseOpportunity>();
   private readonly neighborSupportedSparseCounters = { opportunities: 0, promoted: 0, expired: 0 };
+  private readonly rollingCandidateShadow = new RollingCandidateWindowShadow(
+    profile.promotionMinEvents, profile.promotionWindowMinutes);
   private readonly suppressedInitialRoutes = new Map<string, SuppressedInitialRoute>();
   private readonly repeatInFlight = new Set<string>();
   private readonly cgProviderResults: Record<string, number> = {};
@@ -272,7 +275,20 @@ export class AnkaraFlyPipeline {
       longitude: event.longitude,
     };
     this.processTransitions(this.lifecycle.tick(processingTimeMs));
-    this.processTransitions(this.lifecycle.observe(observation), observation);
+    const observationTransitions = this.lifecycle.observe(observation);
+    this.processTransitions(observationTransitions, observation);
+    // Evaluate after production so a same-event promotion is recorded as agreement,
+    // never as a shadow-only missed opportunity.
+    const representedRecovery = observationTransitions.find(transition =>
+      transition.type === "candidate_recovered" && transition.relatedIncidentId);
+    const rollingIncident = representedRecovery?.incident ?? observationTransitions.at(-1)?.incident ??
+      this.lifecycle.incidents.find(incident => incident.sourceClusterIds.includes(observation.sourceClusterId));
+    if (rollingIncident && this.sourceHealth.state.state === "live") {
+      for (const telemetry of this.rollingCandidateShadow.observe(observation, rollingIncident,
+        Boolean(representedRecovery))) {
+        this.emit(telemetry.kind, telemetry.fields);
+      }
+    }
     this.evaluateNeighborSupportedSparseActivity(processingTimeMs);
     const associated = this.lifecycle.incidents.find(incident => incident.status === "active" &&
       incident.sourceClusterIds.includes(observation.sourceClusterId));
@@ -330,6 +346,7 @@ export class AnkaraFlyPipeline {
       delayedXweatherRechecks: { ...this.delayedXweatherRechecks },
       stormEvolution: { ...this.stormEvolution.counters, inFlightLookups: this.stormEvolutionWork.size },
       neighborSupportedSparseActivity: { ...this.neighborSupportedSparseCounters },
+      rollingCandidateShadow: { ...this.rollingCandidateShadow.counters },
     };
   }
 
@@ -356,6 +373,10 @@ export class AnkaraFlyPipeline {
   private processTransitions(transitions: IncidentTransition[], observation?: ClusterObservation): void {
     const recoveredIds = new Set(transitions.filter(item => item.type === "candidate_recovered").map(item => item.incident.id));
     for (const transition of transitions) {
+      if (transition.type === "candidate_expired") {
+        for (const telemetry of this.rollingCandidateShadow.productionExpired(transition.incident,
+          transition.incident.closedAtMs ?? this.now())) this.emit(telemetry.kind, telemetry.fields);
+      }
       if (transition.type === "candidate_expired") this.recordSparseCandidateOutcome(transition.incident.id, "expired_without_promotion",
         transition.incident.closedAtMs ?? this.now());
       if (transition.type === "promoted") this.recordSparseCandidateOutcome(transition.incident.id, "promoted_normally",
@@ -881,6 +902,7 @@ export class AnkaraFlyPipeline {
       this.earlierNonCgPublications.delete(id);
       this.suppressedInitialRoutes.delete(id);
       this.neighborSupportedSparseOpportunities.delete(id);
+      this.rollingCandidateShadow.forgetIncident(id);
     }
     this.policy.pruneClosed(nowMs);
   }

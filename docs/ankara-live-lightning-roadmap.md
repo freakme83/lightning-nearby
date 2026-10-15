@@ -80,6 +80,10 @@ Completed in PR #84.
 
 A never-promoted candidate that expired before reaching 3/10 can be reconsidered when later observations in the same living cluster provide enough rolling support. This fixes a recall/correctness problem without lowering the incident threshold.
 
+### Rolling candidate-window shadow
+
+Active as a telemetry-only check. The production candidate expiry clock remains anchored to candidate opening, while the existing PR #84 recovery path can still promote the same expired identity when its continuing cluster later reaches Profile B's rolling three-events-in-ten-minutes condition. The independent shadow retains only bounded event-time evidence for that same production incident and cluster association, records when a two-event candidate expires with viable evidence, and distinguishes a true rolling-only promotion from agreement with production recovery. It does not change expiry, recovery, clustering, provider queries, or publication decisions.
+
 ### P0-C - CG/provider telemetry separation
 
 Largely complete.
