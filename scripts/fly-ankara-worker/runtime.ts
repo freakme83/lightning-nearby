@@ -2,7 +2,7 @@
 // delegated to the existing lifecycle, paired-validation, composer, and ledger.
 import { randomUUID } from "node:crypto";
 import { LightningClusteringPipeline } from "../live-lightning-clustering/pipeline.ts";
-import { DEFAULT_CLUSTER_PARAMETERS, type ClusterParameters } from "../live-lightning-clustering/clusterer.ts";
+import { DEFAULT_CLUSTER_PARAMETERS, freshnessState, type ClusterParameters } from "../live-lightning-clustering/clusterer.ts";
 import { ANKARA_MONITORING_AREA, pointInMonitoringArea } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import { INCIDENT_POLICY_PROFILES, type IncidentTransition, type ClusterObservation, type LightningIncident } from "../lightning-incident-lifecycle/types.ts";
 import { IncidentLifecycleEngine } from "../lightning-incident-lifecycle/incident-engine.ts";
@@ -14,7 +14,7 @@ import type { PairedEnrichmentFunction, PairedValidationArtifact } from "../ligh
 import { continueFromPairedArtifact, withPublishDecision } from "../lightning-end-to-end-dry-run/orchestrate.ts";
 import { applyPersistentLedger } from "../lightning-end-to-end-dry-run/ledger.ts";
 import { createSupabaseLedger, type LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
-import type { LightningEvent } from "../live-lightning-listener/core.ts";
+import { eventKey, type LightningEvent } from "../live-lightning-listener/core.ts";
 import type { ReverseGeocodeResult } from "../lightning-location-naming/types.ts";
 import { NominatimReverseGeocoder } from "../lightning-location-naming/nominatim.ts";
 import type { AutoPublishFailureNotifier, PendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
@@ -60,10 +60,28 @@ type SuppressedInitialRoute = {
   initialRouteConsumed: true;
 };
 
+type NeighborSupportedSparseOpportunity = {
+  incidentId: string;
+  opportunityAtMs: number;
+  primaryEventCount: 2;
+  primaryReference: { latitude: number; longitude: number; eventTimeMs: number };
+  neighborFreshEventCount: number;
+  nearestNeighborDistanceKm: number;
+  nearestNeighborTimeDeltaSeconds: number;
+  neighborClusterIds: string[];
+  sourceHealthy: boolean;
+  expiredAtMs?: number;
+  promotedAtMs?: number;
+  providerOutcomeEmitted?: boolean;
+};
+
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
 const CLOSED_CLUSTER_RETENTION_MS = 0;
 const LIFECYCLE_METRIC_SAMPLE_LIMIT = 1_000;
+const SPARSE_NEIGHBOR_DISTANCE_KM = 15;
+const SPARSE_NEIGHBOR_TEMPORAL_WINDOW_MS = 10 * 60_000;
+const SPARSE_NEIGHBOR_CLUSTER_ID_LIMIT = 5;
 const requiredEnvironment = [
   "XWEATHER_CLIENT_ID", "XWEATHER_CLIENT_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
 ] as const;
@@ -152,6 +170,8 @@ export class AnkaraFlyPipeline {
   private repeatReadyAtMs: number;
   private readonly repeatProbes: CgProbeCoordinator<RepeatProbe>;
   private readonly repeatPredecessors = new Map<string, string>();
+  private readonly neighborSupportedSparseOpportunities = new Map<string, NeighborSupportedSparseOpportunity>();
+  private readonly neighborSupportedSparseCounters = { opportunities: 0, promoted: 0, expired: 0 };
   private readonly suppressedInitialRoutes = new Map<string, SuppressedInitialRoute>();
   private readonly repeatInFlight = new Set<string>();
   private readonly cgProviderResults: Record<string, number> = {};
@@ -253,6 +273,7 @@ export class AnkaraFlyPipeline {
     };
     this.processTransitions(this.lifecycle.tick(processingTimeMs));
     this.processTransitions(this.lifecycle.observe(observation), observation);
+    this.evaluateNeighborSupportedSparseActivity(processingTimeMs);
     const associated = this.lifecycle.incidents.find(incident => incident.status === "active" &&
       incident.sourceClusterIds.includes(observation.sourceClusterId));
     if (associated) {
@@ -308,6 +329,7 @@ export class AnkaraFlyPipeline {
       outerDistrictNonCgPublication: { ...this.outerDistrictNonCgPublication },
       delayedXweatherRechecks: { ...this.delayedXweatherRechecks },
       stormEvolution: { ...this.stormEvolution.counters, inFlightLookups: this.stormEvolutionWork.size },
+      neighborSupportedSparseActivity: { ...this.neighborSupportedSparseCounters },
     };
   }
 
@@ -334,6 +356,10 @@ export class AnkaraFlyPipeline {
   private processTransitions(transitions: IncidentTransition[], observation?: ClusterObservation): void {
     const recoveredIds = new Set(transitions.filter(item => item.type === "candidate_recovered").map(item => item.incident.id));
     for (const transition of transitions) {
+      if (transition.type === "candidate_expired") this.recordSparseCandidateOutcome(transition.incident.id, "expired_without_promotion",
+        transition.incident.closedAtMs ?? this.now());
+      if (transition.type === "promoted") this.recordSparseCandidateOutcome(transition.incident.id, "promoted_normally",
+        transition.incident.promotedAtMs ?? this.now());
       if (transition.type === "candidate_expired" || transition.type === "candidate_recovered" ||
           (transition.type === "promoted" && recoveredIds.has(transition.incident.id))) {
         this.emit(transition.type === "promoted" ? "candidate_promoted_after_recovery" : transition.type, {
@@ -376,6 +402,105 @@ export class AnkaraFlyPipeline {
         this.repeatProbes.forget(this.repeatScopeId(transition.incident.id));
       }
     }
+  }
+
+  private evaluateNeighborSupportedSparseActivity(evaluatedAtMs: number): void {
+    const clusters = this.pipeline.clusterer.clusters;
+    const clustersById = new Map(clusters.map(cluster => [cluster.id, cluster]));
+    const freshnessWindowMinutes = this.pipeline.clusterer.parameters.freshnessWindowMinutes;
+    const sourceHealthy = this.sourceHealth.state.state === "live";
+
+    for (const incident of this.lifecycle.incidents) {
+      if (incident.status !== "candidate" || this.neighborSupportedSparseOpportunities.has(incident.id)) continue;
+      const primaryClusterIds = new Set(incident.sourceClusterIds);
+      const primaryEventsByKey = new Map<string, LightningEvent>();
+      for (const clusterId of primaryClusterIds) {
+        for (const event of clustersById.get(clusterId)?.recentEvents ?? []) primaryEventsByKey.set(eventKey(event), event);
+      }
+      const primaryEvents = [...primaryEventsByKey.values()];
+      if (!primaryEvents.length) continue;
+      const latestPrimaryTimeMs = Math.max(...primaryEvents.map(event => event.eventTimeMs));
+      const promotionCutoffMs = latestPrimaryTimeMs - profile.promotionWindowMinutes * 60_000;
+      const freshPrimaryEvents = primaryEvents.filter(event => event.eventTimeMs >= promotionCutoffMs &&
+        freshnessState(event, evaluatedAtMs, freshnessWindowMinutes) === "fresh");
+      if (freshPrimaryEvents.length !== 2) continue;
+
+      const primaryReference = freshPrimaryEvents.reduce((latest, event) => event.eventTimeMs > latest.eventTimeMs ||
+        (event.eventTimeMs === latest.eventTimeMs && event.receivedAtMs > latest.receivedAtMs) ? event : latest);
+      const neighbors: Array<{ clusterId: string; event: LightningEvent; distanceKm: number; timeDeltaMs: number }> = [];
+      const seenNeighborKeys = new Set<string>();
+      for (const cluster of clusters) {
+        if (primaryClusterIds.has(cluster.id)) continue;
+        for (const event of cluster.recentEvents) {
+          const key = eventKey(event);
+          if (seenNeighborKeys.has(key)) continue;
+          seenNeighborKeys.add(key);
+          if (freshnessState(event, evaluatedAtMs, freshnessWindowMinutes) !== "fresh") continue;
+          const timeDeltaMs = Math.abs(event.eventTimeMs - primaryReference.eventTimeMs);
+          if (timeDeltaMs > SPARSE_NEIGHBOR_TEMPORAL_WINDOW_MS) continue;
+          const distanceKm = greatCircleDistanceKm(
+            { latitude: primaryReference.latitude, longitude: primaryReference.longitude },
+            { latitude: event.latitude, longitude: event.longitude, eventTimeMs: event.eventTimeMs });
+          if (distanceKm > SPARSE_NEIGHBOR_DISTANCE_KM) continue;
+          neighbors.push({ clusterId: cluster.id, event, distanceKm, timeDeltaMs });
+        }
+      }
+      if (!neighbors.length) continue;
+      neighbors.sort((left, right) => left.distanceKm - right.distanceKm || left.timeDeltaMs - right.timeDeltaMs ||
+        left.clusterId.localeCompare(right.clusterId) || eventKey(left.event).localeCompare(eventKey(right.event)));
+      const nearest = neighbors[0];
+      const opportunity: NeighborSupportedSparseOpportunity = {
+        incidentId: incident.id, opportunityAtMs: evaluatedAtMs, primaryEventCount: 2,
+        primaryReference: { latitude: primaryReference.latitude, longitude: primaryReference.longitude,
+          eventTimeMs: primaryReference.eventTimeMs },
+        neighborFreshEventCount: neighbors.length,
+        nearestNeighborDistanceKm: nearest.distanceKm,
+        nearestNeighborTimeDeltaSeconds: nearest.timeDeltaMs / 1000,
+        neighborClusterIds: [...new Set(neighbors.map(item => item.clusterId))].slice(0, SPARSE_NEIGHBOR_CLUSTER_ID_LIMIT),
+        sourceHealthy,
+      };
+      this.neighborSupportedSparseOpportunities.set(incident.id, opportunity);
+      this.neighborSupportedSparseCounters.opportunities++;
+      this.emit("neighbor_supported_sparse_activity", {
+        incidentId: incident.id, candidateId: incident.id, primaryClusterIds: incident.sourceClusterIds.slice(),
+        primaryEventCount: opportunity.primaryEventCount, opportunityAt: new Date(evaluatedAtMs).toISOString(),
+        opportunityAtMs: evaluatedAtMs, primaryReference: { ...opportunity.primaryReference },
+        neighborFreshEventCount: opportunity.neighborFreshEventCount,
+        nearestNeighborDistanceKm: opportunity.nearestNeighborDistanceKm,
+        nearestNeighborTimeDeltaSeconds: opportunity.nearestNeighborTimeDeltaSeconds,
+        neighborClusterIds: [...opportunity.neighborClusterIds], sourceHealthy,
+        promotionThreshold: profile.promotionMinEvents, spatialWindowKm: SPARSE_NEIGHBOR_DISTANCE_KM,
+        temporalWindowMinutes: SPARSE_NEIGHBOR_TEMPORAL_WINDOW_MS / 60_000,
+        shadowOnly: true,
+      });
+    }
+  }
+
+  private recordSparseCandidateOutcome(incidentId: string, outcome: "promoted_normally" | "expired_without_promotion",
+    outcomeAtMs: number): void {
+    const opportunity = this.neighborSupportedSparseOpportunities.get(incidentId);
+    if (!opportunity) return;
+    if (outcome === "promoted_normally") {
+      if (opportunity.promotedAtMs !== undefined) return;
+      opportunity.promotedAtMs = outcomeAtMs;
+      this.neighborSupportedSparseCounters.promoted++;
+    } else {
+      if (opportunity.expiredAtMs !== undefined) return;
+      opportunity.expiredAtMs = outcomeAtMs;
+      this.neighborSupportedSparseCounters.expired++;
+    }
+    this.emit("neighbor_supported_sparse_outcome", {
+      incidentId, candidateId: incidentId, outcome,
+      opportunityAtMs: opportunity.opportunityAtMs,
+      outcomeAtMs,
+      ...(outcome === "promoted_normally" ? { resultingIncidentId: incidentId,
+        normalPromotionDelaySeconds: (outcomeAtMs - opportunity.opportunityAtMs) / 1000 } : {}),
+      ...(outcome === "expired_without_promotion" ? { expiredWithoutPromotion: true } : {}),
+      primaryClusterIds: this.lifecycle.incidents.find(item => item.id === incidentId)?.sourceClusterIds ?? [],
+      neighborClusterIds: [...opportunity.neighborClusterIds],
+      promotionThreshold: profile.promotionMinEvents,
+      shadowOnly: true,
+    });
   }
 
   private controllerFor(incidentId: string): PairedValidationController {
@@ -515,6 +640,22 @@ export class AnkaraFlyPipeline {
       result = await applyPersistentLedger(result, context, this.store,
         { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
           ...(!repeat ? { recordedAt: ledgerRecordedAt } : {}) });
+      if (!repeat) {
+        const sparseOpportunity = this.neighborSupportedSparseOpportunities.get(incidentId);
+        if (sparseOpportunity?.promotedAtMs !== undefined && !sparseOpportunity.providerOutcomeEmitted) {
+          sparseOpportunity.providerOutcomeEmitted = true;
+          this.emit("neighbor_supported_sparse_normal_result", {
+            incidentId, candidateId: incidentId, outcome: "promoted_normally",
+            opportunityAtMs: sparseOpportunity.opportunityAtMs, normalPromotionAtMs: sparseOpportunity.promotedAtMs,
+            normalPromotionDelaySeconds: (sparseOpportunity.promotedAtMs - sparseOpportunity.opportunityAtMs) / 1000,
+            providerResultObservedAtMs: this.now(), eventualProviderStatus: publicationArtifact.enrichment.status,
+            rawProviderStatus: artifact.enrichment.status, publicationDecision: result.publishDecision?.decision ?? null,
+            ledgerReason: result.ledger?.reason ?? result.reason ?? null,
+            publicationRecordId: result.ledger?.persistedPublicationId ?? null,
+            shadowOnly: true,
+          });
+        }
+      }
       // A successful atomic repeat-CG admission reserves this area before asynchronous publication
       // confirmation. Advance the shadow anchor now so a pending X workflow cannot race it.
       const ledger = result.ledger;
@@ -716,6 +857,7 @@ export class AnkaraFlyPipeline {
       this.repeatPredecessors.delete(id);
       this.earlierNonCgPublications.delete(id);
       this.suppressedInitialRoutes.delete(id);
+      this.neighborSupportedSparseOpportunities.delete(id);
     }
     this.policy.pruneClosed(nowMs);
   }
