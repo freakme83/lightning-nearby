@@ -15,6 +15,7 @@ function setup(recovered = true) {
   const events: Array<{ kind: string; fields?: Record<string, unknown> }> = [];
   let status: EnrichmentResult["status"] = "cg_verified";
   let name = "Ayrancı"; let selectedDeltaMs = 0; let selectedId: string | undefined;
+  let outerDistrict: string | undefined;
   let pending: Promise<void> | undefined;
   let failAdmission = false; let unusable = false; let autoApprove = false;
   let dispatchGate: Promise<void> | undefined;
@@ -70,7 +71,8 @@ function setup(recovered = true) {
           eventTimeMs: reference.eventTimeMs + selectedDeltaMs, distanceKm: 0, timeDifferenceMs: Math.abs(selectedDeltaMs) } } : {}) };
     },
     reverse: async (latitude, longitude) => {
-      const payload = { address: { neighbourhood: name, town: "Çankaya", county: "Çankaya", province: "Ankara", country: "Türkiye" } };
+      const payload = { address: { neighbourhood: name, town: outerDistrict ?? "Çankaya",
+        county: outerDistrict ?? "Çankaya", province: "Ankara", country: "Türkiye" } };
       return { latitude, longitude, provider: "fixture", ...normalizeAndLabel(payload),
         ...(unusable ? { displayLabel: null } : {}), providerAddress: extractProviderAddressHierarchy(payload) };
     },
@@ -90,6 +92,7 @@ function setup(recovered = true) {
   async function initial() { feed(0, clock - 2); feed(0, clock - 1); feed(); await runtime.drainCandidateWork(); }
   return { runtime, records, calls, events, advance, feed, initial,
     set name(value: string) { name = value; }, set status(value: EnrichmentResult["status"]) { status = value; },
+    set outerDistrict(value: string | undefined) { outerDistrict = value; },
     set selectedDeltaMs(value: number) { selectedDeltaMs = value; }, set selectedId(value: string) { selectedId = value; },
     set pending(value: Promise<void> | undefined) { pending = value; }, set failAdmission(value: boolean) { failAdmission = value; },
     set unusable(value: boolean) { unusable = value; }, get now() { return clock; },
@@ -138,11 +141,49 @@ test("first CG after initial non-CG produces shadow only, retaining HOLD with no
   assert.equal(shadow.providerDuplicatePassed, true); assert.equal(shadow.semanticIdentityAvailable, true);
   assert.equal(shadow.selectedEventAgeMs, 0); assert.equal(shadow.referenceTimeDeltaMs, 0);
   assert.equal(shadow.actualDecision, "HOLD"); assert.equal(shadow.actualAdmissionReason, "no_positive_cg_history");
+  assert.equal(shadow.transitionKind, "generic_to_first_cg");
+  assert.equal(shadow.initialRouteContext, null);
   assert.equal(f.records.length, 1, "no positive or HOLD insert from shadow admission rejection");
   assert.equal(f.notifications, 1); assert.equal(f.approvalAttempts, 1); assert.equal(f.dispatches, 0);
   assert.equal(f.runtime.summary().pendingPublications, 1);
   assert.equal(f.runtime.summary().cgRepeat.firstCgShadowEligible, 1);
   assert.equal(f.runtime.summary().cgRepeat.admissionsAccepted, 0);
+});
+
+test("suppressed Camili-style initial route is classified separately and remains production HOLD", async () => {
+  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk";
+  await f.initial();
+  const initialSuppression = f.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields;
+  assert.equal(initialSuppression?.canonicalDistrict, "Çubuk");
+  assert.equal(f.records.length, 0, "suppressed initial route has no publication record");
+
+  f.status = "cg_verified"; f.advance(120_000); f.feed(3.38); await f.runtime.drainCandidateWork();
+  const shadow = f.events.find(row => row.kind === "first_cg_transition_shadow")?.fields;
+  assert.ok(shadow);
+  assert.equal(shadow.eligible, true);
+  assert.equal(shadow.transitionKind, "suppressed_initial_to_first_cg");
+  assert.deepEqual(shadow.initialRouteContext, {
+    reason: "outer_district_non_cg_suppressed", canonicalDistrict: "Çubuk", candidateKind: "non_cg",
+    publicPublicationRecordExists: false, initialRouteConsumed: true,
+  });
+  assert.equal(shadow.actualDecision, "HOLD");
+  assert.equal(shadow.actualAdmissionReason, "no_positive_cg_history");
+  assert.equal(shadow.admissionReportedNoPositiveCgHistory, true);
+  assert.equal(f.records.length, 0, "shadow does not create a publication record");
+  assert.equal(f.notifications, 0); assert.equal(f.approvalAttempts, 0); assert.equal(f.dispatches, 0);
+  assert.equal(f.runtime.summary().cgRepeat.admissionsAccepted, 0);
+});
+
+test("suppressed initial-route state is isolated by incident", async () => {
+  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk";
+  await f.initial();
+  f.outerDistrict = undefined; f.status = "no_match"; f.name = "Ayrancı";
+  f.feed(30); f.feed(30); f.feed(30); await f.runtime.drainCandidateWork();
+  f.status = "cg_verified"; f.advance(120_000); f.feed(30); await f.runtime.drainCandidateWork();
+  const shadows = f.events.filter(row => row.kind === "first_cg_transition_shadow");
+  assert.equal(shadows.length, 1);
+  assert.equal(shadows[0].fields?.transitionKind, "generic_to_first_cg");
+  assert.equal(shadows[0].fields?.initialRouteContext, null);
 });
 
 test("source interruption while empty-history admission returns blocks shadow eligibility", async () => {

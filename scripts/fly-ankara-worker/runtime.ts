@@ -52,6 +52,14 @@ type EarlierNonCgPublication = {
   } | null;
 };
 
+type SuppressedInitialRoute = {
+  reason: "outer_district_non_cg_suppressed";
+  canonicalDistrict: string;
+  candidateKind: "non_cg";
+  publicPublicationRecordExists: false;
+  initialRouteConsumed: true;
+};
+
 const profile = INCIDENT_POLICY_PROFILES.find(candidate => candidate.id === "B")!;
 // The 5-minute housekeeping cadence is shorter than every Profile B relevance window.
 const CLOSED_CLUSTER_RETENTION_MS = 0;
@@ -144,6 +152,7 @@ export class AnkaraFlyPipeline {
   private repeatReadyAtMs: number;
   private readonly repeatProbes: CgProbeCoordinator<RepeatProbe>;
   private readonly repeatPredecessors = new Map<string, string>();
+  private readonly suppressedInitialRoutes = new Map<string, SuppressedInitialRoute>();
   private readonly repeatInFlight = new Set<string>();
   private readonly cgProviderResults: Record<string, number> = {};
   private cgProviderQueries = 0;
@@ -480,6 +489,13 @@ export class AnkaraFlyPipeline {
           this.outerDistrictNonCgPublication.locationUnavailable++;
         } else {
           this.outerDistrictNonCgPublication.suppressed++;
+          this.suppressedInitialRoutes.set(incidentId, {
+            reason: "outer_district_non_cg_suppressed",
+            canonicalDistrict: resolution.canonicalDistrict,
+            candidateKind: "non_cg",
+            publicPublicationRecordExists: false,
+            initialRouteConsumed: true,
+          });
           this.emit("outer_district_non_cg_suppressed", {
             incidentId,
             district: normalized?.district ?? null,
@@ -579,6 +595,10 @@ export class AnkaraFlyPipeline {
           const actualAdmissionReason = result.ledger?.cgAdmission?.reason ?? null;
           const earlierPublication = this.earlierNonCgPublications.get(incidentId) ??
             (repeat.predecessorId ? this.earlierNonCgPublications.get(repeat.predecessorId) : undefined);
+          const suppressedInitialRoute = this.suppressedInitialRoutes.get(incidentId) ??
+            (repeat.predecessorId ? this.suppressedInitialRoutes.get(repeat.predecessorId) : undefined);
+          const transitionKind = earlierPublication ? "generic_to_first_cg" : suppressedInitialRoute
+            ? "suppressed_initial_to_first_cg" : "unclassified_first_cg";
           const earlierPublicationAtMs = earlierPublication ? Date.parse(earlierPublication.publishedAt) : NaN;
           const earlierPublicationToCgSeconds = earlierPublication && Number.isFinite(earlierPublicationAtMs) &&
               typeof telemetry.selectedEventTimeMs === "number" && Number.isFinite(telemetry.selectedEventTimeMs)
@@ -594,6 +614,8 @@ export class AnkaraFlyPipeline {
             : null;
           if (eligible) this.firstCgShadowEligible++;
           this.emit("first_cg_transition_shadow", { ...shadow, incidentId, scopeId: admission.scopeId,
+            transitionKind,
+            initialRouteContext: suppressedInitialRoute ? { ...suppressedInitialRoute } : null,
             clusterIds: [...repeat.incident.sourceClusterIds], predecessorIncidentId: repeat.predecessorId ?? null,
             repeatSuppressionReason: repeat.reason, opportunityDetected: true,
             evaluationAtMs, evaluationAt: new Date(evaluationAtMs).toISOString(),
@@ -693,6 +715,7 @@ export class AnkaraFlyPipeline {
       this.repeatProbes.forget(this.repeatScopeId(id));
       this.repeatPredecessors.delete(id);
       this.earlierNonCgPublications.delete(id);
+      this.suppressedInitialRoutes.delete(id);
     }
     this.policy.pruneClosed(nowMs);
   }

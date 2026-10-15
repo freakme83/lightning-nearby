@@ -489,7 +489,7 @@ test("Evren non-CG is suppressed while verified CG remains eligible", async () =
   assert.equal(memory.records.length, 1);
   assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
   const cgMessage = cg.events.find(row => row.kind === "publication_pending")?.fields?.messageText as string;
-  assert.match(cgMessage, /^#YILDIRIM\n/);
+  assert.match(cgMessage, /^#YILDIRIM ⚡\n/);
 });
 
 test("raw CG matches failing each initial condition fall back to non-CG without a CG map", async () => {
@@ -642,6 +642,8 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   const fields = events[0].fields!;
   assert.equal(fields.opportunityDetected, true);
   assert.equal(fields.eligible, true);
+  assert.equal(fields.transitionKind, "generic_to_first_cg");
+  assert.equal(fields.initialRouteContext, null);
   assert.equal(fields.eligibilityReason, "eligible");
   assert.ok(fields.incidentId);
   assert.ok(fields.scopeId);
