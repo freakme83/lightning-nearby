@@ -80,7 +80,8 @@ export class StormEvolutionShadow {
 
   private seedRepresentedArea(state: State, publication: Baseline): void {
     for (const cell of state.cells) {
-      if (greatCircleDistanceKm(cell.latitude, cell.longitude, publication.latitude, publication.longitude) <= LOCAL_RADIUS_KM) {
+      if (!cell.place &&
+          greatCircleDistanceKm(cell.latitude, cell.longitude, publication.latitude, publication.longitude) <= LOCAL_RADIUS_KM) {
         cell.place = publication.place;
         cell.lookupStarted = true;
       }
@@ -156,7 +157,7 @@ export class StormEvolutionShadow {
       footprintKm < NEW_AREA_DISTANCE_KM ? "same_area" :
       eligible ? "meaningful_new_area_since_latest_publication" :
       novel.length ? "already_shadow_reported" :
-      representedAreaObserved && state.latestPublicationAdvanced ? "suppressed_already_published_area" :
+      representedAreaObserved && !supported.length && state.latestPublicationAdvanced ? "suppressed_already_published_area" :
       limitations.size ? "location_ambiguous" : supported.length ? "insufficient_local_support" : "same_area";
     if (eligible) {
       this.counters.stormEvolutionEligible++;

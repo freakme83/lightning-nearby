@@ -499,6 +499,19 @@ export class AnkaraFlyPipeline {
       result = await applyPersistentLedger(result, context, this.store,
         { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
           ...(!repeat ? { recordedAt: ledgerRecordedAt } : {}) });
+      // A successful atomic repeat-CG admission reserves this area before asynchronous publication
+      // confirmation. Advance the shadow anchor now so a pending X workflow cannot race it.
+      if (repeat && result.ledger?.cgAdmission?.outcome === "inserted" && result.ledger.recordPersisted &&
+          result.ledger.writeDisposition === "inserted" && result.ledger.persistedPublicationId &&
+          result.location && "normalized" in result.location && result.location.normalized.displayLabel) {
+        const coordinate = result.location.requested;
+        this.stormEvolution.setLatestRepresentedPublication(incidentId, coordinate.latitude, coordinate.longitude, {
+          ...result.location.normalized, providerAddress: result.location.providerAddress,
+          latitude: coordinate.latitude, longitude: coordinate.longitude,
+          displayLabel: result.location.normalized.displayLabel, provider: result.location.provider,
+        });
+        this.scheduleStormEvolution(incidentId, this.now());
+      }
       if (!repeat && result.message?.ok && result.message.composer.hashtag === "#ŞİMŞEK" &&
           result.publishDecision?.decision === "WOULD_PUBLISH" && result.ledger?.recordPersisted &&
           result.ledger.writeDisposition === "inserted" && result.ledger.persistedPublicationId) {
