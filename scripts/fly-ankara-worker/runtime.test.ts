@@ -642,6 +642,8 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   const fields = events[0].fields!;
   assert.equal(fields.opportunityDetected, true);
   assert.equal(fields.eligible, true);
+  assert.equal(fields.transitionKind, "generic_to_first_cg");
+  assert.equal(fields.initialRouteContext, null);
   assert.equal(fields.eligibilityReason, "eligible");
   assert.ok(fields.incidentId);
   assert.ok(fields.scopeId);
