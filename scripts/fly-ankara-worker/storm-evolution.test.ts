@@ -87,3 +87,60 @@ test("missing hierarchy and old detections cannot supply a new place", () => {
   assert.equal(s.evaluate().reason, "location_ambiguous");
   assert.equal(s.evaluate(now + 21 * 60_000).eligible, false);
 });
+
+
+test("repeat-CG admission advances the shadow anchor and suppresses its already represented area", () => {
+  const shadow = new StormEvolutionShadow();
+  const a = place(39.94, 32.65, "Halitcevriaslangil", "Kalecik");
+  const b = place(39.95, 32.74, "Uyarca", "Kalecik");
+  shadow.setBaseline("kalecik", a.latitude, a.longitude, a);
+  shadow.observe("kalecik", "a-1", a.latitude, a.longitude, now);
+  shadow.observe("kalecik", "a-2", a.latitude + .0001, a.longitude, now + 1);
+  shadow.observe("kalecik", "b-1", b.latitude, b.longitude, now + 2);
+  shadow.observe("kalecik", "b-2", b.latitude + .0001, b.longitude, now + 3);
+
+  // The repeat-CG admission is the reservation point; it precedes any async X confirmation.
+  shadow.setLatestRepresentedPublication("kalecik", b.latitude, b.longitude, b);
+  const result = shadow.evaluate("kalecik", ["a-1", "b-1"], now + 60_000)!;
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "suppressed_already_published_area");
+  assert.equal(result.originalPublishedLocation, a.displayLabel);
+  assert.equal(result.latestRepresentedLocation, b.displayLabel);
+});
+
+test("a supported area beyond the latest repeat-CG anchor can still be shadow eligible", () => {
+  const shadow = new StormEvolutionShadow();
+  const a = place(39.94, 32.65, "Halitcevriaslangil", "Kalecik");
+  const b = place(39.95, 32.74, "Uyarca", "Kalecik");
+  const c = place(39.95, 32.81, "Aşağı", "Kalecik");
+  shadow.setBaseline("kalecik", a.latitude, a.longitude, a);
+  shadow.observe("kalecik", "a-1", a.latitude, a.longitude, now);
+  shadow.observe("kalecik", "a-2", a.latitude + .0001, a.longitude, now + 1);
+  shadow.observe("kalecik", "b-1", b.latitude, b.longitude, now + 2);
+  shadow.observe("kalecik", "b-2", b.latitude + .0001, b.longitude, now + 3);
+  shadow.setLatestRepresentedPublication("kalecik", b.latitude, b.longitude, b);
+  shadow.observe("kalecik", "c-1", c.latitude, c.longitude, now + 4);
+  shadow.observe("kalecik", "c-2", c.latitude + .0001, c.longitude, now + 5);
+
+  const request = shadow.takeLookupRequests("kalecik", now + 60_000)
+    .find(item => Math.abs(item.longitude - c.longitude) < .001);
+  assert.ok(request, "new C area is reverse-geocoded using the normal shadow lookup");
+  shadow.resolve("kalecik", request.cellId, c);
+  const result = shadow.evaluate("kalecik", ["c-1", "c-2"], now + 60_000)!;
+  assert.equal(result.eligible, true);
+  assert.equal(result.reason, "meaningful_new_area_since_latest_publication");
+  assert.equal(result.supportedLocations[0].distanceFromLatestPublicationKm >= 4, true);
+});
+
+test("latest represented publication anchors are isolated by incident", () => {
+  const shadow = new StormEvolutionShadow();
+  const a = place(39.94, 32.65, "Halitcevriaslangil", "Kalecik");
+  const b = place(39.95, 32.74, "Uyarca", "Kalecik");
+  shadow.setBaseline("incident-x", a.latitude, a.longitude, a);
+  shadow.setBaseline("incident-y", a.latitude, a.longitude, a);
+  shadow.setLatestRepresentedPublication("incident-x", b.latitude, b.longitude, b);
+  const x = shadow.evaluate("incident-x", [], now)!;
+  const y = shadow.evaluate("incident-y", [], now)!;
+  assert.equal(x.latestRepresentedLocation, b.displayLabel);
+  assert.equal(y.latestRepresentedLocation, a.displayLabel);
+});

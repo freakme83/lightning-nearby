@@ -16,7 +16,8 @@ function setup(recovered = true) {
   let status: EnrichmentResult["status"] = "cg_verified";
   let name = "Ayrancı"; let selectedDeltaMs = 0; let selectedId: string | undefined;
   let pending: Promise<void> | undefined;
-  let failAdmission = false; let unusable = false;
+  let failAdmission = false; let unusable = false; let autoApprove = false;
+  let dispatchGate: Promise<void> | undefined;
   let notifications = 0; let approvalAttempts = 0; let dispatches = 0; let admissionDelayMs = 0;
   const store: LedgerStore = {
     async loadRelevantPublicationHistory() { return [...records]; },
@@ -40,9 +41,27 @@ function setup(recovered = true) {
   const runtime = new AnkaraFlyPipeline({ store, now: () => clock, emit: (kind, fields) => events.push({ kind, fields }),
     notifyPending: async () => { notifications++; return { ok: true }; },
     autoPublish: { approvalStore: {
-      async getPublicationForApproval() { approvalAttempts++; return null; },
-      async transitionPendingApproval() { throw new Error("no approval fixture"); },
-    }, dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; } },
+      async getPublicationForApproval(publicationId) {
+        approvalAttempts++;
+        if (!autoApprove) return null;
+        const record = records.find(row => row.publicationId === publicationId);
+        const messageText = events.slice().reverse().find(row => row.kind === "publication_pending" &&
+          row.fields?.publicationId === publicationId)?.fields?.messageText;
+        return record && typeof messageText === "string" ? {
+          publicationId, decision: record.decision, platformPostId: null, approvalStatus: "pending" as const,
+          messageFingerprint: record.messageFingerprint, messageText, mapUrl: record.mapUrl,
+        } : null;
+      },
+      async transitionPendingApproval(publicationId, status) {
+        const record = records.find(row => row.publicationId === publicationId);
+        const messageText = events.slice().reverse().find(row => row.kind === "publication_pending" &&
+          row.fields?.publicationId === publicationId)?.fields?.messageText;
+        return record && typeof messageText === "string" ? {
+          publicationId, decision: record.decision, platformPostId: null, approvalStatus: status,
+          messageFingerprint: record.messageFingerprint, messageText, mapUrl: record.mapUrl,
+        } : null;
+      },
+    }, dispatchPublisher: async () => { dispatches++; await dispatchGate; return { ok: true, httpStatus: 204 }; } },
     enrich: async reference => {
       calls.push({ ...reference }); await pending;
       return { status, provider: "xweather", reference, thresholds: DEFAULT_THRESHOLDS,
@@ -74,7 +93,8 @@ function setup(recovered = true) {
     set selectedDeltaMs(value: number) { selectedDeltaMs = value; }, set selectedId(value: string) { selectedId = value; },
     set pending(value: Promise<void> | undefined) { pending = value; }, set failAdmission(value: boolean) { failAdmission = value; },
     set unusable(value: boolean) { unusable = value; }, get now() { return clock; },
-    set admissionDelay(value: number) { admissionDelayMs = value; },
+    set admissionDelay(value: number) { admissionDelayMs = value; }, set autoApprove(value: boolean) { autoApprove = value; },
+    set dispatchGate(value: Promise<void> | undefined) { dispatchGate = value; },
     get notifications() { return notifications; }, get approvalAttempts() { return approvalAttempts; }, get dispatches() { return dispatches; } };
 }
 
@@ -201,4 +221,32 @@ test("nearby cooldown and later suppressed activity compare predecessor without 
   f.advance(120_000); f.name = "Çukurambar"; f.feed(2.8); await f.runtime.drainCandidateWork();
   assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 3);
   assert.ok(f.events.some(row => row.kind === "cg_repeat_probe" && row.fields?.originalSuppressionReason === "already_active_suppressed_incident"));
+});
+
+
+test("admitted repeat area anchors storm shadow before publisher dispatch resolves", async () => {
+  const f = setup(); await f.initial();
+  f.advance(120_000); f.name = "Uyarca"; f.autoApprove = true;
+  let releaseDispatch!: () => void;
+  f.dispatchGate = new Promise<void>(resolve => { releaseDispatch = resolve; });
+
+  f.feed(4.2);
+  const repeatWork = f.runtime.drainCandidateWork();
+  for (let attempt = 0; attempt < 100 && f.dispatches === 0; attempt++) await Promise.resolve();
+  assert.equal(f.dispatches, 1, "repeat publication has reached the pending mocked dispatch");
+  assert.equal(f.records.length, 2, "repeat CG was admitted before dispatch confirmation");
+
+  // A further observation in the same represented area arrives while dispatch is pending.
+  f.feed(4.2); f.feed(4.2);
+  f.runtime.summary();
+  const shadow = f.events.slice().reverse().find(row => row.kind === "storm_evolution_shadow");
+  assert.ok(shadow);
+  assert.equal(shadow.fields?.eligible, false);
+  assert.equal(shadow.fields?.reason, "suppressed_already_published_area");
+  assert.equal(shadow.fields?.originalPublishedLocation, "Ayrancı, Çankaya");
+  assert.equal(shadow.fields?.latestRepresentedLocation, "Uyarca, Çankaya");
+
+  releaseDispatch(); f.dispatchGate = undefined;
+  await repeatWork; await f.runtime.drainCandidateWork();
+  assert.equal(f.dispatches, 1, "the mocked publisher path ran once; no extra shadow publication was created");
 });
