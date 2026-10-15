@@ -252,6 +252,8 @@ test("worker summaries omit event arrays without altering clustering snapshots",
   assert.equal(runtime.pipeline.clusterer.clusters[0].recentEvents.length, 3);
   assert.equal(summary.cgRepeat.queued, 0);
   assert.equal(JSON.stringify(summary.stormEvolution).includes("recentEvents"), false);
+  assert.equal(summary.rollingCandidateShadow.productionAndRollingBothPromoted, 1);
+  assert.equal(summary.rollingCandidateShadow.rollingShadowPromotions, 0);
 });
 
 test("neighbor-supported two-event candidate emits one shadow opportunity without production side effects", () => {
@@ -465,10 +467,11 @@ test("published active incident's new supported neighborhood is shadow-only", as
 });
 
 test("worker recovers an expired continuing cluster through the unchanged initial publication path", async () => {
-  let clock = baseNow; let sequence = 0;
-  const { runtime, memory, events } = setup({ now: () => clock, enrich: async reference => ({
-    status: "no_match", provider: "xweather", reference, thresholds: DEFAULT_THRESHOLDS,
-  }) });
+  let clock = baseNow; let sequence = 0; let enrichmentCalls = 0;
+  const { runtime, memory, events } = setup({ now: () => clock, enrich: async reference => {
+    enrichmentCalls++;
+    return { status: "no_match", provider: "xweather", reference, thresholds: DEFAULT_THRESHOLDS };
+  } });
   function feed(at: number) {
     clock = baseNow + at * 60_000; runtime.recordFrame(clock);
     runtime.acceptEvent(event(++sequence, { sourceEventKey: `recovery/${sequence}`, latitude: 39.9, longitude: 32.6,
@@ -481,9 +484,71 @@ test("worker recovers an expired continuing cluster through the unchanged initia
   assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
   assert.equal(events.filter(row => row.kind === "candidate_promoted_after_recovery").length, 1);
   assert.equal(events.filter(row => row.kind === "candidate_recovered").length, 1);
+  assert.equal(events.filter(row => row.kind === "rolling_candidate_shadow_promotion").length, 0,
+    "production recovery is agreement, not a missed-production shadow promotion");
   assert.equal(runtime.summary().recall.eventsAfterCandidateExpiry, 2);
   assert.equal(runtime.summary().recall.promotionsAfterRecovery, 1);
+  assert.equal(runtime.summary().rollingCandidateShadow.productionAndRollingBothPromoted, 1);
+  assert.equal(runtime.summary().rollingCandidateShadow.rollingShadowPromotions, 0);
+  assert.equal(enrichmentCalls, 1, "the shadow adds no query beyond normal recovered promotion enrichment");
   assert.equal(runtime.summary().profile.promotionMinEvents, 3);
+});
+
+test("rolling candidate shadow observes viable expiry without provider or publication side effects", async () => {
+  let clock = baseNow; let sequence = 0; let providerCalls = 0; let notifications = 0;
+  let approvals = 0; let dispatches = 0;
+  const { runtime, memory, events } = setup({ now: () => clock,
+    enrich: async reference => { providerCalls++; return verifiedCg(reference); },
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    autoPublish: {
+      approvalStore: {
+        async getPublicationForApproval() { approvals++; return null; },
+        async transitionPendingApproval() { approvals++; return null; },
+      },
+      dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; },
+    } });
+  function feed(atMinutes: number) {
+    clock = baseNow + atMinutes * 60_000; runtime.recordFrame(clock);
+    runtime.acceptEvent(event(++sequence, { sourceEventKey: `rolling/${sequence}`,
+      latitude: 39.9, longitude: 32.6, eventTimeMs: clock, receivedAtMs: clock }), clock);
+  }
+  feed(0); feed(4);
+  clock = baseNow + 10 * 60_000; runtime.recordFrame(clock); runtime.summary(clock);
+  await runtime.drainCandidateWork();
+
+  const stateEvents = events.filter(row => row.kind === "rolling_candidate_shadow_state");
+  assert.equal(stateEvents.length, 1);
+  assert.equal(stateEvents[0].fields?.rollingEventCount, 2);
+  assert.equal(stateEvents[0].fields?.productionState, "candidate_expired");
+  assert.equal(stateEvents[0].fields?.shadowOnly, true);
+  assert.equal(events.filter(row => row.kind === "rolling_candidate_shadow_promotion").length, 0);
+  assert.deepEqual(runtime.summary(clock).rollingCandidateShadow, {
+    rollingCandidateEvaluations: 2,
+    productionExpiredWhileRollingViable: 1,
+    rollingShadowPromotions: 0,
+    rollingShadowPromotionsAfterProductionExpiry: 0,
+    productionAndRollingBothPromoted: 0,
+  });
+  assert.equal(providerCalls, 0);
+  assert.equal(memory.reads, 0);
+  assert.equal(memory.writes, 0);
+  assert.equal(notifications, 0);
+  assert.equal(approvals, 0);
+  assert.equal(dispatches, 0);
+});
+
+test("stale, future and duplicate feed observations do not advance rolling shadow state", () => {
+  const { runtime } = setup();
+  runtime.acceptEvent(event(400, { sourceEventKey: "rolling/stale", latitude: 39.9, longitude: 32.6,
+    eventTimeMs: baseNow - 11 * 60_000, receivedAtMs: baseNow }), baseNow);
+  runtime.acceptEvent(event(401, { sourceEventKey: "rolling/future", latitude: 39.9, longitude: 32.6,
+    eventTimeMs: baseNow + 1, receivedAtMs: baseNow }), baseNow);
+  const duplicate = event(402, { sourceEventKey: "rolling/duplicate", latitude: 39.9, longitude: 32.6,
+    eventTimeMs: baseNow, receivedAtMs: baseNow });
+  runtime.acceptEvent(duplicate, baseNow);
+  runtime.acceptEvent(duplicate, baseNow);
+  assert.equal(runtime.summary().rollingCandidateShadow.rollingCandidateEvaluations, 1);
+  assert.equal(runtime.summary().rollingCandidateShadow.rollingShadowPromotions, 0);
 });
 
 test("non-qualifying individual events never call Xweather or Supabase", async () => {
