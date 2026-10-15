@@ -503,6 +503,26 @@ export class AnkaraFlyPipeline {
     });
   }
 
+  private emitSparseNormalResult(incidentId: string, result: {
+    eventualProviderStatus: string;
+    rawProviderStatus: string;
+    publicationDecision: string | null;
+    productionOutcome: string;
+    suppressionReason?: string;
+    ledgerReason?: string | null;
+    publicationRecordId?: string | null;
+  }): void {
+    const opportunity = this.neighborSupportedSparseOpportunities.get(incidentId);
+    if (opportunity?.promotedAtMs === undefined || opportunity.providerOutcomeEmitted) return;
+    opportunity.providerOutcomeEmitted = true;
+    this.emit("neighbor_supported_sparse_normal_result", {
+      incidentId, candidateId: incidentId, outcome: "promoted_normally",
+      opportunityAtMs: opportunity.opportunityAtMs, normalPromotionAtMs: opportunity.promotedAtMs,
+      normalPromotionDelaySeconds: (opportunity.promotedAtMs - opportunity.opportunityAtMs) / 1000,
+      providerResultObservedAtMs: this.now(), ...result, shadowOnly: true,
+    });
+  }
+
   private controllerFor(incidentId: string): PairedValidationController {
     let controller = this.controllers.get(incidentId);
     if (controller) return controller;
@@ -632,6 +652,15 @@ export class AnkaraFlyPipeline {
           });
           this.emit("candidate_outcome", { incidentId, status: result.status,
             decision: "HOLD", reason: "outer_district_non_cg_suppressed" });
+          this.emitSparseNormalResult(incidentId, {
+            eventualProviderStatus: publicationArtifact.enrichment.status,
+            rawProviderStatus: artifact.enrichment.status,
+            publicationDecision: result.publishDecision?.decision ?? null,
+            productionOutcome: "HOLD",
+            suppressionReason: "outer_district_non_cg_suppressed",
+            ledgerReason: "outer_district_non_cg_suppressed",
+            publicationRecordId: null,
+          });
           return;
         }
       }
@@ -641,20 +670,14 @@ export class AnkaraFlyPipeline {
         { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
           ...(!repeat ? { recordedAt: ledgerRecordedAt } : {}) });
       if (!repeat) {
-        const sparseOpportunity = this.neighborSupportedSparseOpportunities.get(incidentId);
-        if (sparseOpportunity?.promotedAtMs !== undefined && !sparseOpportunity.providerOutcomeEmitted) {
-          sparseOpportunity.providerOutcomeEmitted = true;
-          this.emit("neighbor_supported_sparse_normal_result", {
-            incidentId, candidateId: incidentId, outcome: "promoted_normally",
-            opportunityAtMs: sparseOpportunity.opportunityAtMs, normalPromotionAtMs: sparseOpportunity.promotedAtMs,
-            normalPromotionDelaySeconds: (sparseOpportunity.promotedAtMs - sparseOpportunity.opportunityAtMs) / 1000,
-            providerResultObservedAtMs: this.now(), eventualProviderStatus: publicationArtifact.enrichment.status,
-            rawProviderStatus: artifact.enrichment.status, publicationDecision: result.publishDecision?.decision ?? null,
-            ledgerReason: result.ledger?.reason ?? result.reason ?? null,
-            publicationRecordId: result.ledger?.persistedPublicationId ?? null,
-            shadowOnly: true,
-          });
-        }
+        this.emitSparseNormalResult(incidentId, {
+          eventualProviderStatus: publicationArtifact.enrichment.status,
+          rawProviderStatus: artifact.enrichment.status,
+          publicationDecision: result.publishDecision?.decision ?? null,
+          productionOutcome: result.publishDecision?.decision ?? result.status,
+          ledgerReason: result.ledger?.reason ?? result.reason ?? null,
+          publicationRecordId: result.ledger?.persistedPublicationId ?? null,
+        });
       }
       // A successful atomic repeat-CG admission reserves this area before asynchronous publication
       // confirmation. Advance the shadow anchor now so a pending X workflow cannot race it.

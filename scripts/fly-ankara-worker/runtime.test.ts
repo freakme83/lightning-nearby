@@ -346,6 +346,58 @@ test("sparse opportunity correlates later normal promotion and its existing prov
     { opportunities: 1, promoted: 1, expired: 0 });
 });
 
+test("sparse normal result retains provider outcome when outer-district policy suppresses publication", async () => {
+  let enrichmentCalls = 0; let notifications = 0; let approvals = 0; let dispatches = 0;
+  const fixture = setup({
+    enrich: async reference => {
+      enrichmentCalls++;
+      return matchInitialCgEvents(reference, [], baseNow);
+    },
+    reverse: async (latitude, longitude) => ({ latitude, longitude, provider: "fixture",
+      displayLabel: "Beypazarı, Ankara", locality: "Beypazarı", localityKind: "town",
+      district: "Beypazarı", province: "Ankara", country: "Türkiye" }),
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    autoPublish: {
+      approvalStore: {
+        async getPublicationForApproval() { approvals++; return null; },
+        async transitionPendingApproval() { approvals++; return null; },
+      },
+      dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; },
+    },
+  });
+  primaryPairWithNeighbor(fixture.runtime);
+  const opportunity = fixture.events.find(row => row.kind === "neighbor_supported_sparse_activity")?.fields;
+  assert.ok(opportunity?.incidentId);
+
+  const promotionAt = baseNow + 120_000;
+  fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
+  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
+  await fixture.runtime.drainCandidateWork();
+
+  const sparseResults = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_normal_result");
+  assert.equal(sparseResults.length, 1);
+  const normalResult = sparseResults[0].fields!;
+  assert.equal(normalResult.incidentId, opportunity.incidentId);
+  assert.equal(normalResult.eventualProviderStatus, "no_match");
+  assert.equal(normalResult.rawProviderStatus, "no_match");
+  assert.equal(normalResult.normalPromotionDelaySeconds, 120);
+  assert.equal(normalResult.publicationDecision, "WOULD_PUBLISH", "retains the pre-policy decision separately");
+  assert.equal(normalResult.productionOutcome, "HOLD");
+  assert.equal(normalResult.suppressionReason, "outer_district_non_cg_suppressed");
+  assert.equal(normalResult.publicationRecordId, null);
+  assert.equal(fixture.events.some(row => row.kind === "outer_district_non_cg_suppressed" &&
+    row.fields?.canonicalDistrict === "Beypazarı"), true);
+  assert.equal(fixture.events.some(row => row.kind === "candidate_outcome" &&
+    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
+  assert.equal(enrichmentCalls, 1, "only normal promoted-candidate enrichment ran");
+  assert.equal(fixture.runtime.summary().profile.promotionMinEvents, 3);
+  assert.equal(fixture.memory.records.length, 0);
+  assert.equal(fixture.memory.writes, 0);
+  assert.equal(notifications, 0);
+  assert.equal(approvals, 0);
+  assert.equal(dispatches, 0);
+});
+
 test("sparse opportunity reports normal candidate expiry without triggering enrichment", () => {
   let providerCalls = 0;
   const fixture = setup({ enrich: async reference => {
