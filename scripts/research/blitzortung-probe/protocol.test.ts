@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decodeBlitzortungFrame,
+  MAX_BLITZORTUNG_DECODED_CHARS,
+  MAX_BLITZORTUNG_DICTIONARY_CHARS,
   MAX_BLITZORTUNG_ENCODED_FRAME_CHARS,
   normalizeBlitzortungTimestamp,
   parseDecodedBlitzortungPayload,
@@ -102,6 +104,18 @@ test("encoded frame size is bounded before LZW allocation", () => {
     kind: "decode_error",
     reason: "encoded frame exceeds 16384 character limit (16385)",
   });
+});
+
+test("compact frames cannot grow decoded output or dictionary without bound", () => {
+  // The sequential special-code form expands into progressively longer phrases
+  // while remaining far below the encoded-frame limit.
+  const compactExpansion = String.fromCharCode(65, ...Array.from({ length: 800 }, (_, index) => 256 + index));
+  assert.ok(compactExpansion.length < MAX_BLITZORTUNG_ENCODED_FRAME_CHARS);
+  assert.ok(MAX_BLITZORTUNG_DICTIONARY_CHARS < MAX_BLITZORTUNG_DECODED_CHARS);
+  assert.throws(() => decodeBlitzortungFrame(compactExpansion), /LZW dictionary exceeds 131072 character limit/);
+  const contained = processBlitzortungFrame(compactExpansion, Date.now(), "ws1");
+  assert.equal(contained.kind, "decode_error");
+  if (contained.kind === "decode_error") assert.match(contained.reason, /LZW dictionary exceeds/);
 });
 
 test("future event keeps raw negative latency but marks it ineligible", () => {

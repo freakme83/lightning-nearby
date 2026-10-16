@@ -4,6 +4,10 @@ export const BLITZORTUNG_SOURCE = "blitzortung" as const;
 export const BLITZORTUNG_SERVERS = ["ws1", "ws7", "ws8"] as const;
 // Live smoke frames were roughly 400-1,200 characters; this leaves more than 10x headroom.
 export const MAX_BLITZORTUNG_ENCODED_FRAME_CHARS = 16_384;
+// Current strike JSON is only a few KB. These fixed research limits leave ample
+// headroom while preventing a compact LZW sequence from expanding without bound.
+export const MAX_BLITZORTUNG_DECODED_CHARS = 262_144;
+export const MAX_BLITZORTUNG_DICTIONARY_CHARS = 131_072;
 
 export type BlitzortungServer = (typeof BLITZORTUNG_SERVERS)[number];
 export type BlitzTimestampUnit = "seconds" | "milliseconds" | "microseconds" | "nanoseconds";
@@ -49,6 +53,8 @@ export function decodeBlitzortungFrame(input: string): string {
   const dictionary = new Map<number, string>();
   let previous = symbols[0];
   const output = [previous];
+  let decodedChars = previous.length;
+  let dictionaryChars = 0;
   let nextCode = 256;
 
   for (let index = 1; index < symbols.length; index++) {
@@ -59,8 +65,17 @@ export function decodeBlitzortungFrame(input: string): string {
     else if (code === nextCode) current = previous + previous.charAt(0);
     else throw new Error(`invalid LZW code ${code} at symbol ${index}`);
 
+    decodedChars += current.length;
+    if (decodedChars > MAX_BLITZORTUNG_DECODED_CHARS) {
+      throw new Error(`decoded frame exceeds ${MAX_BLITZORTUNG_DECODED_CHARS} character limit`);
+    }
+    const dictionaryEntry = previous + current.charAt(0);
+    dictionaryChars += dictionaryEntry.length;
+    if (dictionaryChars > MAX_BLITZORTUNG_DICTIONARY_CHARS) {
+      throw new Error(`LZW dictionary exceeds ${MAX_BLITZORTUNG_DICTIONARY_CHARS} character limit`);
+    }
     output.push(current);
-    dictionary.set(nextCode++, previous + current.charAt(0));
+    dictionary.set(nextCode++, dictionaryEntry);
     previous = current;
   }
   return output.join("");
