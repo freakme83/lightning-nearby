@@ -158,16 +158,21 @@ test("latency over 30 seconds does not exclude events from cross-source matching
   const matcher = new CrossSourceMatcher();
   const eventTimeMs = 10_000;
   const liveReceivedAtMs = eventTimeMs + 323_000;
-  const blitzReceivedAtMs = eventTimeMs + 665_000;
+  const blitzReceivedAtMs = eventTimeMs + 324_000;
   const live = event("live2", "live-delayed-match", eventTimeMs, liveReceivedAtMs);
-  const blitz = event("blitzortung", "blitz-delayed-match", eventTimeMs, blitzReceivedAtMs);
+  const blitz = event("blitzortung", "blitz-delayed-match", eventTimeMs + 500, blitzReceivedAtMs);
+  assert.ok(live.latencyMs > LOW_LAG_LATENCY_MAX_MS);
+  assert.ok(blitz.latencyMs > LOW_LAG_LATENCY_MAX_MS);
   assert.equal(live.transportComparisonEligible, false);
   assert.equal(blitz.transportComparisonEligible, false);
   matcher.observe(live);
+  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 1_000), []);
   matcher.observe(blitz);
-  const finalized = matcher.finalizeReady(blitzReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
-  assert.equal(finalized.find(result => result.observerEventId === live.observerEventId)?.matchClass, "strict");
-  assert.equal(finalized.find(result => result.observerEventId === blitz.observerEventId)?.matchClass, "strict");
+  const liveFinalized = matcher.finalizeReady(liveReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
+  assert.equal(liveFinalized.find(result => result.observerEventId === live.observerEventId)?.matchClass, "strict");
+  assert.equal(liveFinalized.some(result => result.observerEventId === blitz.observerEventId), false);
+  const blitzFinalized = matcher.finalizeReady(blitzReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
+  assert.equal(blitzFinalized.find(result => result.observerEventId === blitz.observerEventId)?.matchClass, "strict");
 });
 
 test("strict match includes the exact two-second temporal boundary", () => {
