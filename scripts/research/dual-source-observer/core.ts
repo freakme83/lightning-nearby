@@ -17,6 +17,8 @@ export const MATCH_HISTORY_TTL_MS = 60_000;
 export const MAX_MATCH_BUFFER_EVENTS = 20_000;
 export const OBSERVATION_WINDOW_MS = 5 * 60_000;
 export const MAX_LATENCY_SAMPLES = 10_000;
+// Diagnostic subset only, following the live-lightning listener convention; not an upstream or freshness guarantee.
+export const LOW_LAG_LATENCY_MAX_MS = 30_000;
 
 export type ObserverEvent = {
   observerEventId: string;
@@ -29,6 +31,7 @@ export type ObserverEvent = {
   eventTimeUnit: "milliseconds" | BlitzortungProbeEvent["eventTimeUnit"];
   latencyMs: number;
   latencyEligible: boolean;
+  transportComparisonEligible: boolean;
   latitude: number;
   longitude: number;
   insideMonitoringArea: boolean;
@@ -54,6 +57,7 @@ export function normalizeBlitzObserverEvent(
     eventTimeUnit: event.eventTimeUnit,
     latencyMs: event.latencyMs,
     latencyEligible: event.latencyEligible,
+    transportComparisonEligible: isLowLagLatency(event.latencyMs),
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: event.insideMonitoringArea,
@@ -78,6 +82,7 @@ export function normalizeLive2ObserverEvent(event: LightningEvent, observerEvent
     eventTimeUnit: "milliseconds",
     latencyMs,
     latencyEligible: latencyMs >= 0,
+    transportComparisonEligible: isLowLagLatency(latencyMs),
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: pointInMonitoringArea([event.longitude, event.latitude]),
@@ -87,6 +92,10 @@ export function normalizeLive2ObserverEvent(event: LightningEvent, observerEvent
     mcgRaw: null,
     regionRaw: null,
   };
+}
+
+export function isLowLagLatency(latencyMs: number): boolean {
+  return latencyMs >= 0 && latencyMs <= LOW_LAG_LATENCY_MAX_MS;
 }
 
 function percentile(sorted: readonly number[], fraction: number): number | null {
@@ -106,14 +115,17 @@ class BoundedLatencySamples {
     }
   }
 
-  summary(): Record<string, number | null> {
+  summary(prefix?: "lowLag"): Record<string, number | null> {
     const sorted = [...this.samples].sort((a, b) => a - b);
+    const names = prefix
+      ? { count: "lowLagEligibleSampleCount", min: "lowLagLatencyMinMs", median: "lowLagLatencyMedianMs", p95: "lowLagLatencyP95Ms", max: "lowLagLatencyMaxMs" }
+      : { count: "eligibleSampleCount", min: "latencyMinMs", median: "latencyMedianMs", p95: "latencyP95Ms", max: "latencyMaxMs" };
     return {
-      eligibleSampleCount: sorted.length,
-      latencyMinMs: sorted[0] ?? null,
-      latencyMedianMs: percentile(sorted, 0.5),
-      latencyP95Ms: percentile(sorted, 0.95),
-      latencyMaxMs: sorted.at(-1) ?? null,
+      [names.count]: sorted.length,
+      [names.min]: sorted[0] ?? null,
+      [names.median]: percentile(sorted, 0.5),
+      [names.p95]: percentile(sorted, 0.95),
+      [names.max]: sorted.at(-1) ?? null,
     };
   }
 }
@@ -135,9 +147,11 @@ export class ObserverSourceState {
   eventsInsideMonitoringArea = 0;
   eventsOutsideMonitoringArea = 0;
   futureTimestampEvents = 0;
+  delayedLatencyEvents = 0;
   lastFrameReceivedAtMs: number | null = null;
   lastEventTimeMs: number | null = null;
   private readonly latencies = new BoundedLatencySamples();
+  private readonly lowLagLatencies = new BoundedLatencySamples();
 
   constructor(source: ObserverSource, startedAtMs: number) {
     this.source = source;
@@ -181,7 +195,11 @@ export class ObserverSourceState {
     else this.eventsOutsideMonitoringArea++;
     this.lastEventTimeMs = event.eventTimeMs;
     if (!event.latencyEligible) this.futureTimestampEvents++;
-    else this.latencies.add(event.latencyMs);
+    else {
+      this.latencies.add(event.latencyMs);
+      if (isLowLagLatency(event.latencyMs)) this.lowLagLatencies.add(event.latencyMs);
+      else if (event.latencyMs > LOW_LAG_LATENCY_MAX_MS) this.delayedLatencyEvents++;
+    }
   }
 
   summary(nowMs: number): Record<string, unknown> {
@@ -202,9 +220,11 @@ export class ObserverSourceState {
       eventsInsideMonitoringArea: this.eventsInsideMonitoringArea,
       eventsOutsideMonitoringArea: this.eventsOutsideMonitoringArea,
       futureTimestampEvents: this.futureTimestampEvents,
+      delayedLatencyEvents: this.delayedLatencyEvents,
       lastFrameReceivedAt: this.lastFrameReceivedAtMs === null ? null : new Date(this.lastFrameReceivedAtMs).toISOString(),
       lastEventTime: this.lastEventTimeMs === null ? null : new Date(this.lastEventTimeMs).toISOString(),
       ...this.latencies.summary(),
+      ...this.lowLagLatencies.summary("lowLag"),
     };
   }
 }

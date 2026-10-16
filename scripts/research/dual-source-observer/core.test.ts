@@ -8,6 +8,7 @@ import {
   MATCH_FINALIZATION_DELAY_MS,
   MATCH_HISTORY_TTL_MS,
   MAX_MATCH_BUFFER_EVENTS,
+  LOW_LAG_LATENCY_MAX_MS,
   OBSERVATION_WINDOW_MS,
   ObserverSourceState,
   normalizeBlitzObserverEvent,
@@ -31,6 +32,7 @@ function event(
     receivedAtMs, eventTimeMs, eventTimeRaw: String(eventTimeMs),
     eventTimeUnit: "milliseconds",
     latencyMs: receivedAtMs - eventTimeMs, latencyEligible: receivedAtMs >= eventTimeMs,
+    transportComparisonEligible: receivedAtMs - eventTimeMs >= 0 && receivedAtMs - eventTimeMs <= LOW_LAG_LATENCY_MAX_MS,
     latitude, longitude, insideMonitoringArea: true, polarityRaw: null, stationCount: null,
     mdsRaw: null, mcgRaw: null, regionRaw: null,
   };
@@ -47,7 +49,8 @@ test("observer Blitz normalization preserves source facts", () => {
     observerEventId: "blitzortung-1", source: "blitzortung", sourceServer: "ws7", sourceEventKey: null,
     receivedAtMs: 2_000, eventTimeMs: 2_100, eventTimeRaw: "2100000000", latencyMs: -100,
     eventTimeUnit: "nanoseconds",
-    latencyEligible: false, latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
+    latencyEligible: false, transportComparisonEligible: false,
+    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
     polarityRaw: -1, stationCount: 8, mdsRaw: 42, mcgRaw: 7, regionRaw: 1,
   });
 });
@@ -62,7 +65,8 @@ test("observer live2 normalization uses raw input without lifecycle invocation",
     observerEventId: "live2-1", source: "live2", sourceServer: null, sourceEventKey: "4/99",
     receivedAtMs: 1_250, eventTimeMs: 1_000, eventTimeRaw: "1000", latencyMs: 250,
     eventTimeUnit: "milliseconds",
-    latencyEligible: true, latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
+    latencyEligible: true, transportComparisonEligible: true,
+    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
     polarityRaw: null, stationCount: null, mdsRaw: null, mcgRaw: null, regionRaw: null,
   });
 });
@@ -81,20 +85,94 @@ test("source health and counters cannot mutate the opposite source", () => {
   assert.equal(live2.healthy, false);
 });
 
-test("eligible source latency is summarized and future latency is preserved but rejected", () => {
+test("raw and low-lag latency retain distinct inclusion rules and future timestamps", () => {
   const state = new ObserverSourceState("live2", 0);
-  state.event(event("live2", "positive", 1_000, 1_100));
-  const future = event("live2", "future", 2_000, 1_950);
-  assert.equal(future.latencyMs, -50);
+  const fiveSeconds = event("live2", "five-seconds", 1_000, 6_000);
+  state.event(fiveSeconds);
+  assert.equal(fiveSeconds.latencyMs, 5_000);
+  assert.equal(fiveSeconds.latencyEligible, true);
+  assert.equal(fiveSeconds.transportComparisonEligible, true);
+
+  const boundary = event("live2", "low-lag-boundary", 2_000, 32_000);
+  state.event(boundary);
+  assert.equal(boundary.latencyMs, 30_000);
+  assert.equal(boundary.transportComparisonEligible, true);
+
+  const delayed = event("live2", "delayed", 3_000, 33_001);
+  state.event(delayed);
+  assert.equal(delayed.latencyMs, 30_001);
+  assert.equal(delayed.latencyEligible, true);
+  assert.equal(delayed.transportComparisonEligible, false);
+
+  const future = event("live2", "future", 2_000, 1_999);
+  assert.equal(future.latencyMs, -1);
   assert.equal(future.latencyEligible, false);
+  assert.equal(future.transportComparisonEligible, false);
   state.event(future);
   const summary = state.summary(3_000);
   assert.equal(summary.futureTimestampEvents, 1);
-  assert.equal(summary.eligibleSampleCount, 1);
-  assert.equal(summary.latencyMinMs, 100);
-  assert.equal(summary.latencyMedianMs, 100);
-  assert.equal(summary.latencyP95Ms, 100);
-  assert.equal(summary.latencyMaxMs, 100);
+  assert.equal(summary.eligibleSampleCount, 3);
+  assert.equal(summary.latencyMinMs, 5_000);
+  assert.equal(summary.latencyMedianMs, 30_000);
+  assert.equal(summary.latencyP95Ms, 30_001);
+  assert.equal(summary.latencyMaxMs, 30_001);
+  assert.equal(summary.lowLagEligibleSampleCount, 2);
+  assert.equal(summary.lowLagLatencyMinMs, 5_000);
+  assert.equal(summary.lowLagLatencyMedianMs, 5_000);
+  assert.equal(summary.lowLagLatencyP95Ms, 30_000);
+  assert.equal(summary.lowLagLatencyMaxMs, 30_000);
+  assert.equal(summary.delayedLatencyEvents, 1);
+});
+
+test("mixed startup-age samples stay in raw statistics and outside the low-lag subset", () => {
+  const state = new ObserverSourceState("blitzortung", 0);
+  for (const [index, latencyMs] of [2_000, 5_000, 8_000, 323_000, 665_000].entries()) {
+    state.event(event("blitzortung", `mixed-${index}`, 1_000, 1_000 + latencyMs));
+  }
+  const summary = state.summary(700_000);
+  assert.equal(summary.eligibleSampleCount, 5);
+  assert.equal(summary.latencyMedianMs, 8_000);
+  assert.equal(summary.latencyP95Ms, 665_000);
+  assert.equal(summary.lowLagEligibleSampleCount, 3);
+  assert.equal(summary.lowLagLatencyMedianMs, 5_000);
+  assert.equal(summary.lowLagLatencyP95Ms, 8_000);
+  assert.equal(summary.delayedLatencyEvents, 2);
+});
+
+test("low-lag latency samples and delayed counts are isolated per source", () => {
+  const live2 = new ObserverSourceState("live2", 0);
+  const blitz = new ObserverSourceState("blitzortung", 0);
+  live2.event(event("live2", "live-delayed", 1_000, 324_000));
+  blitz.event(event("blitzortung", "blitz-low-lag", 1_000, 3_000));
+  const liveSummary = live2.summary(400_000);
+  const blitzSummary = blitz.summary(400_000);
+  assert.equal(liveSummary.eligibleSampleCount, 1);
+  assert.equal(liveSummary.lowLagEligibleSampleCount, 0);
+  assert.equal(liveSummary.delayedLatencyEvents, 1);
+  assert.equal(blitzSummary.eligibleSampleCount, 1);
+  assert.equal(blitzSummary.lowLagEligibleSampleCount, 1);
+  assert.equal(blitzSummary.delayedLatencyEvents, 0);
+});
+
+test("latency over 30 seconds does not exclude events from cross-source matching", () => {
+  const matcher = new CrossSourceMatcher();
+  const eventTimeMs = 10_000;
+  const liveReceivedAtMs = eventTimeMs + 323_000;
+  const blitzReceivedAtMs = eventTimeMs + 324_000;
+  const live = event("live2", "live-delayed-match", eventTimeMs, liveReceivedAtMs);
+  const blitz = event("blitzortung", "blitz-delayed-match", eventTimeMs + 500, blitzReceivedAtMs);
+  assert.ok(live.latencyMs > LOW_LAG_LATENCY_MAX_MS);
+  assert.ok(blitz.latencyMs > LOW_LAG_LATENCY_MAX_MS);
+  assert.equal(live.transportComparisonEligible, false);
+  assert.equal(blitz.transportComparisonEligible, false);
+  matcher.observe(live);
+  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 1_000), []);
+  matcher.observe(blitz);
+  const liveFinalized = matcher.finalizeReady(liveReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
+  assert.equal(liveFinalized.find(result => result.observerEventId === live.observerEventId)?.matchClass, "strict");
+  assert.equal(liveFinalized.some(result => result.observerEventId === blitz.observerEventId), false);
+  const blitzFinalized = matcher.finalizeReady(blitzReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
+  assert.equal(blitzFinalized.find(result => result.observerEventId === blitz.observerEventId)?.matchClass, "strict");
 });
 
 test("strict match includes the exact two-second temporal boundary", () => {
