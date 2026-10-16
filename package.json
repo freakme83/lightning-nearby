@@ -16,6 +16,8 @@
     "research:lightning-latency": "node --experimental-strip-types scripts/live-lightning-listener/latency-run.ts",
     "research:blitzortung-probe": "node --experimental-strip-types scripts/research/blitzortung-probe/runner.ts",
     "test:research:blitzortung-probe": "node --experimental-strip-types --test scripts/research/blitzortung-probe/*.test.ts",
+    "research:datadog-log-reader": "node --experimental-strip-types scripts/research/datadog-log-reader/runner.ts",
+    "test:research:datadog-log-reader": "node --experimental-strip-types --test scripts/research/datadog-log-reader/*.test.ts",
     "research:dual-source-observer": "node --experimental-strip-types scripts/research/dual-source-observer/runner.ts",
     "test:research:dual-source-observer": "node --experimental-strip-types --test scripts/research/dual-source-observer/*.test.ts",
     "test:research:lightning-listener": "node --experimental-strip-types --test scripts/live-lightning-listener/*.test.ts",
