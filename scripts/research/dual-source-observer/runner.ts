@@ -210,6 +210,7 @@ function eventLogFields(event: ObserverEvent): Record<string, unknown> {
     eventTimeUnit: event.eventTimeUnit,
     latencyMs: event.latencyMs,
     latencyEligible: event.latencyEligible,
+    transportComparisonEligible: event.transportComparisonEligible,
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: event.insideMonitoringArea,
