@@ -106,6 +106,26 @@ test("strict match includes the exact two-second temporal boundary", () => {
   assert.equal(finalized.find(result => result.observerEventId === "live")?.absoluteEventTimeDeltaMs, 2_000);
 });
 
+test("counterpart arriving after 15 seconds is considered before the 30-second finalization", () => {
+  assert.equal(MATCH_FINALIZATION_DELAY_MS, 30_000);
+  const matcher = new CrossSourceMatcher();
+  const liveReceivedAtMs = 11_000;
+  matcher.observe(event("live2", "live-delivery", 10_000, liveReceivedAtMs));
+
+  // The source counterpart arrives 20 seconds after the live2 receipt. At 29s,
+  // the event is not finalizable; after it arrives, it is still in history when
+  // the 30s grace period closes at the exact boundary.
+  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 29_000), []);
+  const blitzReceivedAtMs = liveReceivedAtMs + 20_000;
+  matcher.observe(event("blitzortung", "blitz-delivery", 10_500, blitzReceivedAtMs));
+
+  const finalized = matcher.finalizeReady(liveReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
+  const liveResult = finalized.find(result => result.observerEventId === "live-delivery");
+  assert.equal(liveResult?.matchClass, "strict");
+  assert.equal(liveResult?.nearestObserverEventId, "blitz-delivery");
+  assert.equal(liveResult?.absoluteEventTimeDeltaMs, 500);
+});
+
 test("event outside strict limits but inside loose limits is loose-only", () => {
   const matcher = new CrossSourceMatcher();
   matcher.observe(event("live2", "live", 10_000, 11_000));
