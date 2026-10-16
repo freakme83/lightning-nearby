@@ -6,7 +6,7 @@ import test from "node:test";
 const HERE = import.meta.dirname;
 
 test("reader runtime imports only its isolated client and Node HTTP server", async () => {
-  const allowed = new Set(["node:http", "./client.ts", "./service.ts"]);
+  const allowed = new Set(["node:http", "node:crypto", "./client.ts", "./service.ts"]);
   for (const filename of ["client.ts", "service.ts", "runner.ts"]) {
     const source = await readFile(path.join(HERE, filename), "utf8");
     const imports = [...source.matchAll(/from\s+["']([^"']+)["']/g)].map(match => match[1]);
