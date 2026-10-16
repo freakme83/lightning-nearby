@@ -112,13 +112,13 @@ test("counterpart arriving after 15 seconds is considered before the 30-second f
   const liveReceivedAtMs = 11_000;
   matcher.observe(event("live2", "live-delivery", 10_000, liveReceivedAtMs));
 
-  // The source counterpart arrives 20 seconds after the live2 receipt. At 29s,
-  // the event is not finalizable; after it arrives, it is still in history when
-  // the 30s grace period closes at the exact boundary.
-  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 29_000), []);
+  // Before the counterpart arrives, the event is still pending at 19 seconds.
+  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 19_000), []);
   const blitzReceivedAtMs = liveReceivedAtMs + 20_000;
   matcher.observe(event("blitzortung", "blitz-delivery", 10_500, blitzReceivedAtMs));
 
+  // It remains pending at 29 seconds and matches when the 30s grace expires.
+  assert.deepEqual(matcher.finalizeReady(liveReceivedAtMs + 29_000), []);
   const finalized = matcher.finalizeReady(liveReceivedAtMs + MATCH_FINALIZATION_DELAY_MS);
   const liveResult = finalized.find(result => result.observerEventId === "live-delivery");
   assert.equal(liveResult?.matchClass, "strict");
