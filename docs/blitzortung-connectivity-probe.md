@@ -34,7 +34,9 @@ Every emitted record contains `source: "blitzortung"`; endpoint-specific records
 - `blitzortung_payload_rejected`
 - `blitzortung_summary`
 
-Event logs contain receive time, normalized and raw event time, inferred timestamp unit, receive-minus-event latency, coordinates, raw polarity/`mds`/`mcg`/region, station count when `sig` is present, Ankara monitoring-area membership, source server, and encoded/decoded character counts. Summary fields are all `blitz...`-prefixed and cover connection state, frames, decoder/JSON/rejection counts, usable events, inside/outside counts, reconnects, last frame/strike, and bounded latency min/median/max.
+Event logs contain receive time, normalized and raw event time, inferred timestamp unit, receive-minus-event latency, latency eligibility, coordinates, raw polarity/`mds`/`mcg`/region, station count when `sig` is present, Ankara monitoring-area membership, source server, and encoded/decoded character counts. Negative latency remains visible on the event with `latencyEligible: false`, increments `blitzFutureTimestampEvents`, and is excluded from summary min/median/max. Summary fields are all `blitz...`-prefixed and cover connection state, frames, decoder/JSON/rejection counts, usable events, inside/outside counts, reconnects, last frame/strike, and bounded eligible-latency min/median/max.
+
+Encoded frames above 16,384 characters are reported through `blitzortung_decode_error` and rejected before the LZW decoder creates its symbol array or dictionary. This fixed limit is more than ten times the largest roughly 1,200-character frame seen in the initial smoke runs. Socket ownership is likewise attempt-scoped: an open timeout waits for asynchronous close, and only the socket that still owns the active reference may release it or mark probe health disconnected.
 
 ## Isolation guarantees
 

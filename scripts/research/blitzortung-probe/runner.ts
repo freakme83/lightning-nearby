@@ -1,7 +1,7 @@
 // Explicitly manual, research-only entry point. It is not imported by any worker.
 import { BLITZORTUNG_SERVERS, BLITZORTUNG_SOURCE, processBlitzortungFrame,
   type BlitzortungServer } from "./protocol.ts";
-import { BlitzortungProbeState } from "./state.ts";
+import { BlitzortungProbeState, BlitzSocketOwnership } from "./state.ts";
 
 type Format = "human" | "jsonl";
 
@@ -37,7 +37,7 @@ const config = options(process.argv.slice(2));
 const startedAtMs = Date.now();
 const state = new BlitzortungProbeState(startedAtMs);
 let stopping = false;
-let socket: WebSocket | null = null;
+const socketOwnership = new BlitzSocketOwnership<WebSocket>();
 let serverIndex = 0;
 let reconnectAttempt = 0;
 
@@ -54,7 +54,7 @@ function stop(reason: string): void {
   clearInterval(summaryTimer);
   clearTimeout(durationTimer);
   emit("blitzortung_summary", state.blitzSourceServer, { reason, ...state.summary() });
-  socket?.close(1000, "probe stop");
+  socketOwnership.active?.close(1000, "probe stop");
 }
 
 process.once("SIGINT", () => stop("SIGINT"));
@@ -87,7 +87,7 @@ async function connectLoop(): Promise<void> {
 
     await new Promise<void>((resolve) => {
       const ws = new WebSocket(endpoint);
-      socket = ws;
+      socketOwnership.claim(ws);
       let settled = false;
       let lastFrameAtMs = Date.now();
       let watchdog: ReturnType<typeof setInterval> | null = null;
@@ -96,16 +96,16 @@ async function connectLoop(): Promise<void> {
         settled = true;
         clearTimeout(openTimer);
         if (watchdog) clearInterval(watchdog);
-        socket = null;
         resolve();
       };
       const openTimer = setTimeout(() => {
+        if (!socketOwnership.owns(ws)) return;
         emit("blitzortung_connection", sourceServer, { action: "open_timeout", endpoint });
         ws.close();
-        finish();
       }, 20_000);
 
       ws.addEventListener("open", () => {
+        if (!socketOwnership.owns(ws)) return;
         opened = true;
         reconnectAttempt = 0;
         clearTimeout(openTimer);
@@ -126,6 +126,7 @@ async function connectLoop(): Promise<void> {
       });
 
       ws.addEventListener("message", message => {
+        if (!socketOwnership.owns(ws)) return;
         const receivedAtMs = Date.now();
         lastFrameAtMs = receivedAtMs;
         state.frame(receivedAtMs);
@@ -159,6 +160,7 @@ async function connectLoop(): Promise<void> {
           eventTimeRaw: result.event.eventTimeRaw,
           eventTimeUnit: result.event.eventTimeUnit,
           latencyMs: result.event.latencyMs,
+          latencyEligible: result.event.latencyEligible,
           latitude: result.event.latitude,
           longitude: result.event.longitude,
           polarityRaw: result.event.polarityRaw,
@@ -178,9 +180,11 @@ async function connectLoop(): Promise<void> {
         message: (event as ErrorEvent).message || "WebSocket error",
       }));
       ws.addEventListener("close", event => {
-        state.disconnected();
+        const owned = socketOwnership.release(ws);
+        if (owned) state.disconnected();
         emit("blitzortung_connection", sourceServer, {
           action: "close", endpoint, code: event.code, reason: event.reason, clean: event.wasClean,
+          ignoredAsStale: !owned,
         });
         finish();
       });

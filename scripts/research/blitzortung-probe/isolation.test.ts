@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { SourceHealthTracker } from "../../lightning-incident-lifecycle/source-health.ts";
 import type { BlitzortungProbeEvent } from "./protocol.ts";
-import { BlitzortungProbeState } from "./state.ts";
+import { BlitzortungProbeState, BlitzSocketOwnership } from "./state.ts";
 
 const HERE = import.meta.dirname;
 const PROBE_FILES = ["protocol.ts", "state.ts", "runner.ts"];
@@ -43,7 +43,7 @@ test("probe events update only probe-local counters", () => {
   const probe = new BlitzortungProbeState(1_000);
   const event: BlitzortungProbeEvent = {
     source: "blitzortung", sourceServer: "ws1", receivedAtMs: 2_000, eventTimeMs: 1_900,
-    eventTimeRaw: "1900000000", eventTimeUnit: "seconds", latencyMs: 100,
+    eventTimeRaw: "1900000000", eventTimeUnit: "seconds", latencyMs: 100, latencyEligible: true,
     latitude: 39.92, longitude: 32.85, polarityRaw: null, stationCount: null,
     mdsRaw: null, mcgRaw: null, regionRaw: null, insideMonitoringArea: true,
   };
@@ -51,6 +51,65 @@ test("probe events update only probe-local counters", () => {
   assert.equal(probe.blitzEventsParsed, 1);
   assert.equal(probe.blitzEventsInsideMonitoringArea, 1);
   assert.equal(probe.blitzEventsOutsideMonitoringArea, 0);
+});
+
+test("stale socket cleanup cannot clobber a newer connection", () => {
+  const oldSocket = { id: "old" };
+  const newSocket = { id: "new" };
+  const ownership = new BlitzSocketOwnership<typeof oldSocket>();
+  const probe = new BlitzortungProbeState(1_000);
+  ownership.claim(oldSocket);
+  probe.connecting("ws1");
+  ownership.claim(newSocket);
+  probe.connecting("ws7");
+  probe.connected();
+
+  if (ownership.release(oldSocket)) probe.disconnected();
+  assert.equal(ownership.active, newSocket);
+  assert.equal(probe.blitzConnectionState, "connected");
+
+  if (ownership.release(newSocket)) probe.disconnected();
+  assert.equal(ownership.active, null);
+  assert.equal(probe.blitzConnectionState, "disconnected");
+});
+
+test("future timestamps are excluded from aggregate latency statistics", () => {
+  const probe = new BlitzortungProbeState(1_000);
+  const base: BlitzortungProbeEvent = {
+    source: "blitzortung", sourceServer: "ws1", receivedAtMs: 2_000, eventTimeMs: 1_900,
+    eventTimeRaw: "1900000000", eventTimeUnit: "seconds", latencyMs: 100, latencyEligible: true,
+    latitude: 39.92, longitude: 32.85, polarityRaw: null, stationCount: null,
+    mdsRaw: null, mcgRaw: null, regionRaw: null, insideMonitoringArea: true,
+  };
+  probe.event(base);
+  probe.event({ ...base, eventTimeMs: 2_050, latencyMs: -50, latencyEligible: false });
+  assert.deepEqual(probe.summary(3_000), {
+    blitzUptimeSeconds: 2,
+    blitzConnectionState: "disconnected",
+    blitzFramesReceived: 0,
+    blitzFramesDecoded: 0,
+    blitzDecodeFailures: 0,
+    blitzJsonParseFailures: 0,
+    blitzUnexpectedPayloads: 0,
+    blitzEventsParsed: 2,
+    blitzEventsInsideMonitoringArea: 2,
+    blitzEventsOutsideMonitoringArea: 0,
+    blitzFutureTimestampEvents: 1,
+    blitzReconnects: 0,
+    blitzLastFrameReceivedAt: null,
+    blitzLastStrikeEventTime: "1970-01-01T00:00:02.050Z",
+    blitzLatencyMinMs: 100,
+    blitzLatencyMedianMs: 100,
+    blitzLatencyMaxMs: 100,
+  });
+
+  const futureOnly = new BlitzortungProbeState(1_000);
+  futureOnly.event({ ...base, eventTimeMs: 2_050, latencyMs: -50, latencyEligible: false });
+  const futureSummary = futureOnly.summary(3_000);
+  assert.equal(futureSummary.blitzFutureTimestampEvents, 1);
+  assert.equal(futureSummary.blitzLatencyMinMs, null);
+  assert.equal(futureSummary.blitzLatencyMedianMs, null);
+  assert.equal(futureSummary.blitzLatencyMaxMs, null);
 });
 
 test("runtime dependency boundary cannot reach lifecycle or external side effects", async () => {

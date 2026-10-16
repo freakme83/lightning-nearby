@@ -2,6 +2,8 @@ import { pointInMonitoringArea } from "../../lightning-incident-lifecycle/monito
 
 export const BLITZORTUNG_SOURCE = "blitzortung" as const;
 export const BLITZORTUNG_SERVERS = ["ws1", "ws7", "ws8"] as const;
+// Live smoke frames were roughly 400-1,200 characters; this leaves more than 10x headroom.
+export const MAX_BLITZORTUNG_ENCODED_FRAME_CHARS = 16_384;
 
 export type BlitzortungServer = (typeof BLITZORTUNG_SERVERS)[number];
 export type BlitzTimestampUnit = "seconds" | "milliseconds" | "microseconds" | "nanoseconds";
@@ -16,6 +18,7 @@ export type BlitzortungProbeEvent = {
   eventTimeRaw: string;
   eventTimeUnit: BlitzTimestampUnit;
   latencyMs: number;
+  latencyEligible: boolean;
   latitude: number;
   longitude: number;
   polarityRaw: JsonPrimitive;
@@ -38,6 +41,9 @@ export type ProcessedBlitzortungFrame =
  * dictionary entries built while decoding.
  */
 export function decodeBlitzortungFrame(input: string): string {
+  if (input.length > MAX_BLITZORTUNG_ENCODED_FRAME_CHARS) {
+    throw new Error(`encoded frame exceeds ${MAX_BLITZORTUNG_ENCODED_FRAME_CHARS} character limit (${input.length})`);
+  }
   if (input.length === 0) throw new Error("empty compressed frame");
   const symbols = input.split("");
   const dictionary = new Map<number, string>();
@@ -166,12 +172,14 @@ export function parseDecodedBlitzortungPayload(
       reason: error instanceof Error ? error.message : "invalid time" };
   }
   const stationCount = Array.isArray(strike.sig) ? strike.sig.length : null;
+  const latencyMs = receivedAtMs - timestamp.eventTimeMs;
   const event: BlitzortungProbeEvent = {
     source: BLITZORTUNG_SOURCE,
     sourceServer,
     receivedAtMs,
     ...timestamp,
-    latencyMs: receivedAtMs - timestamp.eventTimeMs,
+    latencyMs,
+    latencyEligible: latencyMs >= 0,
     latitude: strike.lat,
     longitude: strike.lon,
     polarityRaw: rawPrimitive(strike.pol),

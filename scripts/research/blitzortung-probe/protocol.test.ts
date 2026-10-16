@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decodeBlitzortungFrame,
+  MAX_BLITZORTUNG_ENCODED_FRAME_CHARS,
   normalizeBlitzortungTimestamp,
   parseDecodedBlitzortungPayload,
   processBlitzortungFrame,
@@ -35,6 +36,7 @@ test("decoded current-format strike becomes a minimal source-specific event", ()
     eventTimeRaw: "1784284530066558000",
     eventTimeUnit: "nanoseconds",
     latencyMs: 1_234,
+    latencyEligible: true,
     latitude: 39.9208,
     longitude: 32.8541,
     polarityRaw: -1,
@@ -88,4 +90,30 @@ test("decoder failures are contained by the frame boundary", () => {
     kind: "decode_error",
     reason: "invalid LZW code 400 at symbol 1",
   });
+});
+
+test("encoded frame size is bounded before LZW allocation", () => {
+  const atLimit = "{".repeat(MAX_BLITZORTUNG_ENCODED_FRAME_CHARS);
+  assert.equal(processBlitzortungFrame(atLimit, Date.now(), "ws1").kind, "json_parse_error");
+
+  const oversized = "{".repeat(MAX_BLITZORTUNG_ENCODED_FRAME_CHARS + 1);
+  assert.throws(() => decodeBlitzortungFrame(oversized), /encoded frame exceeds 16384 character limit/);
+  assert.deepEqual(processBlitzortungFrame(oversized, Date.now(), "ws1"), {
+    kind: "decode_error",
+    reason: "encoded frame exceeds 16384 character limit (16385)",
+  });
+});
+
+test("future event keeps raw negative latency but marks it ineligible", () => {
+  const result = parseDecodedBlitzortungPayload(
+    "{\"time\":1784284530066558000,\"lat\":39.9,\"lon\":32.8}",
+    1_784_284_530_000,
+    "ws8",
+  );
+  assert.equal(result.kind, "event");
+  if (result.kind !== "event") return;
+  assert.equal(result.event.eventTimeRaw, "1784284530066558000");
+  assert.equal(result.event.eventTimeMs, 1_784_284_530_066);
+  assert.equal(result.event.latencyMs, -66);
+  assert.equal(result.event.latencyEligible, false);
 });

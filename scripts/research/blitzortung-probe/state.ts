@@ -2,6 +2,18 @@ import type { BlitzortungProbeEvent, BlitzortungServer } from "./protocol.ts";
 
 export type BlitzConnectionState = "disconnected" | "connecting" | "connected" | "receiving";
 
+export class BlitzSocketOwnership<T> {
+  private current: T | null = null;
+  get active(): T | null { return this.current; }
+  claim(socket: T): void { this.current = socket; }
+  owns(socket: T): boolean { return this.current === socket; }
+  release(socket: T): boolean {
+    if (!this.owns(socket)) return false;
+    this.current = null;
+    return true;
+  }
+}
+
 export class BlitzortungProbeState {
   readonly startedAtMs: number;
   blitzConnectionState: BlitzConnectionState = "disconnected";
@@ -13,6 +25,7 @@ export class BlitzortungProbeState {
   blitzEventsParsed = 0;
   blitzEventsInsideMonitoringArea = 0;
   blitzEventsOutsideMonitoringArea = 0;
+  blitzFutureTimestampEvents = 0;
   blitzReconnects = 0;
   blitzLastFrameReceivedAtMs: number | null = null;
   blitzLastStrikeEventTimeMs: number | null = null;
@@ -41,7 +54,8 @@ export class BlitzortungProbeState {
     if (event.insideMonitoringArea) this.blitzEventsInsideMonitoringArea++;
     else this.blitzEventsOutsideMonitoringArea++;
     this.blitzLastStrikeEventTimeMs = event.eventTimeMs;
-    if (this.latenciesMs.length < 10_000) this.latenciesMs.push(event.latencyMs);
+    if (!event.latencyEligible) this.blitzFutureTimestampEvents++;
+    else if (this.latenciesMs.length < 10_000) this.latenciesMs.push(event.latencyMs);
   }
   summary(nowMs = Date.now()): Record<string, string | number | null> {
     const sorted = [...this.latenciesMs].sort((a, b) => a - b);
@@ -57,6 +71,7 @@ export class BlitzortungProbeState {
       blitzEventsParsed: this.blitzEventsParsed,
       blitzEventsInsideMonitoringArea: this.blitzEventsInsideMonitoringArea,
       blitzEventsOutsideMonitoringArea: this.blitzEventsOutsideMonitoringArea,
+      blitzFutureTimestampEvents: this.blitzFutureTimestampEvents,
       blitzReconnects: this.blitzReconnects,
       blitzLastFrameReceivedAt: this.blitzLastFrameReceivedAtMs === null ? null : new Date(this.blitzLastFrameReceivedAtMs).toISOString(),
       blitzLastStrikeEventTime: this.blitzLastStrikeEventTimeMs === null ? null : new Date(this.blitzLastStrikeEventTimeMs).toISOString(),
