@@ -4,7 +4,7 @@ import test from "node:test";
 import { activityMapData } from "./live-activity.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
 import type { BlitzExperimentalResult } from "./lightning/blitz-experimental.ts";
-import { canStartLiveSourceRequest, developerLiveMode, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, type LiveLightningSource } from "./live-lightning-presentation.ts";
+import { canStartLiveSourceRequest, developerLiveMode, DEVELOPER_LIVE_SOURCE_STORAGE_KEY, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, parseStoredLiveSource, shouldRunInitialLiveSourceCheck, type LiveLightningSource } from "./live-lightning-presentation.ts";
 
 const event = { observedAtMs: 1_790_000_000_000, latitude: 39.93, longitude: 32.85, type: "unknown" as const };
 function blitz(status: "active" | "clear" | "unknown", events = status === "active" ? [event] : [], recentStatus: "active" | "clear" | "unknown" = "clear"): BlitzExperimentalResult {
@@ -32,15 +32,36 @@ function xweather(): LiveLightningApiResult {
   } };
 }
 
-test("normal source defaults to Xweather route; dev gate is exact and not persisted", () => {
+test("normal source defaults to Xweather route; dev gate is exact and hostname-scoped", () => {
   const source: LiveLightningSource = "xweather";
   assert.equal(source, "xweather");
   assert.equal(liveSourceEndpoint(source), "/api/lightning/live");
   assert.equal(liveSourceEndpoint("blitz-experimental"), "/api/lightning/blitz-experimental");
-  assert.equal(developerLiveMode(""), false);
-  assert.equal(developerLiveMode("?lightningDev=0"), false);
-  assert.equal(developerLiveMode("?lightningDev=true"), false);
-  assert.equal(developerLiveMode("?lightningDev=1"), true);
+  assert.equal(developerLiveMode("", "lightning-nearby.netlify.app"), false);
+  assert.equal(developerLiveMode("?lightningDev=0", "lightning-nearby.netlify.app"), false);
+  assert.equal(developerLiveMode("?lightningDev=true", "lightning-nearby.netlify.app"), false);
+  assert.equal(developerLiveMode("?lightningDev=1", "lightning-nearby.netlify.app"), true);
+  assert.equal(developerLiveMode("", "merge-ready--lightning-nearby.netlify.app"), true);
+  assert.equal(developerLiveMode("", "other-branch--lightning-nearby.netlify.app"), false);
+  assert.equal(developerLiveMode("", "lightning-nearby.netlify.app.evil.test"), false);
+  assert.equal(DEVELOPER_LIVE_SOURCE_STORAGE_KEY, "lightning-nearby:developer-live-source");
+});
+
+test("stored developer source accepts only the two supported values", () => {
+  assert.equal(parseStoredLiveSource("xweather"), "xweather");
+  assert.equal(parseStoredLiveSource("blitz-experimental"), "blitz-experimental");
+  assert.equal(parseStoredLiveSource(null), null);
+  assert.equal(parseStoredLiveSource("Blitz"), null);
+  assert.equal(parseStoredLiveSource("unknown"), null);
+  assert.equal(parseStoredLiveSource(""), null);
+});
+
+test("initial auto-check waits for hydration and only runs for selected Xweather", () => {
+  assert.equal(shouldRunInitialLiveSourceCheck(true, false, false, "xweather"), false);
+  assert.equal(shouldRunInitialLiveSourceCheck(true, true, false, "xweather"), false);
+  assert.equal(shouldRunInitialLiveSourceCheck(true, true, true, "blitz-experimental"), false);
+  assert.equal(shouldRunInitialLiveSourceCheck(true, true, true, "xweather"), true);
+  assert.equal(shouldRunInitialLiveSourceCheck(false, true, true, "xweather"), false);
 });
 
 test("Xweather presentation preserves its current event view and 30-minute recent context", () => {
@@ -118,12 +139,21 @@ test("client selector is gated and client code has no observer credentials, host
   const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
   const presentation = readFileSync(new URL("./live-lightning-presentation.ts", import.meta.url), "utf8");
   const client = `${component}\n${page}\n${presentation}`;
-  assert.match(component, /developerMode\s*&&\s*<label className="developer-source"/);
-  assert.match(page, /developerLiveMode\(window\.location\.search\)/);
+  assert.match(component, /developerMode\s*&&\s*sourcePreferenceReady\s*&&\s*<label className="developer-source"/);
+  assert.match(page, /developerLiveMode\(window\.location\.search, window\.location\.hostname\)/);
+  assert.match(page, /setDeveloperModeReady\(true\)/);
   const switchHandler = component.slice(component.indexOf("const changeSource"), component.indexOf("const severity"));
   assert.match(switchHandler, /sourceRef\.current = next[\s\S]*requestId\.current \+= 1[\s\S]*\.abort\(\)/);
   assert.match(switchHandler, /setResult\(null\)[\s\S]*setXweatherSummary\(null\)[\s\S]*setPlace\(null\)[\s\S]*setCheckedAt\(null\)/);
   assert.doesNotMatch(switchHandler, /checkActivity\(/);
+  assert.match(switchHandler, /localStorage\.setItem\(DEVELOPER_LIVE_SOURCE_STORAGE_KEY, next\)/);
+  assert.match(component, /restoredSource = parseStoredLiveSource\(localStorage\.getItem\(DEVELOPER_LIVE_SOURCE_STORAGE_KEY\)\) \?\? "xweather"/);
+  assert.match(component, /const sourceChanged = restoredSource !== sourceRef\.current;\s*sourceRef\.current = restoredSource;/);
+  assert.match(component, /if \(sourceChanged\) \{\s*setSource\(restoredSource\)/);
+  assert.match(component, /shouldRunInitialLiveSourceCheck\(autoCheckEligible, developerModeReady, sourcePreferenceReady, sourceRef\.current\)/);
+  assert.match(component, /developerMode && sourcePreferenceReady && <label className="developer-source"/);
+  assert.match(component, /if \(developerMode\) \{\s*try \{ localStorage\.setItem\(DEVELOPER_LIVE_SOURCE_STORAGE_KEY, next\)/);
+  assert.match(component, /const next = parseStoredLiveSource\(event\.target\.value\);\s*if \(next\) changeSource\(next\);/);
   assert.match(component, /result\.status === "unknown"\s*\?\s*<>\s*<h1[^>]*>\{t\(locale, "observationWindowIncomplete"\)/);
   assert.match(component, /requestedSource === "xweather"/);
   assert.match(component, /JSON\.stringify\(\{ latitude, longitude \}\)/);

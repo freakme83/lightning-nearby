@@ -6,7 +6,7 @@ import type { BlitzExperimentalResult } from "@/lib/lightning/blitz-experimental
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { liveActivitySegments, liveEventCountCopy, liveSeverityLabel, requestLiveCheck } from "@/lib/live-observation";
 import { activityMapData, liveActivityView, lookupActivityPlace, type ActivityPlaceContext } from "@/lib/live-activity";
-import { canStartLiveSourceRequest, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
+import { canStartLiveSourceRequest, DEVELOPER_LIVE_SOURCE_STORAGE_KEY, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, parseStoredLiveSource, shouldRunInitialLiveSourceCheck, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
 import LiveActivityMap from "./live-activity-map";
 import type { RiskLevel } from "@/lib/weather";
 import { intlLocale, t, type Locale } from "@/lib/i18n";
@@ -26,6 +26,7 @@ interface Props {
   locale: Locale;
   onManualRefresh: () => void;
   developerMode?: boolean;
+  developerModeReady?: boolean;
 }
 
 type BlitzFailure = Extract<BlitzExperimentalResult, { ok: false }>;
@@ -54,8 +55,9 @@ function isBlitzResult(value: unknown): value is BlitzExperimentalResult {
     Boolean(recent.coverage && typeof recent.coverage === "object") && Boolean(current.coverage && typeof current.coverage === "object");
 }
 
-export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible, locale, onManualRefresh, developerMode = false }: Props) {
+export default function LiveObservation({ latitude, longitude, forecast, autoCheckEligible, locale, onManualRefresh, developerMode = false, developerModeReady = true }: Props) {
   const [source, setSource] = useState<LiveLightningSource>("xweather");
+  const [sourcePreferenceReady, setSourcePreferenceReady] = useState(false);
   const sourceRef = useRef<LiveLightningSource>("xweather");
   const [result, setResult] = useState<LiveLightningPresentation | null>(null);
   const [xweatherSummary, setXweatherSummary] = useState<LiveLightningSummary | null>(null);
@@ -77,6 +79,30 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
     controller.current?.abort();
     placeController.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (!developerModeReady) return;
+    let restoredSource: LiveLightningSource = "xweather";
+    if (developerMode) {
+      try {
+        restoredSource = parseStoredLiveSource(localStorage.getItem(DEVELOPER_LIVE_SOURCE_STORAGE_KEY)) ?? "xweather";
+      } catch { /* Storage can be unavailable; Xweather remains the safe default. */ }
+    }
+    const sourceChanged = restoredSource !== sourceRef.current;
+    sourceRef.current = restoredSource;
+    queueMicrotask(() => {
+      if (sourceChanged) {
+        setSource(restoredSource);
+        setResult(null);
+        setXweatherSummary(null);
+        setTopLevelFailure(false);
+        setPlace(null);
+        setCheckedAt(null);
+        setLoading(false);
+      }
+      setSourcePreferenceReady(true);
+    });
+  }, [developerMode, developerModeReady]);
 
   const checkActivity = useCallback(async (automaticSource?: LiveLightningSource) => {
     if (!canStartLiveSourceRequest(automaticSource, sourceRef.current)) return;
@@ -146,7 +172,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   }, [latitude, longitude, locationKey]);
 
   useEffect(() => {
-    if (!autoCheckEligible) return;
+    if (!shouldRunInitialLiveSourceCheck(autoCheckEligible, developerModeReady, sourcePreferenceReady, sourceRef.current)) return;
     const generation = ++automaticEffectGeneration.current;
     queueMicrotask(() => {
       if (generation !== automaticEffectGeneration.current) return;
@@ -154,7 +180,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
       void requestLiveCheck("automatic", () => checkActivity("xweather"));
     });
     return () => { automaticEffectGeneration.current += 1; };
-  }, [autoCheckEligible, checkActivity]);
+  }, [autoCheckEligible, checkActivity, developerModeReady, sourcePreferenceReady]);
 
   const changeSource = (next: LiveLightningSource) => {
     if (next === sourceRef.current) return;
@@ -165,6 +191,10 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
     placeController.current?.abort();
     placeController.current = null;
     setSource(next);
+    if (developerMode) {
+      try { localStorage.setItem(DEVELOPER_LIVE_SOURCE_STORAGE_KEY, next); }
+      catch { /* The current selection still works for this page load. */ }
+    }
     setResult(null);
     setXweatherSummary(null);
     setTopLevelFailure(false);
@@ -192,8 +222,11 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
       <div><p className="eyebrow">{result ? t(locale, "liveLightning") : t(locale, "currentPicture")}</p>{checkedTime && <p className="live-checked">{t(locale, "checkedTime", { time: checkedTime })}</p>}</div>
       {active && liveBadge && <span className="current-badge">{liveBadge}</span>}
     </div>
-    {developerMode && <label className="developer-source">{t(locale, "developerLightningSource")}
-      <select value={source} onChange={event => changeSource(event.target.value as LiveLightningSource)}>
+    {developerMode && sourcePreferenceReady && <label className="developer-source">{t(locale, "developerLightningSource")}
+      <select value={source} onChange={event => {
+        const next = parseStoredLiveSource(event.target.value);
+        if (next) changeSource(next);
+      }}>
         <option value="xweather">{t(locale, "developerSourceXweather")}</option>
         <option value="blitz-experimental">{t(locale, "developerSourceBlitz")}</option>
       </select>
