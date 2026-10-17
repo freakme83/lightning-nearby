@@ -15,6 +15,8 @@
 .current-hero.live-nearby,.current-hero.live-elevated,.current-hero.live-high{border-color:color-mix(in srgb,var(--hero-accent) 55%,white);box-shadow:inset 4px 0 0 var(--hero-accent),0 8px 24px #13251f0b}
 .current-hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .current-hero-top .eyebrow{margin:0;color:var(--hero-accent)}
+.developer-source{display:flex;align-items:center;gap:8px;width:max-content;margin-top:12px;color:#78838a;font-size:11px}
+.developer-source select{border:1px solid #cfd9d5;border-radius:6px;background:#fff;padding:5px 8px;color:var(--ink);font:inherit}
 .live-checked{margin:5px 0 0;color:#7b858b;font:9px ui-monospace,monospace}
 .current-badge{display:inline-flex;align-items:center;min-height:28px;padding:0 10px;border-radius:999px;background:var(--hero-soft);color:var(--hero-accent);font:700 10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.05em}
 .current-hero-content{margin-top:17px;color:#55636b;font-size:14px;line-height:1.6}
