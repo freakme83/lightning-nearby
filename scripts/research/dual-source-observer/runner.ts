@@ -116,7 +116,10 @@ function connectOnce(options: ConnectionOptions): Promise<boolean> {
       if (closeGrace) clearTimeout(closeGrace);
       options.signal.removeEventListener("abort", onAbort);
       const owned = options.ownership.release(socket);
-      if (owned) options.state.disconnected();
+      if (owned) {
+        options.state.disconnected();
+        if (options.source === "blitzortung") blitzRecentCache.setObservationActive(false, Date.now());
+      }
       resolve(opened && receivedFrame);
     };
 
@@ -145,6 +148,7 @@ function connectOnce(options: ConnectionOptions): Promise<boolean> {
       opened = true;
       clearTimeout(openTimer);
       options.state.connected();
+      if (options.source === "blitzortung") blitzRecentCache.setObservationActive(true, Date.now());
       try {
         options.onOpen(socket);
       } catch (error) {

@@ -28,11 +28,12 @@ async function withServer(
   try { await check(get); } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 }
 
-const PATH = "/recent?lat=39.92&lon=32.85&radiusKm=100&windowMinutes=15";
+const PATH = "/recent?lat=39.92&lon=32.85&radiusKm=100&windowMinutes=1";
 
 test("localhost API returns a bounded in-memory Blitz response with no upstream request", async () => {
   const cache = new BlitzRecentEventCache();
   const now = Date.now();
+  cache.setObservationActive(true, now - 5 * 60_000);
   cache.insert({ source: "blitzortung", observerEventId: "blitz-1", sourceServer: "ws7",
     eventTimeMs: now - 1_000, receivedAtMs: now, latitude: 39.92, longitude: 32.85,
     latencyMs: 1_000, transportComparisonEligible: true } as ObserverEvent, now);
@@ -44,7 +45,10 @@ test("localhost API returns a bounded in-memory Blitz response with no upstream 
     assert.equal(status, 200);
     assert.equal(body.ok, true);
     assert.equal(body.source, "blitzortung");
-    assert.deepEqual(body.query, { latitude: 39.92, longitude: 32.85, radiusKm: 100, windowMinutes: 15 });
+    assert.deepEqual(body.query, { latitude: 39.92, longitude: 32.85, radiusKm: 100, windowMinutes: 1 });
+    assert.deepEqual(body.coverage, {
+      complete: true, requestedWindowMinutes: 1, coverageStartMs: now - 5 * 60_000,
+    });
     assert.equal(typeof body.fetchedAt, "number");
     assert.deepEqual(body.events, [{ observerEventId: "blitz-1", sourceServer: "ws7",
       eventTimeMs: now - 1_000, receivedAtMs: now, latitude: 39.92, longitude: 32.85,

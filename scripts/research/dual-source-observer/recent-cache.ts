@@ -15,14 +15,36 @@ export type RecentQuery = {
   radiusKm: number;
   windowMinutes: number;
 };
+export type RecentCoverage = {
+  complete: boolean;
+  requestedWindowMinutes: number;
+  coverageStartMs: number;
+};
 
 export class BlitzRecentEventCache {
   private events: RecentBlitzEvent[] = [];
+  private coverageBoundaryMs: number;
+  private observationActive = false;
+  private latestEvictedEventTimeMs: number | null = null;
+
+  constructor(startedAtMs: number = Date.now()) {
+    this.coverageBoundaryMs = startedAtMs;
+  }
+
+  setObservationActive(active: boolean, atMs: number): void {
+    this.observationActive = active;
+    // A reconnect starts a new continuous-coverage interval. A disconnect
+    // also moves the boundary forward while preventing any complete claim.
+    this.coverageBoundaryMs = atMs;
+  }
 
   insert(event: ObserverEvent, nowMs: number = Date.now()): void {
     if (event.source !== "blitzortung") return;
     this.prune(nowMs);
-    if (event.receivedAtMs < nowMs - BLITZ_RECENT_EVENT_RETENTION_MS) return;
+    if (event.receivedAtMs < nowMs - BLITZ_RECENT_EVENT_RETENTION_MS) {
+      this.recordEvicted(event);
+      return;
+    }
     this.events.push({
       observerEventId: event.observerEventId,
       sourceServer: event.sourceServer,
@@ -34,8 +56,24 @@ export class BlitzRecentEventCache {
       transportComparisonEligible: event.transportComparisonEligible,
     });
     if (this.events.length > BLITZ_RECENT_EVENT_MAX_EVENTS) {
-      this.events.splice(0, this.events.length - BLITZ_RECENT_EVENT_MAX_EVENTS);
+      const evicted = this.events.splice(0, this.events.length - BLITZ_RECENT_EVENT_MAX_EVENTS);
+      for (const removed of evicted) this.recordEvicted(removed);
     }
+  }
+
+  coverage(windowMinutes: number, nowMs: number = Date.now()): RecentCoverage {
+    this.prune(nowMs);
+    const requestedStartMs = nowMs - windowMinutes * 60_000;
+    const retentionStartMs = nowMs - BLITZ_RECENT_EVENT_RETENTION_MS;
+    const evictionStartMs = this.latestEvictedEventTimeMs === null
+      ? Number.NEGATIVE_INFINITY
+      : this.latestEvictedEventTimeMs + 1;
+    const coverageStartMs = Math.max(this.coverageBoundaryMs, retentionStartMs, evictionStartMs);
+    return {
+      complete: this.observationActive && requestedStartMs >= coverageStartMs,
+      requestedWindowMinutes: windowMinutes,
+      coverageStartMs,
+    };
   }
 
   query(query: RecentQuery, nowMs: number = Date.now()): (RecentBlitzEvent & { distanceKm: number })[] {
@@ -54,7 +92,18 @@ export class BlitzRecentEventCache {
     // Receipts are appended in receive order; avoid scanning the full global
     // feed on every delivery when its oldest entry is still recent.
     if (this.events.length && this.events[0].receivedAtMs < cutoff) {
-      this.events = this.events.filter(event => event.receivedAtMs >= cutoff);
+      const retained: RecentBlitzEvent[] = [];
+      for (const event of this.events) {
+        if (event.receivedAtMs >= cutoff) retained.push(event);
+        else this.recordEvicted(event);
+      }
+      this.events = retained;
     }
+  }
+
+  private recordEvicted(event: Pick<RecentBlitzEvent, "eventTimeMs">): void {
+    this.latestEvictedEventTimeMs = this.latestEvictedEventTimeMs === null
+      ? event.eventTimeMs
+      : Math.max(this.latestEvictedEventTimeMs, event.eventTimeMs);
   }
 }

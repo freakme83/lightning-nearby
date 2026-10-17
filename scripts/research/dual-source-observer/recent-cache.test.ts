@@ -31,6 +31,53 @@ test("cache stores only Blitz deliveries, including those outside Ankara, preser
   assert.equal(cache.query(QUERY, NOW)[0].transportComparisonEligible, false);
 });
 
+test("fresh active cache reports an empty 15-minute query as incomplete", () => {
+  const cache = new BlitzRecentEventCache(NOW);
+  cache.setObservationActive(true, NOW);
+  assert.deepEqual(cache.query(QUERY, NOW), []);
+  assert.deepEqual(cache.coverage(15, NOW), {
+    complete: false, requestedWindowMinutes: 15, coverageStartMs: NOW,
+  });
+});
+
+test("continuous history spanning the request can prove an empty area clear", () => {
+  const startedAt = NOW - BLITZ_RECENT_EVENT_RETENTION_MS;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  assert.deepEqual(cache.query(QUERY, NOW), []);
+  assert.deepEqual(cache.coverage(15, NOW), {
+    complete: true, requestedWindowMinutes: 15, coverageStartMs: startedAt,
+  });
+});
+
+test("shorter windows become complete before a full 15-minute window", () => {
+  const startedAt = NOW - 5 * 60_000;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  assert.equal(cache.coverage(5, NOW).complete, true);
+  assert.equal(cache.coverage(15, NOW).complete, false);
+});
+
+test("cap eviction makes affected history incomplete while retained events remain queryable", () => {
+  const startedAt = NOW - BLITZ_RECENT_EVENT_RETENTION_MS;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  for (let i = 0; i <= BLITZ_RECENT_EVENT_MAX_EVENTS; i++) {
+    cache.insert(event(`capped-${i}`, { eventTimeMs: NOW - 30_000 }), NOW);
+  }
+  assert.equal(cache.query(QUERY, NOW).length, BLITZ_RECENT_EVENT_MAX_EVENTS);
+  assert.equal(cache.coverage(15, NOW).complete, false);
+  assert.equal(cache.coverage(1, NOW).complete, false);
+});
+
+test("disconnected observer cannot claim complete coverage after its prior interval", () => {
+  const startedAt = NOW - BLITZ_RECENT_EVENT_RETENTION_MS;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  cache.setObservationActive(false, NOW - 1_000);
+  assert.equal(cache.coverage(1, NOW).complete, false);
+});
+
 test("retention expiry, event-time window, and hard event cap are independent", () => {
   const cache = new BlitzRecentEventCache();
   cache.insert(event("expired", { receivedAtMs: NOW - BLITZ_RECENT_EVENT_RETENTION_MS - 1 }), NOW);

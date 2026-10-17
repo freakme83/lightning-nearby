@@ -70,7 +70,14 @@ export function createObserverHttpServer(cache: BlitzRecentEventCache, token: st
         return;
       }
       const fetchedAt = Date.now();
-      json(response, 200, { ok: true, source: "blitzortung", fetchedAt, query, events: cache.query(query, fetchedAt) });
+      json(response, 200, {
+        ok: true,
+        source: "blitzortung",
+        fetchedAt,
+        query,
+        coverage: cache.coverage(query.windowMinutes, fetchedAt),
+        events: cache.query(query, fetchedAt),
+      });
     } catch {
       if (!response.headersSent) json(response, 500, { ok: false, error: "request_failed" });
       else response.end();
