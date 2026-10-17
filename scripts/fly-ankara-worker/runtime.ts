@@ -83,6 +83,8 @@ const LIFECYCLE_METRIC_SAMPLE_LIMIT = 1_000;
 const SPARSE_NEIGHBOR_DISTANCE_KM = 15;
 const SPARSE_NEIGHBOR_TEMPORAL_WINDOW_MS = 10 * 60_000;
 const SPARSE_NEIGHBOR_CLUSTER_ID_LIMIT = 5;
+const ROLLING_CANDIDATE_SHADOW_PROMOTION_THRESHOLD = 3;
+const CG_REPEAT_MIN_INCIDENT_EVENTS = 3;
 const requiredEnvironment = [
   "XWEATHER_CLIENT_ID", "XWEATHER_CLIENT_SECRET", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
 ] as const;
@@ -174,7 +176,7 @@ export class AnkaraFlyPipeline {
   private readonly neighborSupportedSparseOpportunities = new Map<string, NeighborSupportedSparseOpportunity>();
   private readonly neighborSupportedSparseCounters = { opportunities: 0, promoted: 0, expired: 0 };
   private readonly rollingCandidateShadow = new RollingCandidateWindowShadow(
-    profile.promotionMinEvents, profile.promotionWindowMinutes);
+    ROLLING_CANDIDATE_SHADOW_PROMOTION_THRESHOLD, profile.promotionWindowMinutes);
   private readonly suppressedInitialRoutes = new Map<string, SuppressedInitialRoute>();
   private readonly repeatInFlight = new Set<string>();
   private readonly cgProviderResults: Record<string, number> = {};
@@ -949,7 +951,8 @@ export class AnkaraFlyPipeline {
     const incident = this.lifecycle.incidents.find(item => item.id === probe.incident.id);
     if (!this.store.admitCgPublication) return "atomic_admission_unavailable";
     if (!this.repeatRecoveryReady(now)) return "recovery_or_source_unhealthy";
-    if (incident?.status !== "active" || incident.promotedAtMs === undefined || incident.totalEvents < profile.promotionMinEvents) return "incident_not_promoted_active";
+    if (incident?.status !== "active" || incident.promotedAtMs === undefined ||
+        incident.totalEvents < CG_REPEAT_MIN_INCIDENT_EVENTS) return "incident_not_promoted_active";
     if (this.candidateWork.has(incident.id) && !this.repeatInFlight.has(incident.id)) return "initial_candidate_in_flight";
     if (!CG_REPEAT_REASONS.includes(probe.reason)) return "unsupported_suppression";
     if (!Number.isFinite(age) || age < 0 || age > MAX_PAIRING_INCIDENT_AGE_MS) return "reference_not_current";
