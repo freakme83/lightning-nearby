@@ -15,6 +15,7 @@ import TodayBriefing from "./today-briefing";
 import LocationMap from "./location-map";
 import LiveObservation, { type ForecastContext } from "./live-observation";
 import { firstLocationAutoCheckKey, isInitialLiveCheckEligible, suppressInitialLiveCheckForSession } from "@/lib/initial-live-check";
+import { developerLiveMode } from "@/lib/live-lightning-presentation";
 
 const localTime = (epoch: number, timezone: string, locale: Locale) => formatClock(epoch * 1000, timezone, locale);
 function localDateKey(epoch: number, timezone: string) { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(epoch * 1000); }
@@ -38,6 +39,7 @@ function visibleLocationLabel(selection: LocationSelection, locale: Locale): str
 
 export default function Home() {
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  const [developerMode, setDeveloperMode] = useState(false);
   const localeRef = useRef<Locale>(DEFAULT_LOCALE);
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -85,6 +87,9 @@ export default function Home() {
     localeRef.current = locale;
     document.documentElement.lang = locale;
   }, [locale]);
+  useEffect(() => {
+    queueMicrotask(() => setDeveloperMode(developerLiveMode(window.location.search)));
+  }, []);
   const changeLocale = (next: Locale) => { setLocale(next); saveLocale(localStorage, next); };
 
   useEffect(() => {
@@ -420,7 +425,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
       {loading && <div className="loading-state" role="status">{t(locale, "gettingForecast")}</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>{t(locale, "forecastUnavailable")}</strong><p>{t(locale, "forecastError")}</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>{t(locale, "tryAgain")}</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} onManualRefresh={refreshForecast} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} onManualRefresh={refreshForecast} developerMode={developerMode} />
       {forecast && !loading && <>
         <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} locale={locale} />
         <section className="timeline-section" aria-labelledby="timeline-title">

@@ -3,7 +3,8 @@ import { REVERSE_GEOCODE_TIMEOUT_MS } from "./geolocation.ts";
 import { directionLabel, formatDistance, t, type Locale } from "./i18n.ts";
 import { isValidCoordinates } from "./location.ts";
 import { greatCircleDistanceKm } from "./lightning/distance.ts";
-import { LIVE_CURRENT_EVENT_LIMIT, type CurrentLightning, type CurrentLightningEvent } from "./lightning/types.ts";
+import { LIVE_CURRENT_EVENT_LIMIT, type CurrentLightningEvent } from "./lightning/types.ts";
+import type { CompassDirection } from "./lightning/bearing.ts";
 
 export const ACTIVITY_MAP_MIN_ZOOM = 5;
 export const ACTIVITY_MAP_MAX_ZOOM = 13;
@@ -45,8 +46,21 @@ export interface ActivityPlaceContext {
   offshore: boolean;
 }
 
+export interface ActivityCurrentInput {
+  status: string;
+  events?: readonly CurrentLightningEvent[];
+  windowMinutes?: number;
+  radiusKm?: number;
+  failureStatus?: string;
+  message?: string;
+  diagnostics?: unknown;
+  nearestKm?: number | null;
+  nearestDirection?: CompassDirection | null;
+  nearestAgeMinutes?: number | null;
+}
+
 /** UI-only guards and antimeridian wrapping. API order and summary metrics remain authoritative. */
-export function activityMapData(current: CurrentLightning | undefined, latitude: number, longitude: number): ActivityMapData | null {
+export function activityMapData(current: ActivityCurrentInput | undefined, latitude: number, longitude: number): ActivityMapData | null {
   if (current?.status !== "active" || !isValidCoordinates(latitude, longitude)) return null;
   const events = (current.events ?? []).slice(0, LIVE_CURRENT_EVENT_LIMIT)
     .filter(event => isValidCoordinates(event.latitude, event.longitude) && Number.isFinite(event.observedAtMs))
@@ -106,12 +120,12 @@ export async function lookupActivityPlace(event: CurrentLightningEvent, signal: 
 }
 
 /** The text remains usable independently of the optional place label and map. */
-export function liveActivityView(current: CurrentLightning | undefined, latitude: number, longitude: number,
+export function liveActivityView(current: ActivityCurrentInput | undefined, latitude: number, longitude: number,
   locale: Locale, place: ActivityPlaceContext | null = null) {
   if (current?.status !== "active") return null;
-  const distance = current.nearestKm !== null ? `${formatDistance(current.nearestKm, locale)} km` : null;
+  const distance = typeof current.nearestKm === "number" ? `${formatDistance(current.nearestKm, locale)} km` : null;
   const direction = current.nearestDirection ? directionLabel(locale, current.nearestDirection) : null;
-  const age = current.nearestAgeMinutes !== null ? t(locale, "ageMinutes", { age: Math.max(0, Math.round(current.nearestAgeMinutes)) }) : null;
+  const age = typeof current.nearestAgeMinutes === "number" ? t(locale, "ageMinutes", { age: Math.max(0, Math.round(current.nearestAgeMinutes)) }) : null;
   return { headline: t(locale, "lightningNearby"), placeContext: formatActivityPlace(place, locale),
     nearestLine: distance ? [[distance, direction].filter(Boolean).join(" "), age].filter(Boolean).join(" · ") : null,
     map: activityMapData(current, latitude, longitude) };
