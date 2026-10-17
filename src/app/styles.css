@@ -12,6 +12,7 @@
 .current-hero.risk-elevated,.current-hero.live-elevated{--hero-accent:var(--amber);--hero-soft:var(--amber-soft)}
 .current-hero.risk-high,.current-hero.live-high{--hero-accent:var(--red);--hero-soft:var(--red-soft)}
 .current-hero.live-unavailable{--hero-accent:#7a858b;--hero-soft:#edf0ef}
+.current-hero.live-observing{--hero-accent:#71807b;--hero-soft:#e8eeea}
 .current-hero.live-nearby,.current-hero.live-elevated,.current-hero.live-high{border-color:color-mix(in srgb,var(--hero-accent) 55%,white);box-shadow:inset 4px 0 0 var(--hero-accent),0 8px 24px #13251f0b}
 .current-hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .current-hero-top .eyebrow{margin:0;color:var(--hero-accent)}
