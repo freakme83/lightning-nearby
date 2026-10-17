@@ -1,0 +1,106 @@
+name: Dual-source active-area research test
+run-name: Dual-source active-area test (${{ inputs.duration_minutes }} min)
+
+on:
+  workflow_dispatch:
+    inputs:
+      center_lat:
+        description: Temporary center latitude (-90 to 90)
+        required: true
+        type: string
+      center_lon:
+        description: Temporary center longitude (-180 to 180)
+        required: true
+        type: string
+      radius_km:
+        description: Comparison radius in km (greater than 0, maximum 150)
+        required: true
+        type: string
+        default: "75"
+      duration_minutes:
+        description: Observer duration in minutes (1 to 60)
+        required: true
+        type: string
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Check out merge-ready
+        uses: actions/checkout@v4
+        with:
+          ref: merge-ready
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run isolated dual-source observer
+        id: observer
+        shell: bash
+        env:
+          CENTER_LAT: ${{ inputs.center_lat }}
+          CENTER_LON: ${{ inputs.center_lon }}
+          RADIUS_KM: ${{ inputs.radius_km }}
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          mkdir -p artifacts
+          echo "run_id=${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          set +e
+          npm run research:dual-source-observer -- \
+            "--center-lat=${CENTER_LAT}" \
+            "--center-lon=${CENTER_LON}" \
+            "--radius-km=${RADIUS_KM}" \
+            "--duration=${DURATION_MINUTES}" \
+            > artifacts/dual-source-active-area.jsonl \
+            2> artifacts/dual-source-active-area.stderr.log
+          status=$?
+          printf '%s\n' "$status" > artifacts/observer-exit-code.txt
+          exit "$status"
+
+      - name: Create run summary
+        if: always()
+        shell: bash
+        env:
+          ACTIVE_AREA_CENTER_LAT: ${{ inputs.center_lat }}
+          ACTIVE_AREA_CENTER_LON: ${{ inputs.center_lon }}
+          ACTIVE_AREA_RADIUS_KM: ${{ inputs.radius_km }}
+          ACTIVE_AREA_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          if [ -f artifacts/dual-source-active-area.jsonl ]; then
+            node --experimental-strip-types scripts/research/dual-source-observer/workflow-summary.ts \
+              artifacts/dual-source-active-area.jsonl \
+              artifacts/dual-source-active-area-summary.json \
+              artifacts/dual-source-active-area-summary.md
+          else
+            printf '%s\n' '{"error":"observer did not produce a log"}' > artifacts/dual-source-active-area-summary.json
+            printf '%s\n' '## Dual-source active-area research run' '' '- Observer log was not produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            printf '\n- Requested duration: %s minutes\n' '${{ inputs.duration_minutes }}'
+            printf '\n- Artifact: `dual-source-active-area-%s`\n' "$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload observer output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dual-source-active-area-${{ github.run_id }}
+          path: |
+            artifacts/dual-source-active-area.jsonl
+            artifacts/dual-source-active-area.stderr.log
+            artifacts/dual-source-active-area-summary.json
+            artifacts/dual-source-active-area-summary.md
+            artifacts/observer-exit-code.txt
+          if-no-files-found: warn
+          retention-days: 14
