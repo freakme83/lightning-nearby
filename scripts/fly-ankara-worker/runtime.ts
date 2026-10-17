@@ -26,8 +26,7 @@ import { CG_REPEAT_REASONS, selectedRepeatEventCheck, type CgRepeatReason, type 
 import { CG_REPEAT_POLICY_VERSION, CG_REPEAT_RECOVERY_HOLD_MS } from "../lightning-cg-repeat-policy/constants.ts";
 import { classifyCgPlace, semanticCgLocationIdentity } from "../lightning-cg-repeat-policy/location.ts";
 import { cgProviderTelemetry } from "./telemetry.ts";
-import { DEFAULT_THRESHOLDS, greatCircleDistanceKm } from "../lightning-cg-enrichment/match.ts";
-import type { EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
+import { greatCircleDistanceKm } from "../lightning-cg-enrichment/match.ts";
 import { StormEvolutionShadow } from "./storm-evolution.ts";
 import { resolveOuterDistrict } from "../lightning-outer-district-policy/policy.ts";
 import { RollingCandidateWindowShadow } from "./rolling-candidate-shadow.ts";
@@ -118,27 +117,9 @@ type RuntimeDependencies = {
   notifyPending?: PendingPublicationNotifier;
   notifyAutoPublishFailure?: AutoPublishFailureNotifier;
   autoPublish?: FlyAutoPublish;
-  schedule?: (delayMs: number, callback: () => void) => unknown;
 };
 
-const DELAYED_XWEATHER_RECHECK_DELAY_MS = 3 * 60_000;
-
-type DelayedXweatherRecheckContext = {
-  incidentId: string;
-  publicationRecordId: string;
-  scopeId: string;
-  clusterIds: string[];
-  originalPublicationAtMs: number;
-  recheckScheduledAtMs: number;
-  reference: { latitude: number; longitude: number; eventTimeMs: number };
-  initialProviderStatus: string;
-  initialRawProviderStatus: string;
-  initialCgOutcome: string | null;
-  initialProviderCostTokens: number | null;
-  initialEnrichmentCompletedAtMs: number;
-  locationLabel: string;
-  structuredLocation: EarlierNonCgPublication["structuredLocation"];
-};
+/* Delayed Xweather recheck experiment retired; see docs/delayed-xweather-recheck-retirement.md. */
 
 export class AnkaraFlyPipeline {
   readonly pipeline: LightningClusteringPipeline;
@@ -160,12 +141,6 @@ export class AnkaraFlyPipeline {
   private readonly notifyPending?: PendingPublicationNotifier;
   private readonly notifyAutoPublishFailure?: AutoPublishFailureNotifier;
   private readonly autoPublish?: FlyAutoPublish;
-  private readonly schedule: NonNullable<RuntimeDependencies["schedule"]>;
-  private readonly delayedRecheckWork = new Set<Promise<void>>();
-  private readonly delayedRecheckPublicationIds = new Set<string>();
-  private readonly delayedXweatherRechecks = { scheduled: 0, executed: 0, cgVerified: 0, noMatch: 0,
-    icOnly: 0, providerUnavailable: 0, other: 0, providerCostTokensTotal: 0,
-    changedToAcceptedCg: 0, likelyProviderLatencyRecoveries: 0 };
   private staleCandidateCount = 0;
   private candidateCount = 0;
   private pendingCount = 0;
@@ -199,11 +174,6 @@ export class AnkaraFlyPipeline {
     this.notifyPending = dependencies.notifyPending;
     this.notifyAutoPublishFailure = dependencies.notifyAutoPublishFailure;
     this.autoPublish = dependencies.autoPublish;
-    this.schedule = dependencies.schedule ?? ((delayMs, callback) => {
-      const timer = setTimeout(callback, delayMs);
-      timer.unref?.();
-      return timer;
-    });
     const startedAt = this.now();
     this.repeatReadyAtMs = startedAt + CG_REPEAT_RECOVERY_HOLD_MS;
     this.pipeline = new LightningClusteringPipeline(ANKARA_MONITORING_AREA.bounds,
@@ -330,7 +300,6 @@ export class AnkaraFlyPipeline {
         admissionsAccepted: this.cgAdmissionsAccepted,
         firstCgShadowOpportunities: this.firstCgShadowOpportunities, firstCgShadowEligible: this.firstCgShadowEligible },
       outerDistrictNonCgPublication: { ...this.outerDistrictNonCgPublication },
-      delayedXweatherRechecks: { ...this.delayedXweatherRechecks },
       stormEvolution: { ...this.stormEvolution.counters, inFlightLookups: this.stormEvolutionWork.size },
       neighborSupportedSparseActivity: { ...this.neighborSupportedSparseCounters },
       rollingCandidateShadow: { ...this.rollingCandidateShadow.counters },
@@ -344,7 +313,6 @@ export class AnkaraFlyPipeline {
     await this.repeatProbes.drain();
     await this.processingQueue;
     await Promise.all([...this.stormEvolutionWork.values()]);
-    await Promise.all([...this.delayedRecheckWork]);
   }
 
   private applyHealthTransition(transition: ReturnType<SourceHealthTracker["frame"]>): void {
@@ -725,29 +693,7 @@ export class AnkaraFlyPipeline {
             rawType: normalized.rawType ?? null,
           } : null,
         });
-        const scheduledFromMs = Date.parse(ledgerRecordedAt);
-        const initialCgDiagnostics = publicationArtifact.enrichment.initialCgDiagnostics;
-        this.scheduleDelayedXweatherRecheck({
-          incidentId, publicationRecordId: result.ledger.persistedPublicationId,
-          scopeId: this.repeatScopeId(incidentId),
-          clusterIds: this.lifecycle.incidents.find(item => item.id === incidentId)?.sourceClusterIds ?? [],
-          originalPublicationAtMs: scheduledFromMs,
-          recheckScheduledAtMs: scheduledFromMs + DELAYED_XWEATHER_RECHECK_DELAY_MS,
-          reference: { latitude: pairedIncident.latitude, longitude: pairedIncident.longitude,
-            eventTimeMs: pairedIncident.eventTimeMs },
-          initialProviderStatus: publicationArtifact.enrichment.status,
-          initialRawProviderStatus: artifact.enrichment.status,
-          initialCgOutcome: initialCgDiagnostics?.outcome ?? null,
-          initialProviderCostTokens: artifact.enrichment.cost?.tokens ?? null,
-          initialEnrichmentCompletedAtMs: Date.parse(artifact.capturedAt),
-          locationLabel: result.message.locationDisplayLabel,
-          structuredLocation: normalized ? {
-            neighborhood: normalized.neighborhood ?? null, locality: normalized.locality ?? null,
-            localityKind: normalized.localityKind ?? null, district: normalized.district ?? null,
-            province: normalized.province ?? null, country: normalized.country ?? null,
-            rawType: normalized.rawType ?? null,
-          } : null,
-        });
+
       }
       const repeatPlace = result.location && "normalized" in result.location ? {
         ...result.location.normalized, providerAddress: result.location.providerAddress } : null;
@@ -983,101 +929,7 @@ export class AnkaraFlyPipeline {
     } finally { this.candidateWork.delete(probe.incident.id); this.repeatInFlight.delete(probe.incident.id); }
   }
 
-  private scheduleDelayedXweatherRecheck(context: DelayedXweatherRecheckContext): void {
-    if (this.delayedRecheckPublicationIds.has(context.publicationRecordId)) return;
-    this.delayedRecheckPublicationIds.add(context.publicationRecordId);
-    this.delayedXweatherRechecks.scheduled++;
-    const delayMs = Math.max(0, context.recheckScheduledAtMs - this.now());
-    this.schedule(delayMs, () => {
-      const work = this.runDelayedXweatherRecheck(context);
-      this.delayedRecheckWork.add(work);
-      void work.then(() => this.delayedRecheckWork.delete(work), () => this.delayedRecheckWork.delete(work));
-    });
-  }
 
-  private async runDelayedXweatherRecheck(context: DelayedXweatherRecheckContext): Promise<void> {
-    const evaluationAtMs = this.now();
-    this.delayedXweatherRechecks.executed++;
-    let raw: EnrichmentResult;
-    try {
-      raw = await (this.enrich ?? (reference => enrichInitialIncidentWithLightningType(reference, { now: this.now })))
-        (context.reference);
-    } catch {
-      raw = { status: "provider_unavailable", provider: "xweather", reference: context.reference,
-        thresholds: { ...DEFAULT_THRESHOLDS }, failure: "network_error" };
-    }
-    const assessed = enforceInitialCgAcceptance(raw, evaluationAtMs);
-    const diagnostics = assessed.initialCgDiagnostics;
-    const accepted = assessed.status === "cg_verified" && diagnostics?.outcome === "accepted";
-    const providerCostTokens = typeof raw.cost?.tokens === "number" && Number.isFinite(raw.cost.tokens)
-      ? raw.cost.tokens : null;
-    if (providerCostTokens !== null) this.delayedXweatherRechecks.providerCostTokensTotal += providerCostTokens;
-    if (assessed.status === "cg_verified") this.delayedXweatherRechecks.cgVerified++;
-    else if (assessed.status === "no_match") this.delayedXweatherRechecks.noMatch++;
-    else if (assessed.status === "ic_only") this.delayedXweatherRechecks.icOnly++;
-    else if (assessed.status === "provider_unavailable") this.delayedXweatherRechecks.providerUnavailable++;
-    else this.delayedXweatherRechecks.other++;
-
-    const selectedEventTimeMs = accepted ? diagnostics?.selectedEventTimeMs ?? null : null;
-    const selectedLatitude = accepted ? diagnostics?.selectedLatitude ?? null : null;
-    const selectedLongitude = accepted ? diagnostics?.selectedLongitude ?? null : null;
-    const publicationToEvaluationSeconds = (evaluationAtMs - context.originalPublicationAtMs) / 1000;
-    const publicationToCgEventSeconds = selectedEventTimeMs === null ? null :
-      (selectedEventTimeMs - context.originalPublicationAtMs) / 1000;
-    const publicationToCgDistanceKm = selectedLatitude === null || selectedLongitude === null ? null :
-      greatCircleDistanceKm({ latitude: context.reference.latitude, longitude: context.reference.longitude },
-        { ...context.reference, latitude: selectedLatitude, longitude: selectedLongitude });
-    const changedToAcceptedCg = accepted && context.initialCgOutcome !== "accepted";
-    // The initial request start time is not retained. This comparison uses its completion timestamp
-    // as a conservative proxy: an event timestamp before completion points to provider/reporting latency.
-    const likelyProviderLatencyRecovery = selectedEventTimeMs !== null &&
-      selectedEventTimeMs <= context.initialEnrichmentCompletedAtMs;
-    if (changedToAcceptedCg) this.delayedXweatherRechecks.changedToAcceptedCg++;
-    if (likelyProviderLatencyRecovery) this.delayedXweatherRechecks.likelyProviderLatencyRecoveries++;
-
-    this.emit("delayed_xweather_recheck_shadow", {
-      incidentId: context.incidentId, publicationRecordId: context.publicationRecordId,
-      scopeId: context.scopeId, clusterIds: context.clusterIds,
-      originalPublicationAt: new Date(context.originalPublicationAtMs).toISOString(),
-      recheckScheduledAt: new Date(context.recheckScheduledAtMs).toISOString(),
-      evaluationAt: new Date(evaluationAtMs).toISOString(), evaluationAtMs,
-      actualDelaySeconds: publicationToEvaluationSeconds,
-      scheduleDriftSeconds: (evaluationAtMs - context.recheckScheduledAtMs) / 1000,
-      originalEventKind: "#ŞİMŞEK", initialProviderStatus: context.initialProviderStatus,
-      initialRawProviderStatus: context.initialRawProviderStatus, initialCgOutcome: context.initialCgOutcome,
-      initialReferenceTimeMs: context.reference.eventTimeMs,
-      initialReferenceLatitude: context.reference.latitude, initialReferenceLongitude: context.reference.longitude,
-      initialEnrichmentCompletedAtMs: context.initialEnrichmentCompletedAtMs,
-      originalLocationLabel: context.locationLabel, originalStructuredLocation: context.structuredLocation,
-      initialProviderCostTokens: context.initialProviderCostTokens,
-      delayedProviderStatus: raw.status, delayedEnrichmentStatus: assessed.status,
-      delayedCgOutcome: diagnostics?.outcome ?? null,
-      selectedProviderEventId: accepted ? diagnostics?.selectedProviderEventId ?? null : null,
-      selectedCgEventTimeMs: selectedEventTimeMs, selectedLatitude, selectedLongitude,
-      selectedProviderAgeMs: accepted ? diagnostics?.selectedProviderAgeMs ?? null :
-        diagnostics?.evaluatedProviderAgeMs ?? null,
-      referenceTimeDeltaMs: accepted ? diagnostics?.selectedReferenceDeltaMs ?? null :
-        diagnostics?.evaluatedReferenceDeltaMs ?? null,
-      selectedDistanceKm: accepted ? diagnostics?.selectedDistanceKm ?? null : null,
-      evaluatedProviderEventId: diagnostics?.evaluatedProviderEventId ?? null,
-      evaluatedDistanceKm: diagnostics?.evaluatedDistanceKm ?? null,
-      evaluatedReferenceTimeDeltaMs: diagnostics?.evaluatedReferenceDeltaMs ?? null,
-      evaluatedProviderAgeMs: diagnostics?.evaluatedProviderAgeMs ?? null,
-      matchDiagnostics: raw.matchDiagnostics ?? null,
-      rejectionReason: diagnostics?.outcome === "accepted" ? null : diagnostics?.outcome ?? raw.failure ?? null,
-      providerCostTokens,
-      comparison: {
-        initialPublicationToDelayedEvaluationSeconds: publicationToEvaluationSeconds,
-        initialPublicationToSelectedCgEventSeconds: publicationToCgEventSeconds,
-        originalPublicationCoordinatesToSelectedCgDistanceKm: publicationToCgDistanceKm,
-        delayedResultChangedFromNoAcceptedCg: changedToAcceptedCg,
-        wouldSatisfyCurrentInitialCgAssociation: accepted,
-        likelyProviderLatencyRecovery,
-        selectedCgEventOccurredAfterInitialEnrichmentCompleted: selectedEventTimeMs === null ? null :
-          selectedEventTimeMs > context.initialEnrichmentCompletedAtMs,
-      },
-    });
-  }
 }
 
 
