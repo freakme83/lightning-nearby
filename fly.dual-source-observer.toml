@@ -12,6 +12,13 @@ kill_timeout = "30s"
 [processes]
   observer = "node --experimental-strip-types scripts/research/dual-source-observer/runner.ts"
 
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  processes = ["observer"]
+
 [vm]
   cpu_kind = "shared"
   cpus = 1

@@ -17,6 +17,22 @@ Both inputs are telemetry-only inside this process. They do not call the product
 
 Only events inside the unchanged Ankara monitoring polygon receive per-event logs and enter matching. All parsed deliveries, including outside-polygon deliveries, remain visible in source summary counts. No wider publication or observation area is introduced.
 
+## Experimental recent Blitz API (PR-A)
+
+The same observer's **existing single Blitz WebSocket** also fills a separate, in-memory recent-event cache after decoding/normalization and before the Ankara comparison filter. Live2 deliveries never enter this cache. It retains Blitz deliveries received within 15 minutes and at most 10,000 events, pruning on insertion and read. The cap bounds a broad/global feed even in heavy activity. No additional Blitz query, geographic request, connection, polling, archive access, persistence, or provider forwarding occurs. Cache failures are contained to observer error logs; matching keeps its existing behavior.
+
+The observer serves only `GET /health` and `GET /recent` on `0.0.0.0:${PORT:-8080}`. `/health` returns `{ "ok": true, "observer": "dual_source_shadow" }`, which checks this API process only, not source connectivity. `/recent` requires the `X-Observer-Token` header matching the `OBSERVER_API_TOKEN` environment variable. If the variable is missing, it fails closed with 503; incorrect/missing headers return 401. Set this token as a Fly secret **only after separate deployment approval**; never put it in the Fly TOML or logs. The Fly HTTP service uses HTTPS and does not auto-stop the long-running observer. No secret is created or deployment performed by this PR.
+
+Example local request after starting `PORT=8080 OBSERVER_API_TOKEN=<local-token> npm run research:dual-source-observer`:
+
+```sh
+curl -H 'X-Observer-Token: <local-token>' 'http://127.0.0.1:8080/recent?lat=39.92&lon=32.85&radiusKm=100&windowMinutes=15'
+```
+
+Exactly four finite numeric parameters are required: latitude `[-90, 90]`, longitude `[-180, 180]`, radiusKm `(0, 250]`, and windowMinutes `(0, 15]`. Invalid, duplicate, missing, or extra parameters return 400. All radius filtering uses the observer's existing Haversine helper locally. The requested event-time window includes its lower boundary and excludes future provider times; cache retention is separately based on receive time. Results sort by descending event time, then descending receipt time, then local observer ID. Requests do not change source state and are not logged per read.
+
+The successful response is `{ "ok": true, "source": "blitzortung", "fetchedAt": <epoch ms>, "query": { "latitude": ..., "longitude": ..., "radiusKm": ..., "windowMinutes": ... }, "events": [...] }`. Each event has `observerEventId`, `sourceServer`, `eventTimeMs`, `receivedAtMs`, `latitude`, `longitude`, `latencyMs`, `transportComparisonEligible`, and locally computed `distanceKm`. Counts are deliveries, not unique strikes. Raw negative latency remains visible. This experimental API is not a production or public UI contract. A future PWA adapter must consume **our endpoint**, never open a browser connection to Blitz; the PWA and `/api/lightning/live` are unchanged in this PR. Blitz raw-feed permission/redistribution constraints remain unresolved.
+
 ## Safety and bounded memory
 
 PR108's 16,384-character encoded-frame guard and precision-safe Blitz timestamp handling remain in use. The decoder additionally stops at 262,144 decoded characters or 131,072 cumulative LZW dictionary characters. These are generous protections relative to the few-KB strike payload scale, not protocol interpretation.
@@ -90,7 +106,7 @@ Stop only the observer, without touching production live2:
 fly scale count observer=0 --app lightning-nearby-dual-source-shadow
 ```
 
-No secrets, volume, Supabase table, Telegram token, Xweather key, or publisher credential is required or read.
+The optional `/recent` API requires `OBSERVER_API_TOKEN` set as an observer-app secret when enabled; without it, the observer still collects source telemetry and `/recent` responds 503. No volume, Supabase table, Telegram token, Xweather key, or publisher credential is required or read.
 
 ## Caveats and later evaluation
 

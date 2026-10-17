@@ -229,7 +229,10 @@ export class ObserverSourceState {
   }
 }
 
-export function haversineDistanceKm(left: ObserverEvent, right: ObserverEvent): number {
+export function haversineDistanceKm(
+  left: Pick<ObserverEvent, "latitude" | "longitude">,
+  right: Pick<ObserverEvent, "latitude" | "longitude">,
+): number {
   const radians = (degrees: number) => degrees * Math.PI / 180;
   const lat1 = radians(left.latitude);
   const lat2 = radians(right.latitude);

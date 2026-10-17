@@ -23,6 +23,8 @@ import {
   type ObserverEvent,
   type ObserverSource,
 } from "./core.ts";
+import { createObserverHttpServer, OBSERVER_API_DEFAULT_PORT } from "./http-api.ts";
+import { BlitzRecentEventCache } from "./recent-cache.ts";
 import { ObserverSocketOwnership, runResilientSourceLoop } from "./runtime.ts";
 
 const LIVE2_ENDPOINT = "wss://live2.lightningmaps.org/";
@@ -55,6 +57,8 @@ const live2State = new ObserverSourceState("live2", startedAtMs);
 const blitzState = new ObserverSourceState("blitzortung", startedAtMs);
 const live2Sockets = new ObserverSocketOwnership<ObserverSocket>();
 const blitzSockets = new ObserverSocketOwnership<ObserverSocket>();
+const blitzRecentCache = new BlitzRecentEventCache();
+const httpServer = createObserverHttpServer(blitzRecentCache, process.env.OBSERVER_API_TOKEN);
 let live2Sequence = 0;
 let blitzSequence = 0;
 let blitzServerIndex = 0;
@@ -313,6 +317,11 @@ function handleBlitzFrame(data: unknown, receivedAtMs: number, sourceServer: Bli
   }
   const event = normalizeBlitzObserverEvent(result.event, `blitzortung-${++blitzSequence}`);
   blitzState.event(event);
+  try {
+    blitzRecentCache.insert(event, receivedAtMs);
+  } catch (error) {
+    emit("dual_source_error", { source: "blitzortung", sourceServer, stage: "recent_cache", reason: errorName(error) });
+  }
   observeLocalEvent(event, { encodedChars, decodedChars: result.decodedChars });
 }
 
@@ -353,6 +362,7 @@ function stop(reason: "SIGINT" | "SIGTERM"): void {
   stopping = true;
   emit("dual_source_source_connection", { sources: ["live2", "blitzortung"], action: "stopping", reason });
   controller.abort(reason);
+  if (httpServer.listening) httpServer.close();
 }
 
 process.once("SIGINT", () => stop("SIGINT"));
@@ -363,6 +373,20 @@ finalizationTimer.unref();
 const summaryTimer = setInterval(() => emitSummary("periodic"), SUMMARY_EVERY_MS);
 summaryTimer.unref();
 windows.touch(startedAtMs);
+
+httpServer.on("error", error => emit("dual_source_error", {
+  source: "blitzortung", sourceServer: null, stage: "http_server", reason: errorName(error),
+}));
+const httpPort = Number(process.env.PORT ?? OBSERVER_API_DEFAULT_PORT);
+if (Number.isInteger(httpPort) && httpPort > 0 && httpPort <= 65_535) {
+  try {
+    httpServer.listen(httpPort, "0.0.0.0");
+  } catch (error) {
+    emit("dual_source_error", { source: "blitzortung", sourceServer: null, stage: "http_listen", reason: errorName(error) });
+  }
+} else {
+  emit("dual_source_error", { source: "blitzortung", sourceServer: null, stage: "http_port", reason: "invalid PORT" });
+}
 
 emit("dual_source_observer_start", {
   sources: ["live2", "blitzortung"],
@@ -439,6 +463,7 @@ const blitzLoop = runResilientSourceLoop({
 try {
   await Promise.all([live2Loop, blitzLoop]);
 } finally {
+  if (httpServer.listening) httpServer.close();
   clearInterval(finalizationTimer);
   clearInterval(summaryTimer);
   for (const result of matcher.finalizeAll()) emitFinalization(result);
