@@ -2,6 +2,7 @@ import { haversineDistanceKm, type ObserverEvent } from "./core.ts";
 
 export const BLITZ_RECENT_EVENT_RETENTION_MS = 15 * 60_000;
 export const BLITZ_RECENT_EVENT_MAX_EVENTS = 10_000;
+export const MAX_COVERAGE_RECONNECT_GAP_MS = 30_000;
 export const MAX_RECENT_RADIUS_KM = 250;
 export const MAX_RECENT_WINDOW_MINUTES = 15;
 
@@ -25,6 +26,8 @@ export class BlitzRecentEventCache {
   private events: RecentBlitzEvent[] = [];
   private coverageBoundaryMs: number;
   private observationActive = false;
+  private hasObservedConnection = false;
+  private disconnectedAtMs: number | null = null;
   private latestEvictedEventTimeMs: number | null = null;
 
   constructor(startedAtMs: number = Date.now()) {
@@ -32,10 +35,20 @@ export class BlitzRecentEventCache {
   }
 
   setObservationActive(active: boolean, atMs: number): void {
-    this.observationActive = active;
-    // A reconnect starts a new continuous-coverage interval. A disconnect
-    // also moves the boundary forward while preventing any complete claim.
-    this.coverageBoundaryMs = atMs;
+    if (!active) {
+      if (this.observationActive || this.disconnectedAtMs === null) this.disconnectedAtMs = atMs;
+      this.observationActive = false;
+      return;
+    }
+
+    if (this.observationActive) return;
+    const reconnectGapMs = this.disconnectedAtMs === null ? null : atMs - this.disconnectedAtMs;
+    const tolerableReconnect = this.hasObservedConnection && reconnectGapMs !== null &&
+      reconnectGapMs >= 0 && reconnectGapMs <= MAX_COVERAGE_RECONNECT_GAP_MS;
+    if (!tolerableReconnect) this.coverageBoundaryMs = atMs;
+    this.hasObservedConnection = true;
+    this.observationActive = true;
+    this.disconnectedAtMs = null;
   }
 
   insert(event: ObserverEvent, nowMs: number = Date.now()): void {

@@ -4,6 +4,7 @@ import { haversineDistanceKm, type ObserverEvent } from "./core.ts";
 import {
   BLITZ_RECENT_EVENT_MAX_EVENTS,
   BLITZ_RECENT_EVENT_RETENTION_MS,
+  MAX_COVERAGE_RECONNECT_GAP_MS,
   BlitzRecentEventCache,
   type RecentQuery,
 } from "./recent-cache.ts";
@@ -76,6 +77,83 @@ test("disconnected observer cannot claim complete coverage after its prior inter
   cache.setObservationActive(true, startedAt);
   cache.setObservationActive(false, NOW - 1_000);
   assert.equal(cache.coverage(1, NOW).complete, false);
+});
+
+test("short reconnect restores previously complete coverage without changing event results", () => {
+  const startedAt = NOW - 5 * 60_000;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  cache.insert(event("cached", { eventTimeMs: NOW - 30_000 }), NOW);
+  const eventsBeforeGap = cache.query({ ...QUERY, windowMinutes: 5 }, NOW);
+  assert.equal(cache.coverage(5, NOW).complete, true);
+
+  cache.setObservationActive(false, NOW);
+  assert.equal(cache.coverage(5, NOW + 1).complete, false);
+  cache.setObservationActive(true, NOW + 10_000);
+  const after = cache.coverage(5, NOW + 10_000);
+  assert.equal(after.complete, true);
+  assert.equal(after.coverageStartMs, Math.max(startedAt, NOW + 10_000 - BLITZ_RECENT_EVENT_RETENTION_MS));
+  assert.deepEqual(cache.query({ ...QUERY, windowMinutes: 5 }, NOW + 10_000).map(item => item.observerEventId),
+    eventsBeforeGap.map(item => item.observerEventId));
+});
+
+test("reconnect gap exactly at the inclusive threshold preserves the prior boundary", () => {
+  const startedAt = NOW - 5 * 60_000;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  cache.setObservationActive(false, NOW);
+  cache.setObservationActive(true, NOW + MAX_COVERAGE_RECONNECT_GAP_MS);
+  const coverage = cache.coverage(5, NOW + MAX_COVERAGE_RECONNECT_GAP_MS);
+  assert.equal(coverage.complete, true);
+  assert.equal(coverage.coverageStartMs, startedAt);
+});
+
+test("reconnect gap just over threshold starts a new coverage interval", () => {
+  const startedAt = NOW - 5 * 60_000;
+  const reconnectAt = NOW + MAX_COVERAGE_RECONNECT_GAP_MS + 1;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  cache.setObservationActive(false, NOW);
+  cache.setObservationActive(true, reconnectAt);
+  const coverage = cache.coverage(1, reconnectAt);
+  assert.equal(coverage.complete, false);
+  assert.equal(coverage.coverageStartMs, reconnectAt);
+});
+
+test("repeated short reconnects keep the original continuous coverage boundary", () => {
+  const startedAt = NOW - 5 * 60_000;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  for (const disconnectedAt of [NOW, NOW + 10_000, NOW + 20_000]) {
+    cache.setObservationActive(false, disconnectedAt);
+    cache.setObservationActive(true, disconnectedAt + MAX_COVERAGE_RECONNECT_GAP_MS);
+  }
+  const now = NOW + 20_000 + MAX_COVERAGE_RECONNECT_GAP_MS;
+  const coverage = cache.coverage(5, now);
+  assert.equal(coverage.complete, true);
+  assert.equal(coverage.coverageStartMs, startedAt);
+});
+
+test("short reconnect tolerance does not override capacity or retention eviction", () => {
+  const startedAt = NOW - BLITZ_RECENT_EVENT_RETENTION_MS;
+  const capped = new BlitzRecentEventCache(startedAt);
+  capped.setObservationActive(true, startedAt);
+  for (let i = 0; i <= BLITZ_RECENT_EVENT_MAX_EVENTS; i++) {
+    capped.insert(event(`capped-${i}`, { eventTimeMs: NOW - 30_000 }), NOW);
+  }
+  capped.setObservationActive(false, NOW);
+  capped.setObservationActive(true, NOW + 1_000);
+  assert.equal(capped.coverage(1, NOW + 1_000).complete, false);
+
+  const retained = new BlitzRecentEventCache(NOW - 10 * 60_000);
+  retained.setObservationActive(true, NOW - 10 * 60_000);
+  retained.insert(event("retention-evicted", {
+    receivedAtMs: NOW - BLITZ_RECENT_EVENT_RETENTION_MS - 1,
+    eventTimeMs: NOW - 60_000,
+  }), NOW);
+  retained.setObservationActive(false, NOW);
+  retained.setObservationActive(true, NOW + 1_000);
+  assert.equal(retained.coverage(5, NOW + 1_000).complete, false);
 });
 
 test("retention expiry, event-time window, and hard event cap are independent", () => {
