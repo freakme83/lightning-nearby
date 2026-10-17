@@ -4,7 +4,7 @@ import test from "node:test";
 import { activityMapData } from "./live-activity.ts";
 import { EMPTY_PROVIDER_DIAGNOSTICS, type LiveLightningApiResult } from "./lightning/types.ts";
 import type { BlitzExperimentalResult } from "./lightning/blitz-experimental.ts";
-import { developerLiveMode, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, type LiveLightningSource } from "./live-lightning-presentation.ts";
+import { canStartLiveSourceRequest, developerLiveMode, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, type LiveLightningSource } from "./live-lightning-presentation.ts";
 
 const event = { observedAtMs: 1_790_000_000_000, latitude: 39.93, longitude: 32.85, type: "unknown" as const };
 function blitz(status: "active" | "clear" | "unknown", events = status === "active" ? [event] : [], recentStatus: "active" | "clear" | "unknown" = "clear"): BlitzExperimentalResult {
@@ -84,6 +84,33 @@ test("source switch invalidates pending requests from either provider", () => {
   assert.equal(isCurrentSourceRequest(1, 1, "xweather", "xweather", "1,2", "1,2", signal), true);
   const aborted = new AbortController(); aborted.abort();
   assert.equal(isCurrentSourceRequest(1, 1, "xweather", "xweather", "1,2", "1,2", aborted.signal), false);
+});
+
+test("explicit automatic source can only start while it remains selected", () => {
+  assert.equal(canStartLiveSourceRequest("xweather", "blitz-experimental"), false);
+  assert.equal(canStartLiveSourceRequest("blitz-experimental", "xweather"), false);
+  assert.equal(canStartLiveSourceRequest("xweather", "xweather"), true);
+  assert.equal(canStartLiveSourceRequest(undefined, "xweather"), true);
+  assert.equal(canStartLiveSourceRequest(undefined, "blitz-experimental"), true);
+});
+
+test("controller cleanup ownership cannot match an older request after replacement", () => {
+  const oldRequest = new AbortController();
+  const newRequest = new AbortController();
+  assert.equal(ownsLiveRequestController(oldRequest, oldRequest), true);
+  assert.equal(ownsLiveRequestController(newRequest, oldRequest), false);
+  assert.equal(ownsLiveRequestController(newRequest, newRequest), true);
+});
+
+test("LiveObservation guards explicit starts before side effects and cleans up by controller identity", () => {
+  const component = readFileSync(new URL("../app/live-observation.tsx", import.meta.url), "utf8");
+  const check = component.slice(component.indexOf("const checkActivity"), component.indexOf("const changeSource"));
+  assert.match(check, /const checkActivity = useCallback\(async \(automaticSource\?: LiveLightningSource\) => \{\s*if \(!canStartLiveSourceRequest\(automaticSource, sourceRef\.current\)\) return;/);
+  assert.ok(check.indexOf("canStartLiveSourceRequest") < check.indexOf("new AbortController()"));
+  assert.ok(check.indexOf("canStartLiveSourceRequest") < check.indexOf("setLoading(true)"));
+  assert.ok(check.indexOf("canStartLiveSourceRequest") < check.indexOf("setResult(null)"));
+  assert.match(check, /finally \{\s*if \(ownsLiveRequestController\(controller\.current, active\)\) \{\s*controller\.current = null;\s*setLoading\(false\);/);
+  assert.match(check, /if \(!isCurrent\(\)\) return;[\s\S]*setResult\(presentation\)/);
 });
 
 test("client selector is gated and client code has no observer credentials, host, or direct socket", () => {
