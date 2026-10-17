@@ -14,7 +14,7 @@ export type IncidentPolicyProfile = {
 export const INCIDENT_POLICY_PROFILES: IncidentPolicyProfile[] = [
   { id: "A", name: "permissive", promotionMinEvents: 2, promotionWindowMinutes: 5,
     closeAfterMinutes: 20, activeAssociationDistanceKm: 10, nearbyCooldownDistanceKm: 10, nearbyCooldownMinutes: 0 },
-  { id: "B", name: "moderate", promotionMinEvents: 2, promotionWindowMinutes: 10,
+  { id: "B", name: "moderate", promotionMinEvents: 3, promotionWindowMinutes: 10,
     closeAfterMinutes: 20, activeAssociationDistanceKm: 10, nearbyCooldownDistanceKm: 10, nearbyCooldownMinutes: 20 },
   { id: "C", name: "conservative", promotionMinEvents: 3, promotionWindowMinutes: 10,
     closeAfterMinutes: 30, activeAssociationDistanceKm: 10, nearbyCooldownDistanceKm: 10, nearbyCooldownMinutes: 30 },

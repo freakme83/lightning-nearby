@@ -166,7 +166,6 @@ export class AnkaraFlyPipeline {
   private readonly delayedXweatherRechecks = { scheduled: 0, executed: 0, cgVerified: 0, noMatch: 0,
     icOnly: 0, providerUnavailable: 0, other: 0, providerCostTokensTotal: 0,
     changedToAcceptedCg: 0, likelyProviderLatencyRecoveries: 0 };
-  private outOfBoundsDebugCount = 0;
   private staleCandidateCount = 0;
   private candidateCount = 0;
   private pendingCount = 0;
@@ -253,21 +252,7 @@ export class AnkaraFlyPipeline {
   acceptEvent(event: LightningEvent, processingTimeMs = this.now()) {
     const accepted = this.pipeline.accept(event, processingTimeMs);
     if (!accepted.unique) return accepted;
-    if (!accepted.insideSubscriptionBox) {
-      this.outOfBoundsDebugCount++;
-      if (this.outOfBoundsDebugCount <= 5 || this.outOfBoundsDebugCount % 100 === 0) {
-        this.emit("out_of_bounds_event", {
-          eventTimestamp: new Date(event.eventTimeMs).toISOString(),
-          latitude: event.latitude,
-          longitude: event.longitude,
-          insideSubscriptionBounds: false,
-          approximateDistanceToSubscriptionBoundsKm: distanceToBoundsKm(event.latitude, event.longitude,
-            ANKARA_MONITORING_AREA.bounds),
-          debugSample: this.outOfBoundsDebugCount,
-        });
-      }
-      return accepted;
-    }
+    if (!accepted.insideSubscriptionBox) return accepted;
     if (!accepted.insideMonitoringArea || !accepted.clusterId || accepted.freshness !== "fresh") return accepted;
     const observation = {
       sourceClusterId: accepted.clusterId,
@@ -1093,14 +1078,6 @@ export class AnkaraFlyPipeline {
       },
     });
   }
-}
-
-function distanceToBoundsKm(latitude: number, longitude: number, bounds: typeof ANKARA_MONITORING_AREA.bounds): number {
-  const latGap = latitude < bounds.south ? bounds.south - latitude : latitude > bounds.north ? latitude - bounds.north : 0;
-  const lonGap = longitude < bounds.west ? bounds.west - longitude : longitude > bounds.east ? longitude - bounds.east : 0;
-  const northSouthKm = latGap * 111.32;
-  const eastWestKm = lonGap * 111.32 * Math.cos(latitude * Math.PI / 180);
-  return Math.round(Math.hypot(northSouthKm, eastWestKm) * 10) / 10;
 }
 
 export const FLY_PIPELINE_FRESHNESS_LIMIT_MS = MAX_PAIRING_INCIDENT_AGE_MS;

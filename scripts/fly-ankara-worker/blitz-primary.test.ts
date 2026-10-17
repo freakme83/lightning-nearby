@@ -8,7 +8,7 @@ import type { LedgerStore } from "../lightning-publication-ledger/storage/supaba
 import { AnkaraFlyPipeline } from "./runtime.ts";
 import { BLITZ_ADMISSION_MAX_LATENCY_MS, BLITZ_EXACT_DEDUP_MAX_ENTRIES,
   BLITZ_EXACT_DEDUP_TTL_MS, BlitzPrimaryAdmission, blitzFingerprint,
-  blitzSourceStillHealthy } from "./blitz-primary.ts";
+  blitzSourceStillHealthy, shouldLogBlitzAdmissionRejection } from "./blitz-primary.ts";
 
 const eventTimeMs = Date.parse("2026-10-09T12:00:00.000Z");
 
@@ -29,13 +29,21 @@ function recorder() {
 
 test("fresh Blitz strike is admitted once; exact repeat is rejected before callback", () => {
   const { guard, admitted, accept } = recorder();
-  assert.equal(guard.admit(strike(), accept), "admitted");
-  assert.equal(guard.admit(strike({ sourceServer: "ws7", receivedAtMs: eventTimeMs + 6_000 }), accept), "duplicate");
+  const logRows: string[] = [];
+  const first = guard.admit(strike(), accept);
+  const duplicate = guard.admit(strike({ sourceServer: "ws7", receivedAtMs: eventTimeMs + 6_000 }), accept);
+  for (const result of [first, duplicate]) {
+    if (shouldLogBlitzAdmissionRejection(result)) logRows.push(result);
+  }
+  assert.equal(first, "admitted");
+  assert.equal(duplicate, "duplicate");
+  assert.deepEqual(logRows, [], "expected exact duplicates are counter-only");
   assert.equal(admitted.length, 1);
   assert.equal(admitted[0].source, "blitzortung");
   assert.equal(admitted[0].dischargeType, "unknown");
   assert.deepEqual(guard.counters, { blitzRawEvents: 2, blitzExactDuplicates: 1,
     blitzRejectedStaleOrFuture: 0, blitzAdmittedEvents: 1 });
+  assert.equal(shouldLogBlitzAdmissionRejection("duplicate"), false);
 });
 
 test("fingerprint distinguishes coordinates, raw event time, and other source identity fields", () => {
@@ -52,12 +60,18 @@ test("fingerprint distinguishes coordinates, raw event time, and other source id
 
 test("freshness is inclusive at 30 seconds and excludes future and older events", () => {
   const { guard, admitted, accept } = recorder();
+  const loggedRejections: string[] = [];
   assert.equal(BLITZ_ADMISSION_MAX_LATENCY_MS, 30_000);
-  assert.equal(guard.admit(strike({ receivedAtMs: eventTimeMs - 1 }), accept), "stale_or_future");
-  assert.equal(guard.admit(strike({ receivedAtMs: eventTimeMs + 30_001 }), accept), "stale_or_future");
+  for (const receivedAtMs of [eventTimeMs - 1, eventTimeMs + 30_001]) {
+    const rejection = guard.admit(strike({ receivedAtMs }), accept);
+    assert.equal(rejection, "stale_or_future");
+    if (shouldLogBlitzAdmissionRejection(rejection)) loggedRejections.push(rejection);
+  }
   assert.equal(guard.admit(strike({ receivedAtMs: eventTimeMs + 30_000 }), accept), "admitted");
   assert.equal(admitted.length, 1);
   assert.equal(guard.counters.blitzRejectedStaleOrFuture, 2);
+  assert.deepEqual(loggedRejections, ["stale_or_future", "stale_or_future"]);
+  assert.equal(shouldLogBlitzAdmissionRejection("stale_or_future"), true);
 });
 
 test("an admitted strike repeated outside freshness stays a duplicate; a future strike can later be admitted", () => {
@@ -97,10 +111,15 @@ test("duplicate does not increase clustering or Profile B event counts", () => {
   guard.admit(strike(), accept);
   const before = runtime.summary(eventTimeMs + 5_000);
   guard.admit(strike({ sourceServer: "ws8", receivedAtMs: eventTimeMs + 5_100 }), accept);
-  const after = runtime.summary(eventTimeMs + 5_100);
+  const after = { ...guard.counters, ...runtime.summary(eventTimeMs + 5_100) };
   assert.equal(after.decoded, before.decoded);
   assert.equal(after.insideMonitoringArea, before.insideMonitoringArea);
   assert.equal(after.candidatesCreated, before.candidatesCreated);
+  assert.equal(after.blitzExactDuplicates, 1);
+  assert.equal(after.blitzRejectedStaleOrFuture, 0);
+  assert.equal(after.blitzAdmittedEvents, 1);
+  assert.equal(after.outsideSubscriptionBox, 0);
+  assert.equal(after.insideSubscriptionBox, 1);
   assert.equal(runtime.lifecycle.incidents[0]?.totalEvents, 1);
 });
 
@@ -114,6 +133,9 @@ test("short Blitz reconnect preserves source health; a real quiet gap does not",
 test("worker admits only Blitz; live2 remains a separate shadow source", async () => {
   const worker = await readFile(path.join(import.meta.dirname, "worker.ts"), "utf8");
   assert.match(worker, /blitzAdmission\.admit\(frame\.event/);
+  assert.match(worker, /shouldLogBlitzAdmissionRejection\(admission\)/);
+  assert.match(worker, /\.\.\.blitzAdmission\.counters/);
+  assert.match(worker, /\.\.\.runtime\.summary\(Date\.now\(\)\)/);
   assert.doesNotMatch(worker, /live2\.lightningmaps\.org|parseFrame\(|subscription\(/);
   assert.equal((worker.match(/runtime\.acceptEvent\(/g) ?? []).length, 1);
   const observer = await readFile(path.join(import.meta.dirname,

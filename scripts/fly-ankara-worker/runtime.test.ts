@@ -1120,21 +1120,26 @@ test("startup validation names missing Fly pipeline settings without revealing v
   });
 });
 
-test("source-health connection transitions remain represented, and out-of-bounds diagnostics do not alter filtering", () => {
+test("source-health logs remain, while out-of-bounds events are counted without individual logs", () => {
   const { runtime, events } = setup();
   runtime.recordFrame(baseNow + 1);
   assert.equal(events.filter(row => row.kind === "source_health" && row.fields?.to === "live").length, 1);
-  const before = { ...runtime.pipeline.counters };
+  const before = runtime.summary(baseNow + 1);
   const outside = event(20, { latitude: 41.5, longitude: 34.2 });
   const accepted = runtime.acceptEvent(outside, baseNow);
   assert.equal(accepted.insideSubscriptionBox, false);
-  assert.equal(runtime.pipeline.counters.outsideSubscriptionBox, before.outsideSubscriptionBox + 1);
-  const diagnostic = events.find(row => row.kind === "out_of_bounds_event");
-  assert.equal(diagnostic?.fields?.insideSubscriptionBounds, false);
-  assert.equal(typeof diagnostic?.fields?.approximateDistanceToSubscriptionBoundsKm, "number");
+  const after = runtime.summary(baseNow + 1);
+  const summaryCounters = ["insideSubscriptionBox", "outsideSubscriptionBox", "insideSubscriptionBoxFresh",
+    "insideSubscriptionBoxStale", "insideSubscriptionBoxFuture", "insideSubscriptionBoxOutsideMonitoringArea",
+    "insideMonitoringArea", "insideMonitoringAreaFresh", "insideMonitoringAreaStale", "insideMonitoringAreaFuture"] as const;
+  for (const key of summaryCounters) {
+    assert.equal(after[key], before[key] + (key === "outsideSubscriptionBox" ? 1 : 0), key);
+  }
+  assert.equal(events.some(row => row.kind === "out_of_bounds_event"), false);
   runtime.recordDisconnected(baseNow + 1);
   assert.equal(runtime.sourceHealth.state.state, "disconnected");
   assert.equal(runtime.sourceHealth.interruptions, 1);
+  assert.equal(events.filter(row => row.kind === "source_health" && row.fields?.to === "disconnected").length, 1);
 });
 
 // Shared mocked transport exercises the actual ledger/approval/dispatch adapters

@@ -18,16 +18,16 @@ function setup() {
   return { engine, policy, feed, apply };
 }
 
-test("expired candidate recovers once on a later rolling two-in-ten window, retaining its ID", () => {
-  const f = setup(); f.apply(f.feed(0));
+test("expired doubleton recovers once on a later rolling three-in-ten window, retaining its ID", () => {
+  const f = setup(); f.apply(f.feed(0)); f.apply(f.feed(9));
   const id = f.engine.incidents[0].id;
   assert.equal(f.engine.tick(start + 10 * minute)[0].type, "candidate_expired");
-  assert.equal(f.engine.incidents[0].totalEvents, 1);
+  assert.equal(f.engine.incidents[0].totalEvents, 2);
   assert.deepEqual(f.feed(12), []);
   const recovered = f.feed(14);
   assert.deepEqual(recovered.map(t => t.type), ["candidate_recovered", "promoted"]);
   assert.equal(recovered[1].incident.id, id);
-  assert.equal(recovered[1].incident.totalEvents, 3, "recovery observation is counted once");
+  assert.equal(recovered[1].incident.totalEvents, 4, "recovery observation is counted once");
   assert.equal(recovered[1].incident.closedAtMs, undefined);
   assert.equal(f.apply(recovered)[0].action, "WOULD_PUBLISH");
   for (const at of [15, 16, 17]) assert.equal(f.apply(f.feed(at))[0].reason, "already_published_active_incident");
@@ -39,9 +39,9 @@ test("expired candidate recovers once on a later rolling two-in-ten window, reta
   assert.equal(f.policy.metrics.publishCandidatesGenerated, 1);
 });
 
-test("continuing singletons outside a rolling two-event window do not recover or churn candidates", () => {
-  const f = setup(); f.feed(0); f.engine.tick(start + 10 * minute);
-  for (const at of [18, 29, 40, 51]) { assert.deepEqual(f.feed(at), []); assert.deepEqual(f.engine.tick(start + at * minute), []); }
+test("continuing doubletons never promote and do not churn expired candidates", () => {
+  const f = setup(); f.feed(0); f.feed(9); f.engine.tick(start + 10 * minute);
+  for (const at of [18, 27, 36, 45]) { assert.deepEqual(f.feed(at), []); assert.deepEqual(f.engine.tick(start + at * minute), []); }
   assert.equal(f.engine.incidents[0].status, "closed");
   assert.equal(f.engine.metrics.incidentCandidatesCreated, 1);
   assert.equal(f.engine.metrics.candidatesExpired, 1);
@@ -50,7 +50,7 @@ test("continuing singletons outside a rolling two-event window do not recover or
 });
 
 test("recovered cluster joins an equivalent active published incident without a second promotion", () => {
-  const f = setup(); f.feed(0); f.engine.tick(start + 10 * minute);
+  const f = setup(); f.feed(0); f.feed(9); f.engine.tick(start + 10 * minute);
   for (const at of [11, 11.01, 11.02]) f.apply(f.feed(at, "published"));
   assert.equal(f.policy.metrics.publishCandidatesGenerated, 1);
   f.feed(12);
@@ -67,7 +67,7 @@ test("recovered cluster joins an equivalent active published incident without a 
 test("recovered promotion still respects nearby cooldown and subsequent suppressed activity", () => {
   const f = setup(); for (const at of [0, 0.01, 0.02]) f.apply(f.feed(at, "published"));
   f.apply(f.engine.tick(start + 21 * minute));
-  f.feed(22); f.engine.tick(start + 32 * minute);
+  f.feed(22); f.feed(31); f.engine.tick(start + 32 * minute);
   f.feed(34);
   assert.equal(f.apply(f.feed(36))[0].reason, "nearby_cooldown");
   assert.equal(f.apply(f.feed(37))[0].reason, "already_active_suppressed_incident");
@@ -84,7 +84,7 @@ test("quiet-closed previously promoted identity remains closed and reports ignor
 });
 
 test("out-of-order recovery observations cannot recreate an old qualifying window", () => {
-  const f = setup(); f.feed(0); f.engine.tick(start + 10 * minute); f.feed(20);
+  const f = setup(); f.feed(0); f.feed(9); f.engine.tick(start + 10 * minute); f.feed(20);
   assert.deepEqual(f.feed(1), []);
   assert.deepEqual(f.feed(2), []);
   assert.equal(f.engine.metrics.candidatesRecovered, 0);
