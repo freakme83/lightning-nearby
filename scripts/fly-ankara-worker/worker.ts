@@ -3,7 +3,8 @@ import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitori
 import { backoffMs } from "../live-lightning-listener/core.ts";
 import { BLITZORTUNG_SERVERS, processBlitzortungFrame,
   type BlitzortungServer } from "../research/blitzortung-probe/protocol.ts";
-import { BLITZ_ADMISSION_MAX_LATENCY_MS, BlitzPrimaryAdmission, blitzSourceStillHealthy } from "./blitz-primary.ts";
+import { BLITZ_ADMISSION_MAX_LATENCY_MS, BlitzPrimaryAdmission, blitzSourceStillHealthy,
+  shouldLogBlitzAdmissionRejection } from "./blitz-primary.ts";
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { createFlyAutoPublish } from "./auto-publish.ts";
@@ -83,7 +84,7 @@ function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   runtime.recordFrame(receivedAt);
   counters.decoded++;
   const admission = blitzAdmission.admit(frame.event, (event, atMs) => { runtime.acceptEvent(event, atMs); });
-  if (admission !== "admitted") emit("blitz_admission_rejected", { reason: admission,
+  if (shouldLogBlitzAdmissionRejection(admission)) emit("blitz_admission_rejected", { reason: admission,
     sourceServer, latencyMs: frame.event.latencyMs });
 }
 

@@ -6,6 +6,10 @@ export const BLITZ_ADMISSION_MAX_LATENCY_MS = 30_000;
 export const BLITZ_EXACT_DEDUP_TTL_MS = 2 * 60_000;
 export const BLITZ_EXACT_DEDUP_MAX_ENTRIES = 10_000;
 
+export function shouldLogBlitzAdmissionRejection(reason: "admitted" | "duplicate" | "stale_or_future"): boolean {
+  return reason === "stale_or_future";
+}
+
 export function blitzSourceStillHealthy(lastFrameAtMs: number | null, nowMs: number, timeoutMs: number): boolean {
   return lastFrameAtMs !== null && nowMs - lastFrameAtMs < timeoutMs;
 }
