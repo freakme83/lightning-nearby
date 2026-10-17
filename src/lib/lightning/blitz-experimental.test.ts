@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { handleBlitzExperimentalRequest, BLITZ_OBSERVER_REQUEST_TIMEOUT_MS } from "./blitz-experimental.ts";
 import { LIVE_CURRENT_EVENT_LIMIT } from "./types.ts";
+import { greatCircleDistanceKm } from "./distance.ts";
 import { POST } from "../../app/api/lightning/blitz-experimental/route.ts";
 
 const baseUrl = "https://observer.example/internal";
@@ -120,6 +121,59 @@ test("invalid event, coverage, query and JSON are malformed, never clear", async
   assert.equal(invalid.body.ok ? "ok" : invalid.body.status, "malformed-response");
   const badCurrent = await handleBlitzExperimentalRequest(location, options(mock(reply(15, 50), reply(5, 40, [{ ...event(), longitude: 181 }]))));
   assert.equal(badCurrent.body.ok ? "ok" : badCurrent.body.status, "malformed-response");
+});
+
+test("event time validation accepts inclusive boundaries and rejects stale or future events", async () => {
+  const lower15 = fetchedAt - 15 * 60_000;
+  const valid = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [event(0, 0, lower15), event(0, 0, fetchedAt)]), reply(5, 40))));
+  assert.equal(valid.body.ok, true);
+  if (valid.body.ok) assert.equal(valid.body.summary.recent.totalDetections, 2);
+
+  const tooOld = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [event(0, 0, lower15 - 1)]), reply(5, 40))));
+  assert.equal(tooOld.body.ok ? "ok" : tooOld.body.status, "malformed-response");
+  const future = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [event(0, 0, fetchedAt + 1)]), reply(5, 40))));
+  assert.equal(future.body.ok ? "ok" : future.body.status, "malformed-response");
+});
+
+test("local great-circle distance enforces the requested radius inclusively", async () => {
+  const longitudeAt50Km = (50 / 6371.0088) * 180 / Math.PI;
+  const exactBoundary = event(0, longitudeAt50Km);
+  exactBoundary.distanceKm = 50;
+  assert.ok(Math.abs(greatCircleDistanceKm(0, 0, 0, longitudeAt50Km) - 50) < 1e-8);
+  const validBoundary = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [exactBoundary]), reply(5, 40))));
+  assert.equal(validBoundary.body.ok, true);
+
+  const justOutside = event(0, ((50 + 2e-8) / 6371.0088) * 180 / Math.PI);
+  justOutside.distanceKm = 50;
+  const invalidBoundary = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [justOutside]), reply(5, 40))));
+  assert.equal(invalidBoundary.body.ok ? "ok" : invalidBoundary.body.status, "malformed-response");
+
+  const upstreamClaimsInside = event(0, 1);
+  upstreamClaimsInside.distanceKm = 1;
+  const invalidClaim = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [upstreamClaimsInside]), reply(5, 40))));
+  assert.equal(invalidClaim.body.ok ? "ok" : invalidClaim.body.status, "malformed-response");
+
+  const smallDisagreement = event(0, 0.09);
+  smallDisagreement.distanceKm = 9.9;
+  const validDisagreement = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [smallDisagreement]), reply(5, 40))));
+  assert.equal(validDisagreement.body.ok, true);
+  if (validDisagreement.body.ok) assert.equal(validDisagreement.body.summary.recent.status, "active");
+});
+
+test("out-of-window recent or current events fail closed instead of producing active", async () => {
+  const recentOnlyBad = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50, [event(0, 0, fetchedAt - 15 * 60_000 - 1)]), reply(5, 40))));
+  assert.equal(recentOnlyBad.body.ok ? "ok" : recentOnlyBad.body.status, "malformed-response");
+  const currentOnlyBad = await handleBlitzExperimentalRequest(location, options(mock(
+    reply(15, 50), reply(5, 40, [event(0, 0, fetchedAt + 1)]))));
+  assert.equal(currentOnlyBad.body.ok ? "ok" : currentOnlyBad.body.status, "malformed-response");
 });
 
 test("upstream auth, 5xx, network failure and timeout are contained without retry", async () => {
