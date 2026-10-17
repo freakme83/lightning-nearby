@@ -6,7 +6,7 @@ import type { BlitzExperimentalResult } from "@/lib/lightning/blitz-experimental
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { liveActivitySegments, liveEventCountCopy, liveSeverityLabel, requestLiveCheck } from "@/lib/live-observation";
 import { activityMapData, liveActivityView, lookupActivityPlace, type ActivityPlaceContext } from "@/lib/live-activity";
-import { isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
+import { canStartLiveSourceRequest, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
 import LiveActivityMap from "./live-activity-map";
 import type { RiskLevel } from "@/lib/weather";
 import { intlLocale, t, type Locale } from "@/lib/i18n";
@@ -79,6 +79,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   }, []);
 
   const checkActivity = useCallback(async (automaticSource?: LiveLightningSource) => {
+    if (!canStartLiveSourceRequest(automaticSource, sourceRef.current)) return;
     if (controller.current && !controller.current.signal.aborted) return;
     const requestedSource = automaticSource ?? sourceRef.current;
     const active = new AbortController();
@@ -137,7 +138,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
       setTopLevelFailure(requestedSource === "xweather");
       setCheckedAt(Date.now());
     } finally {
-      if (isCurrent()) {
+      if (ownsLiveRequestController(controller.current, active)) {
         controller.current = null;
         setLoading(false);
       }
