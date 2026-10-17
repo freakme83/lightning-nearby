@@ -17,7 +17,8 @@ function observation(clusterId: string, eventMs: number, receivedMs = eventMs + 
 function live(engine: IncidentLifecycleEngine, atMs = start) {
   engine.setSourceHealth({ state: "live", lastFrameAtMs: atMs }, atMs);
 }
-function promotion(engine: IncidentLifecycleEngine, id = "c-1", at = start, count = 3, lat = 40, lon = 33) {
+function promotion(engine: IncidentLifecycleEngine, id = "c-1", at = start,
+  count = engine.profile.promotionMinEvents, lat = 40, lon = 33) {
   const out=[];
   for (let i=0;i<count;i++) out.push(...engine.observe(observation(id, at + i * minute, at + i * minute + 1000, lat, lon)));
   return out;
@@ -27,6 +28,7 @@ test("a singleton detection remains a candidate and cannot create a publish deci
   const engine = new IncidentLifecycleEngine(profile(), start); live(engine);
   const transitions=engine.observe(observation("c-1",start));
   const policy=new DryRunPublishPolicy(profile());
+  assert.equal(transitions.some(item=>item.type==="candidate_created"),true);
   assert.equal(transitions.some(item=>item.type==="promoted"),false);
   assert.equal(engine.snapshot().candidates,1);
   assert.equal(policy.metrics.publishCandidatesGenerated,0);
@@ -40,10 +42,35 @@ test("permissive profile promotes two events within five event-time minutes", ()
   assert.equal(engine.snapshot().metrics.incidentsPromoted,1);
 });
 
-test("moderate profile waits for three events in its ten-minute event-time window", () => {
+test("Profile B creates a candidate on the first event and promotes on the second within ten minutes", () => {
   const engine=new IncidentLifecycleEngine(profile(),start); live(engine);
-  assert.equal(promotion(engine,"c-1",start,2).some(item=>item.type==="promoted"),false);
-  assert.equal(engine.observe(observation("c-1",start+2*minute,start+2*minute+1000)).some(item=>item.type==="promoted"),true);
+  const first=engine.observe(observation("c-1",start));
+  assert.equal(first.some(item=>item.type==="candidate_created"),true);
+  assert.equal(first.some(item=>item.type==="promoted"),false);
+  assert.equal(engine.incidents[0].status,"candidate");
+  const second=engine.observe(observation("c-1",start+9*minute,start+9*minute+1000));
+  assert.equal(second.some(item=>item.type==="promoted"),true);
+  assert.equal(engine.incidents[0].totalEvents,2);
+});
+
+test("two Profile B events outside the ten-minute promotion window do not promote", () => {
+  const engine=new IncidentLifecycleEngine(profile(),start); live(engine);
+  engine.observe(observation("c-1",start));
+  const second=engine.observe(observation("c-1",start+10*minute+1,start+10*minute+1001));
+  assert.equal(second.some(item=>item.type==="promoted"),false);
+  assert.equal(engine.incidents[0].status,"candidate");
+  assert.equal(engine.incidents[0].totalEvents,2);
+  assert.equal(engine.incidents[0].eventTimesInPromotionWindow.length,1);
+});
+
+test("Profile A and Profile C promotion thresholds stay unchanged", () => {
+  const profiles=INCIDENT_POLICY_PROFILES;
+  assert.equal(profiles.find(item=>item.id==="A")?.promotionMinEvents,2);
+  assert.equal(profiles.find(item=>item.id==="A")?.promotionWindowMinutes,5);
+  assert.equal(profiles.find(item=>item.id==="B")?.promotionMinEvents,2);
+  assert.equal(profiles.find(item=>item.id==="B")?.promotionWindowMinutes,10);
+  assert.equal(profiles.find(item=>item.id==="C")?.promotionMinEvents,3);
+  assert.equal(profiles.find(item=>item.id==="C")?.promotionWindowMinutes,10);
 });
 
 test("under-threshold candidate expires on its live-source processing-time window", () => {
@@ -103,7 +130,7 @@ test("disconnect freezes closure; reconnect starts a new known-coverage quiet in
 
 test("Profile B counts a nearby renewal within its 20-minute window", () => {
   const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   const transitions=engine.observe(observation("c-new",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,40.01,33));
   assert.equal(transitions.some(item=>item.type==="candidate_created"),true);
@@ -113,7 +140,7 @@ test("Profile B counts a nearby renewal within its 20-minute window", () => {
 
 test("Profile A does not count nearby renewal when its cooldown is zero", () => {
   const p=profile({id:"A",nearbyCooldownMinutes:0}); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   engine.observe(observation("c-new",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,40.01,33));
   assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
@@ -121,7 +148,7 @@ test("Profile A does not count nearby renewal when its cooldown is zero", () => 
 
 test("Profile B does not count nearby renewal after its 20-minute window", () => {
   const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   engine.observe(observation("c-new",first.closedAtMs!+20*minute+1,first.closedAtMs!+20*minute+1001,40.01,33));
   assert.equal(engine.snapshot().metrics.reopenedOrRecreated,0);
@@ -129,7 +156,7 @@ test("Profile B does not count nearby renewal after its 20-minute window", () =>
 
 test("closed incident retention preserves Profile B cooldown and expires only after its boundary", () => {
   const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const old=engine.incidents[0];
   engine.tick(old.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   const closedAt=old.closedAtMs!;
@@ -152,7 +179,7 @@ test("closed lifecycle history remains bounded and protects active and in-flight
   assert.equal(engine.incidents.length,0);
 
   const base=start+4000*minute;
-  promotion(engine,"c-active",base,3);
+  promotion(engine,"c-active",base);
   const active=engine.incidents[0];
   const activeRemoved=engine.pruneClosed(base+60*minute,new Set(),new Set([active.id]));
   assert.deepEqual(activeRemoved,[]);
@@ -169,7 +196,7 @@ test("closed lifecycle history remains bounded and protects active and in-flight
 
 test("Profile C counts nearby renewal within its 30-minute window", () => {
   const p=profile({id:"C",closeAfterMinutes:30,nearbyCooldownMinutes:30}); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   engine.observe(observation("c-new",first.closedAtMs!+25*minute,first.closedAtMs!+25*minute+1000,40.01,33));
   assert.equal(engine.snapshot().metrics.reopenedOrRecreated,1);
@@ -177,7 +204,7 @@ test("Profile C counts nearby renewal within its 30-minute window", () => {
 
 test("a geographically distant renewal does not increment reopenedOrRecreated", () => {
   const p=profile(); const engine=new IncidentLifecycleEngine(p,start); live(engine);
-  promotion(engine,"c-old",start,3);
+  promotion(engine,"c-old",start);
   const first=engine.incidents[0]; engine.tick(first.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   engine.observe(observation("c-far",first.closedAtMs!+5*minute,first.closedAtMs!+5*minute+1000,42,33));
   engine.observe(observation("c-far-later",first.closedAtMs!+25*minute,first.closedAtMs!+25*minute+1000,42,33));
@@ -192,7 +219,7 @@ test("nearby cooldown suppresses a new promoted incident and records its related
   const close=engine.tick(old.lastActivityReceivedAtMs+p.closeAfterMinutes*minute);
   applyTransitions(close,policy,engine);
   const at=old.closedAtMs!+5*minute;
-  const transitions=promotion(engine,"c-new",at,3,40.01,33);
+  const transitions=promotion(engine,"c-new",at,engine.profile.promotionMinEvents,40.01,33);
   const decisions=applyTransitions(transitions,policy,engine);
   assert.equal(decisions[0].reason,"nearby_cooldown");
   assert.equal(decisions[0].relatedIncidentId,old.id);
@@ -205,7 +232,7 @@ test("nearby activity after the cooldown can become a new publish candidate", ()
   applyTransitions(promotion(engine,"c-old",start),policy,engine);
   const old=engine.incidents[0]; applyTransitions(engine.tick(old.lastActivityReceivedAtMs+p.closeAfterMinutes*minute),policy,engine);
   const at=old.closedAtMs!+21*minute;
-  const decisions=applyTransitions(promotion(engine,"c-later",at,3,40.01,33),policy,engine);
+  const decisions=applyTransitions(promotion(engine,"c-later",at,engine.profile.promotionMinEvents,40.01,33),policy,engine);
   assert.equal(decisions.some(item=>item.action==="WOULD_PUBLISH"),true);
   assert.equal(policy.metrics.nearbyRepeatSuppressions,0);
 });
@@ -219,7 +246,7 @@ test("publish-policy closed cooldown records expire after Profile B's exact 20-m
   applyTransitions(closed,policy,engine);
   const exact=old.closedAtMs!+20*minute;
   assert.equal(policy.pruneClosed(exact),0);
-  const near=promotion(engine,"c-near",exact,3,40.01,33).find(item=>item.type==="promoted")!;
+  const near=promotion(engine,"c-near",exact,engine.profile.promotionMinEvents,40.01,33).find(item=>item.type==="promoted")!;
   assert.equal(policy.onPromotion(near.incident,exact).reason,"nearby_cooldown");
   assert.equal(policy.pruneClosed(exact+1),1);
   assert.equal(policy.onPromotion({ ...near.incident, id: "i-later" },exact+1).action,"WOULD_PUBLISH");
@@ -237,13 +264,14 @@ test("geographically separate activity starts an independent candidate", () => {
 test("out-of-order activity preserves event-time extrema and processing-time promotion", () => {
   const engine=new IncidentLifecycleEngine(profile(),start); live(engine);
   engine.observe(observation("c-1",start+3*minute,start+1000));
-  engine.observe(observation("c-1",start+minute,start+2000));
+  const promoted=engine.observe(observation("c-1",start+minute,start+2000));
   const transitions=engine.observe(observation("c-1",start+2*minute,start+3000));
   const incident=engine.incidents[0];
-  assert.equal(transitions.some(item=>item.type==="promoted"),true);
+  assert.equal(promoted.some(item=>item.type==="promoted"),true);
+  assert.equal(transitions.some(item=>item.type==="promoted"),false);
   assert.equal(incident.firstEventTimeMs,start+minute);
   assert.equal(incident.lastActivityTimeMs,start+3*minute);
-  assert.equal(incident.promotedAtMs,start+3000);
+  assert.equal(incident.promotedAtMs,start+2000);
 });
 
 test("identical sequence and source-health transitions produce deterministic results", () => {

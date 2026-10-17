@@ -60,8 +60,8 @@ test("fingerprint distinguishes coordinates, raw event time, and other source id
 
 test("freshness is inclusive at 30 seconds and excludes future and older events", () => {
   const { guard, admitted, accept } = recorder();
-  const loggedRejections: string[] = [];
   assert.equal(BLITZ_ADMISSION_MAX_LATENCY_MS, 30_000);
+  const loggedRejections: string[] = [];
   for (const receivedAtMs of [eventTimeMs - 1, eventTimeMs + 30_001]) {
     const rejection = guard.admit(strike({ receivedAtMs }), accept);
     assert.equal(rejection, "stale_or_future");
@@ -134,8 +134,8 @@ test("worker admits only Blitz; live2 remains a separate shadow source", async (
   const worker = await readFile(path.join(import.meta.dirname, "worker.ts"), "utf8");
   assert.match(worker, /blitzAdmission\.admit\(frame\.event/);
   assert.match(worker, /shouldLogBlitzAdmissionRejection\(admission\)/);
-  assert.match(worker, /\.\.\.blitzAdmission\.counters/);
-  assert.match(worker, /\.\.\.runtime\.summary\(Date\.now\(\)\)/);
+  assert.match(worker, /\.{3}blitzAdmission\.counters/);
+  assert.match(worker, /\.{3}runtime\.summary\(Date\.now\(\)\)/);
   assert.doesNotMatch(worker, /live2\.lightningmaps\.org|parseFrame\(|subscription\(/);
   assert.equal((worker.match(/runtime\.acceptEvent\(/g) ?? []).length, 1);
   const observer = await readFile(path.join(import.meta.dirname,
