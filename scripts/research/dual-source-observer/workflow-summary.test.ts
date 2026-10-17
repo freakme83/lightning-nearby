@@ -34,7 +34,56 @@ test("freshness classifies event records using the inclusive 30-second non-negat
   assert.equal(summary.delayedBlitzEvents, 2);
 });
 
-test("fresh matched pairs require both event records to be fresh; fresh unmatched events are counted by source", () => {
+test("one fresh live2 and Blitz counterpart counts as one pair and one matched event per source", () => {
+  const summary = summarizeActiveAreaRun([
+    event("live2", "l-pair", 1_000), event("blitzortung", "b-pair", 2_000),
+    finalization("live2", "l-pair", "b-pair", "strict"),
+    finalization("blitzortung", "b-pair", "l-pair", "strict"),
+  ]);
+  assert.equal(summary.freshMatchedPairs, 1);
+  assert.equal(summary.freshBothMatched, summary.freshMatchedPairs);
+  assert.equal(summary.freshMatchedLive2Events, 1);
+  assert.equal(summary.freshMatchedBlitzEvents, 1);
+  assert.equal(summary.freshLive2Only, 0);
+  assert.equal(summary.freshBlitzOnly, 0);
+});
+
+test("a fresh event matched only to a delayed counterpart has no fresh counterpart", () => {
+  const live2Fresh = summarizeActiveAreaRun([
+    event("live2", "l-fresh", 1_000), event("blitzortung", "b-delayed", 30_001),
+    finalization("live2", "l-fresh", "b-delayed", "strict"),
+    finalization("blitzortung", "b-delayed", "l-fresh", "strict"),
+  ]);
+  assert.equal(live2Fresh.freshLive2Events, 1);
+  assert.equal(live2Fresh.freshMatchedLive2Events, 0);
+  assert.equal(live2Fresh.freshLive2Only, 1);
+
+  const blitzFresh = summarizeActiveAreaRun([
+    event("live2", "l-delayed", 30_001), event("blitzortung", "b-fresh", 1_000),
+    finalization("live2", "l-delayed", "b-fresh", "strict"),
+    finalization("blitzortung", "b-fresh", "l-delayed", "strict"),
+  ]);
+  assert.equal(blitzFresh.freshBlitzEvents, 1);
+  assert.equal(blitzFresh.freshMatchedBlitzEvents, 0);
+  assert.equal(blitzFresh.freshBlitzOnly, 1);
+});
+
+test("multiple fresh live2 events can match one fresh Blitz event without one-to-one assumptions", () => {
+  const summary = summarizeActiveAreaRun([
+    event("live2", "l1", 1_000), event("live2", "l2", 2_000), event("blitzortung", "b1", 3_000),
+    finalization("live2", "l1", "b1", "strict"),
+    finalization("live2", "l2", "b1", "strict"),
+    finalization("blitzortung", "b1", "l1", "strict"),
+  ]);
+  assert.equal(summary.freshMatchedPairs, 2);
+  assert.equal(summary.freshBothMatched, 2);
+  assert.equal(summary.freshMatchedLive2Events, 2);
+  assert.equal(summary.freshMatchedBlitzEvents, 1);
+  assert.equal(summary.freshLive2Events, summary.freshMatchedLive2Events + summary.freshLive2Only);
+  assert.equal(summary.freshBlitzEvents, summary.freshMatchedBlitzEvents + summary.freshBlitzOnly);
+});
+
+test("fresh matched pairs require both event records to be fresh, and unpaired fresh events partition by source", () => {
   const summary = summarizeActiveAreaRun([
     event("live2", "l-fresh-pair", 1_000), event("blitzortung", "b-fresh-pair", 2_000),
     event("live2", "l-mixed-pair", 1_000), event("blitzortung", "b-delayed-pair", 30_001),
@@ -47,9 +96,13 @@ test("fresh matched pairs require both event records to be fresh; fresh unmatche
     finalization("blitzortung", "b-fresh-only", null, "none"),
   ]);
 
-  assert.equal(summary.freshBothMatched, 1);
-  assert.equal(summary.freshLive2Only, 1);
+  assert.equal(summary.freshMatchedPairs, 1);
+  assert.equal(summary.freshMatchedLive2Events, 1);
+  assert.equal(summary.freshMatchedBlitzEvents, 1);
+  assert.equal(summary.freshLive2Only, 2);
   assert.equal(summary.freshBlitzOnly, 1);
+  assert.equal(summary.freshLive2Events, summary.freshMatchedLive2Events + summary.freshLive2Only);
+  assert.equal(summary.freshBlitzEvents, summary.freshMatchedBlitzEvents + summary.freshBlitzOnly);
 });
 
 test("raw counts retain their existing names and full-run values", () => {
@@ -102,4 +155,6 @@ test("malformed or empty run logs produce bounded defaults and Markdown separate
   assert.equal(summary.freshBothMatched, 0);
   assert.match(formatActiveAreaSummary(summary), /### Raw observed[\s\S]*### Fresh \(0–30s latency; max 30000 ms\)[\s\S]*### Operational health before shutdown/);
   assert.match(formatActiveAreaSummary(summary), /Delayed\/backfill \(not fresh; includes future timestamps\)/);
+  assert.match(formatActiveAreaSummary(summary), /Matched live2 events:[\s\S]*Matched Blitz events:[\s\S]*Matched pairs:/);
+  assert.match(formatActiveAreaSummary(summary), /live2 without fresh counterpart:[\s\S]*Blitz without fresh counterpart:/);
 });

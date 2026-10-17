@@ -25,7 +25,11 @@ export type ActiveAreaWorkflowSummary = {
   freshBlitzEvents: number;
   delayedLive2Events: number;
   delayedBlitzEvents: number;
+  /** Backward-compatible alias of freshMatchedPairs; counts unique event pairs, not events. */
   freshBothMatched: number;
+  freshMatchedPairs: number;
+  freshMatchedLive2Events: number;
+  freshMatchedBlitzEvents: number;
   freshLive2Only: number;
   freshBlitzOnly: number;
 };
@@ -52,9 +56,11 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
   const pairs = new Set<string>();
   const freshPairs = new Set<string>();
   const unmatched = new Set<string>();
-  const freshUnmatched = new Set<string>();
+  const freshLive2Ids = new Set<string>();
+  const freshBlitzIds = new Set<string>();
+  const freshMatchedLive2Ids = new Set<string>();
+  const freshMatchedBlitzIds = new Set<string>();
   const eventsById = new Map<string, { source: string; fresh: boolean }>();
-  const freshCounts = { live2: 0, blitzortung: 0 };
   const delayedCounts = { live2: 0, blitzortung: 0 };
   for (const record of eventRecords) {
     const id = typeof record.observerEventId === "string" ? record.observerEventId : null;
@@ -64,7 +70,7 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
     const fresh = typeof latencyMs === "number" && Number.isFinite(latencyMs) &&
       latencyMs >= 0 && latencyMs <= FRESH_EVENT_MAX_LATENCY_MS;
     eventsById.set(id, { source, fresh });
-    if (fresh) freshCounts[source]++;
+    if (fresh) (source === "live2" ? freshLive2Ids : freshBlitzIds).add(id);
     else delayedCounts[source]++;
   }
   for (const record of finalizations) {
@@ -73,13 +79,23 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
     if ((record.matchClass === "strict" || record.matchClass === "loose") && id && nearest) {
       const pairKey = [id, nearest].sort().join("\0");
       pairs.add(pairKey);
-      if (eventsById.get(id)?.fresh === true && eventsById.get(nearest)?.fresh === true) freshPairs.add(pairKey);
+      const left = eventsById.get(id);
+      const right = eventsById.get(nearest);
+      if (left?.fresh && right?.fresh && left.source !== right.source) {
+        freshPairs.add(pairKey);
+        if (left.source === "live2") {
+          freshMatchedLive2Ids.add(id);
+          freshMatchedBlitzIds.add(nearest);
+        } else {
+          freshMatchedBlitzIds.add(id);
+          freshMatchedLive2Ids.add(nearest);
+        }
+      }
     } else if (record.matchClass === "none" && id) {
       const source = record.source === "live2" || record.source === "blitzortung" ? record.source : null;
       if (source) {
         const key = `${source}\0${id}`;
         unmatched.add(key);
-        if (eventsById.get(id)?.fresh === true) freshUnmatched.add(key);
       }
     }
   }
@@ -115,13 +131,16 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
     blitzHealthyBeforeShutdown: booleanOrNull(operationalBlitz.healthy),
     live2Reconnects: numberOrNull(latestLive2.reconnects) ?? numberOrNull(operationalLive2.reconnects),
     blitzReconnects: numberOrNull(latestBlitz.reconnects) ?? numberOrNull(operationalBlitz.reconnects),
-    freshLive2Events: freshCounts.live2,
-    freshBlitzEvents: freshCounts.blitzortung,
+    freshLive2Events: freshLive2Ids.size,
+    freshBlitzEvents: freshBlitzIds.size,
     delayedLive2Events: delayedCounts.live2,
     delayedBlitzEvents: delayedCounts.blitzortung,
     freshBothMatched: freshPairs.size,
-    freshLive2Only: [...freshUnmatched].filter(key => key.startsWith("live2\0")).length,
-    freshBlitzOnly: [...freshUnmatched].filter(key => key.startsWith("blitzortung\0")).length,
+    freshMatchedPairs: freshPairs.size,
+    freshMatchedLive2Events: freshMatchedLive2Ids.size,
+    freshMatchedBlitzEvents: freshMatchedBlitzIds.size,
+    freshLive2Only: freshLive2Ids.size - freshMatchedLive2Ids.size,
+    freshBlitzOnly: freshBlitzIds.size - freshMatchedBlitzIds.size,
   };
 }
 
@@ -147,9 +166,11 @@ export function formatActiveAreaSummary(summary: ActiveAreaWorkflowSummary): str
     `### Fresh (0–30s latency; max ${FRESH_EVENT_MAX_LATENCY_MS} ms)`,
     `- live2: ${summary.freshLive2Events}`,
     `- Blitz: ${summary.freshBlitzEvents}`,
-    `- Both matched: ${summary.freshBothMatched}`,
-    `- live2-only: ${summary.freshLive2Only}`,
-    `- Blitz-only: ${summary.freshBlitzOnly}`,
+    `- Matched live2 events: ${summary.freshMatchedLive2Events}`,
+    `- Matched Blitz events: ${summary.freshMatchedBlitzEvents}`,
+    `- Matched pairs: ${summary.freshMatchedPairs}`,
+    `- live2 without fresh counterpart: ${summary.freshLive2Only}`,
+    `- Blitz without fresh counterpart: ${summary.freshBlitzOnly}`,
     "",
     "### Delayed/backfill (not fresh; includes future timestamps)",
     `- live2: ${summary.delayedLive2Events}`,
