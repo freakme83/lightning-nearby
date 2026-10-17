@@ -100,6 +100,6 @@ test("malformed or empty run logs produce bounded defaults and Markdown separate
   assert.equal(summary.live2EventsObserved, 0);
   assert.equal(summary.bothMatched, 0);
   assert.equal(summary.freshBothMatched, 0);
-  assert.match(formatActiveAreaSummary(summary), /### Raw observed[\s\S]*### Fresh \(latency 0–30000 ms\)[\s\S]*### Operational health before shutdown/);
-  assert.match(formatActiveAreaSummary(summary), /Fresh \(latency 0–30000 ms\)/);
+  assert.match(formatActiveAreaSummary(summary), /### Raw observed[\s\S]*### Fresh \(0–30s latency; max 30000 ms\)[\s\S]*### Operational health before shutdown/);
+  assert.match(formatActiveAreaSummary(summary), /Delayed\/backfill \(not fresh; includes future timestamps\)/);
 });
