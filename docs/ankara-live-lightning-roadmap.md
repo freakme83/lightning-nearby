@@ -132,7 +132,7 @@ The most valuable live checks are:
 | P0-C | CG/provider telemetry | Largely complete; continue field validation |
 | P0-D | Initial CG association | Complete - PR #87; field validation active |
 | P0-B | First verified CG transition | Detailed shadow telemetry active and collecting data (PR #98); publication transition remains inactive |
-| P1 | Delayed Xweather recheck shadow | This PR: one shadow-only query about 3 minutes after qualifying initial `#ŞİMŞEK` |
+| P1 | Delayed Xweather recheck shadow | Retired to remove an extra provider request; findings and evidence limits are recorded in [the retirement note](delayed-xweather-recheck-retirement.md) |
 | P1/P2 | Storm evolution | Shadow running; collect data before publishing activation |
 | P2 | Urban relevance layer | Defer until storm-evolution evidence is sufficient |
 | P3 | Cluster geometry redesign | Defer; do not solve publication semantics by prematurely shrinking meteorological clusters |
@@ -142,10 +142,10 @@ The most valuable live checks are:
 These are evidence-gathering experiments. Their results must not silently become publication policy; review real cases before proposing any behavior change.
 
 - `first_cg_transition_shadow` measures whether a later verified CG would provide meaningful new information after an earlier `#ŞİMŞEK`. It observes the normal live flow and does not activate the transition.
-- Delayed Xweather recheck (this PR) measures provider/reporting latency: whether an initial non-CG result becomes a current, acceptable CG on one query about 3 minutes later. It records the actual `X-Cost-Tokens` response-header value when present so query cost can be compared with normal enrichment; absent headers stay null.
+- The delayed Xweather recheck experiment is retired. See [the research note](delayed-xweather-recheck-retirement.md); it is no longer a running shadow experiment.
 - Storm evolution measures whether later electrical activity represents meaningful geographic evolution rather than repeat reporting.
 
-The delayed check is scheduled only after an initial non-CG candidate is persisted in the normal publication flow. It makes no publication or admission decision. Pending work is in memory only and may be lost on worker restart; no recovery persistence is added.
+
 
 ## Design principles and guardrails
 
@@ -167,7 +167,7 @@ Current clustering can grow into 20-25 km elongated structures because new obser
 
 ### Provider timing
 
-Xweather data may arrive after the initial LightningMaps-triggered query. The delayed-recheck shadow experiment is intended to measure this before changing live publication behavior.
+Xweather data may arrive after the initial LightningMaps-triggered query. The retired delayed-recheck experiment was intended to measure this; repository fixtures do not establish how often it occurred in live runs.
 
 ### Semantic place ambiguity
 
