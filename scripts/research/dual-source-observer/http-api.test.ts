@@ -36,7 +36,7 @@ test("localhost API returns a bounded in-memory Blitz response with no upstream 
   cache.setObservationActive(true, now - 5 * 60_000);
   cache.insert({ source: "blitzortung", observerEventId: "blitz-1", sourceServer: "ws7",
     eventTimeMs: now - 1_000, receivedAtMs: now, latitude: 39.92, longitude: 32.85,
-    latencyMs: 1_000, transportComparisonEligible: true } as ObserverEvent, now);
+    latencyMs: 1_000, transportComparisonEligible: true, insideComparisonArea: true } as ObserverEvent, now);
   await withServer("test-secret", cache, async get => {
     assert.deepEqual(await get("/health"), { status: 200, body: { ok: true, observer: "dual_source_shadow" } });
     assert.equal((await get(PATH)).status, 401);
