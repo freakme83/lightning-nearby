@@ -33,7 +33,7 @@ function event(
     eventTimeUnit: "milliseconds",
     latencyMs: receivedAtMs - eventTimeMs, latencyEligible: receivedAtMs >= eventTimeMs,
     transportComparisonEligible: receivedAtMs - eventTimeMs >= 0 && receivedAtMs - eventTimeMs <= LOW_LAG_LATENCY_MAX_MS,
-    latitude, longitude, insideMonitoringArea: true, polarityRaw: null, stationCount: null,
+    latitude, longitude, insideMonitoringArea: true, insideComparisonArea: true, polarityRaw: null, stationCount: null,
     mdsRaw: null, mcgRaw: null, regionRaw: null,
   };
 }
@@ -50,7 +50,7 @@ test("observer Blitz normalization preserves source facts", () => {
     receivedAtMs: 2_000, eventTimeMs: 2_100, eventTimeRaw: "2100000000", latencyMs: -100,
     eventTimeUnit: "nanoseconds",
     latencyEligible: false, transportComparisonEligible: false,
-    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
+    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true, insideComparisonArea: true,
     polarityRaw: -1, stationCount: 8, mdsRaw: 42, mcgRaw: 7, regionRaw: 1,
   });
 });
@@ -66,7 +66,7 @@ test("observer live2 normalization uses raw input without lifecycle invocation",
     receivedAtMs: 1_250, eventTimeMs: 1_000, eventTimeRaw: "1000", latencyMs: 250,
     eventTimeUnit: "milliseconds",
     latencyEligible: true, transportComparisonEligible: true,
-    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true,
+    latitude: 39.9208, longitude: 32.8541, insideMonitoringArea: true, insideComparisonArea: true,
     polarityRaw: null, stationCount: null, mdsRaw: null, mcgRaw: null, regionRaw: null,
   });
 });

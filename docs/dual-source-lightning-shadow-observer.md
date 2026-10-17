@@ -10,12 +10,22 @@ The existing `scripts/fly-ankara-worker/worker.ts` process remains the exclusive
 
 The observer is a separate executable under `scripts/research/dual-source-observer/`. It opens its own read-only subscriptions:
 
-- observer live2: `wss://live2.lightningmaps.org/`, using the existing v24 `subscription()` and `parseFrame()` functions with the existing Ankara monitoring polygon bounds; events are then checked against the unchanged polygon;
+- observer live2: `wss://live2.lightningmaps.org/`, using the existing v24 `subscription()` and `parseFrame()` functions with Ankara bounds by default, or bounded custom-radius subscription bounds for a manual research run; event comparison admission remains observer-local;
 - observer Blitzortung: rotating `wss://ws1.blitzortung.org/`, `ws7`, and `ws8`, sending `{"a":111}` and reusing the PR108 decoder/timestamp normalizer.
 
 Both inputs are telemetry-only inside this process. They do not call the production worker. Each has its own socket ownership, health, counters, bounded exponential reconnect backoff, cancelable reconnect wait, open timeout, quiet-frame watchdog, and shutdown path. One source failing, changing protocol, or reconnecting cannot stop or mark the other unhealthy. `SIGINT`/`SIGTERM` closes only observer sockets and clears observer timers.
 
-Only events inside the unchanged Ankara monitoring polygon receive per-event logs and enter matching. All parsed deliveries, including outside-polygon deliveries, remain visible in source summary counts. No wider publication or observation area is introduced.
+By default, only events inside the unchanged Ankara monitoring polygon receive per-event logs and enter matching. A manual research run may instead select a temporary radius via the observer's `--center-lat`, `--center-lon`, and `--radius-km` arguments. That mode changes only observer-side live2 subscription bounds and the observer's comparison admission flag; the original `insideMonitoringArea` field and production Ankara polygon remain unchanged. The temporary radius is limited to 150 km. Events in either mode remain telemetry-only and cannot enter production clustering, lifecycle, provider, ledger, or publication paths. All parsed deliveries remain visible in source summary counts.
+
+Custom-area runs carry `comparisonAreaMode: "custom-radius"` and the requested center/radius on observer records. Default runs report `comparisonAreaMode: "ankara"`. To compare sources during a manually selected active storm window, set the center to the storm you choose at run time and run for a bounded duration (1–60 minutes), for example:
+
+```sh
+read -r -p 'Current storm center latitude: ' CENTER_LAT
+read -r -p 'Current storm center longitude: ' CENTER_LON
+npm run research:dual-source-observer -- --center-lat="$CENTER_LAT" --center-lon="$CENTER_LON" --radius-km=80 --duration=30
+```
+
+Choose the center at run time; no permanent non-Ankara test location is configured. Without all three area arguments, the observer keeps the existing Ankara comparison. Partial area arguments fail before source connections are opened. The repository also provides a manual GitHub Actions workflow, `.github/workflows/dual-source-active-area-test.yml`, which checks out `merge-ready`, runs only this observer for up to 60 minutes, and uploads its JSONL/stderr/final summary as an artifact. It needs no secrets and does not deploy.
 
 ## Experimental recent Blitz API (PR-A)
 

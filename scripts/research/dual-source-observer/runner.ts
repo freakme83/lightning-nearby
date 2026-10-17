@@ -26,6 +26,12 @@ import {
 import { createObserverHttpServer, OBSERVER_API_DEFAULT_PORT } from "./http-api.ts";
 import { BlitzRecentEventCache } from "./recent-cache.ts";
 import { ObserverSocketOwnership, runResilientSourceLoop } from "./runtime.ts";
+import {
+  comparisonAreaMetadata,
+  comparisonAreaSubscriptionBounds,
+  isInsideComparisonArea,
+  parseObserverArgs,
+} from "./comparison-area.ts";
 
 const LIVE2_ENDPOINT = "wss://live2.lightningmaps.org/";
 const SUMMARY_EVERY_MS = 60_000;
@@ -36,6 +42,8 @@ const SOURCE_QUIET_TIMEOUT_MS: Record<ObserverSource, number> = {
   live2: 90_000,
   blitzortung: 120_000,
 };
+const runOptions = parseObserverArgs(process.argv.slice(2));
+const live2SubscriptionBounds = comparisonAreaSubscriptionBounds(runOptions.comparisonArea, ANKARA_MONITORING_AREA.bounds);
 
 type ObserverSocket = WebSocket;
 type ConnectionOptions = {
@@ -65,7 +73,17 @@ let blitzServerIndex = 0;
 let stopping = false;
 
 function emit(kind: string, fields: Record<string, unknown>): void {
-  console.log(JSON.stringify({ kind, observer: "dual_source_shadow", at: new Date().toISOString(), ...fields }));
+  console.log(JSON.stringify({ kind, observer: "dual_source_shadow", at: new Date().toISOString(),
+    ...comparisonAreaMetadata(runOptions.comparisonArea), ...fields }));
+}
+
+function inComparisonArea(event: ObserverEvent): ObserverEvent {
+  return {
+    ...event,
+    insideComparisonArea: isInsideComparisonArea(
+      runOptions.comparisonArea, event.latitude, event.longitude, event.insideMonitoringArea,
+    ),
+  };
 }
 
 function errorName(error: unknown): string {
@@ -222,6 +240,7 @@ function eventLogFields(event: ObserverEvent): Record<string, unknown> {
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: event.insideMonitoringArea,
+    insideComparisonArea: event.insideComparisonArea,
     polarityRaw: event.polarityRaw,
     stationCount: event.stationCount,
     mdsRaw: event.mdsRaw,
@@ -251,7 +270,7 @@ function emitFinalization(result: MatchFinalization): void {
 }
 
 function observeLocalEvent(event: ObserverEvent, extra: Record<string, unknown> = {}): void {
-  if (!event.insideMonitoringArea) return;
+  if (!event.insideComparisonArea) return;
   emit("dual_source_event", { ...eventLogFields(event), ...extra });
   windows.observe(event);
   for (const forced of matcher.observe(event)) emitFinalization(forced);
@@ -279,7 +298,7 @@ function handleLive2Frame(data: unknown, receivedAtMs: number): void {
     });
   }
   for (const sourceEvent of frame.events) {
-    const event = normalizeLive2ObserverEvent(sourceEvent, `live2-${++live2Sequence}`);
+    const event = inComparisonArea(normalizeLive2ObserverEvent(sourceEvent, `live2-${++live2Sequence}`));
     live2State.event(event);
     observeLocalEvent(event, { rawDelayMs: sourceEvent.rawDelayMs ?? null });
   }
@@ -319,7 +338,7 @@ function handleBlitzFrame(data: unknown, receivedAtMs: number, sourceServer: Bli
     });
     return;
   }
-  const event = normalizeBlitzObserverEvent(result.event, `blitzortung-${++blitzSequence}`);
+  const event = inComparisonArea(normalizeBlitzObserverEvent(result.event, `blitzortung-${++blitzSequence}`));
   blitzState.event(event);
   try {
     blitzRecentCache.insert(event, receivedAtMs);
@@ -361,7 +380,7 @@ function emitSummary(reason: "periodic" | "shutdown"): void {
   });
 }
 
-function stop(reason: "SIGINT" | "SIGTERM"): void {
+function stop(reason: "SIGINT" | "SIGTERM" | "duration"): void {
   if (stopping) return;
   stopping = true;
   emit("dual_source_source_connection", { sources: ["live2", "blitzortung"], action: "stopping", reason });
@@ -376,6 +395,10 @@ const finalizationTimer = setInterval(finalizeReady, FINALIZE_EVERY_MS);
 finalizationTimer.unref();
 const summaryTimer = setInterval(() => emitSummary("periodic"), SUMMARY_EVERY_MS);
 summaryTimer.unref();
+const durationTimer = runOptions.durationMinutes === null
+  ? null
+  : setTimeout(() => stop("duration"), runOptions.durationMinutes * 60_000);
+durationTimer?.unref();
 windows.touch(startedAtMs);
 
 httpServer.on("error", error => emit("dual_source_error", {
@@ -394,13 +417,14 @@ if (Number.isInteger(httpPort) && httpPort > 0 && httpPort <= 65_535) {
 
 emit("dual_source_observer_start", {
   sources: ["live2", "blitzortung"],
+  durationMinutes: runOptions.durationMinutes,
   runtimeMode: "read_only_dual_source_shadow",
   productionAuthority: "live2-production-worker-outside-this-process",
   persistence: false,
   publication: false,
-  eventLogScope: "inside_ankara_monitoring_polygon",
+  eventLogScope: runOptions.comparisonArea.mode === "ankara" ? "inside_ankara_monitoring_polygon" : "inside_custom_comparison_radius",
   live2Endpoint: LIVE2_ENDPOINT,
-  live2SubscriptionBounds: ANKARA_MONITORING_AREA.bounds,
+  live2SubscriptionBounds,
   blitzEndpoints: BLITZORTUNG_SERVERS.map(endpointForBlitz),
   blitzSubscription: { a: 111 },
   strictMatch: { maxTimeMs: STRICT_MATCH_MAX_TIME_MS, maxDistanceKm: STRICT_MATCH_MAX_DISTANCE_KM },
@@ -419,7 +443,7 @@ const live2Loop = runResilientSourceLoop({
     state: live2State,
     ownership: live2Sockets,
     signal: controller.signal,
-    onOpen: socket => socket.send(subscription(ANKARA_MONITORING_AREA.bounds)),
+    onOpen: socket => socket.send(subscription(live2SubscriptionBounds)),
     onMessage: handleLive2Frame,
   }),
   onFailure: error => emit("dual_source_error", {
@@ -470,6 +494,7 @@ try {
   if (httpServer.listening) httpServer.close();
   clearInterval(finalizationTimer);
   clearInterval(summaryTimer);
+  if (durationTimer) clearTimeout(durationTimer);
   for (const result of matcher.finalizeAll()) emitFinalization(result);
   for (const summary of windows.closeAll()) emitWindow(summary, "shutdown");
   emitSummary("shutdown");

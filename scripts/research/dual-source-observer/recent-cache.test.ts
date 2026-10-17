@@ -18,7 +18,7 @@ function event(id: string, changes: Partial<ObserverEvent> = {}): ObserverEvent 
     eventTimeMs: NOW - 1_000, receivedAtMs: NOW, eventTimeRaw: String(NOW - 1_000),
     eventTimeUnit: "milliseconds", latencyMs: 1_000, latencyEligible: true,
     transportComparisonEligible: true, latitude: 39.92, longitude: 32.85,
-    insideMonitoringArea: true, polarityRaw: null, stationCount: null,
+    insideMonitoringArea: true, insideComparisonArea: true, polarityRaw: null, stationCount: null,
     mdsRaw: null, mcgRaw: null, regionRaw: null, ...changes,
   };
 }

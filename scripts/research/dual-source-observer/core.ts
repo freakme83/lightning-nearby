@@ -35,6 +35,7 @@ export type ObserverEvent = {
   latitude: number;
   longitude: number;
   insideMonitoringArea: boolean;
+  insideComparisonArea: boolean;
   polarityRaw: string | number | boolean | null;
   stationCount: number | null;
   mdsRaw: string | number | boolean | null;
@@ -61,6 +62,7 @@ export function normalizeBlitzObserverEvent(
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: event.insideMonitoringArea,
+    insideComparisonArea: event.insideMonitoringArea,
     polarityRaw: event.polarityRaw,
     stationCount: event.stationCount,
     mdsRaw: event.mdsRaw,
@@ -86,6 +88,7 @@ export function normalizeLive2ObserverEvent(event: LightningEvent, observerEvent
     latitude: event.latitude,
     longitude: event.longitude,
     insideMonitoringArea: pointInMonitoringArea([event.longitude, event.latitude]),
+    insideComparisonArea: pointInMonitoringArea([event.longitude, event.latitude]),
     polarityRaw: null,
     stationCount: null,
     mdsRaw: null,
@@ -280,7 +283,7 @@ export class CrossSourceMatcher {
   get pendingEvents(): number { return this.pending.length; }
 
   observe(event: ObserverEvent): MatchFinalization[] {
-    if (!event.insideMonitoringArea) return [];
+    if (!event.insideComparisonArea) return [];
     this.pending.push(event);
     this.history.push(event);
     const forced: MatchFinalization[] = [];
@@ -401,7 +404,7 @@ export class FixedObservationWindows {
   touch(receivedAtMs: number): void { this.bucket(receivedAtMs); }
 
   observe(event: ObserverEvent): void {
-    if (!event.insideMonitoringArea) return;
+    if (!event.insideComparisonArea) return;
     const bucket = this.bucket(event.receivedAtMs);
     bucket.events[event.source]++;
     bucket.firstEventTimeMs[event.source] = Math.min(bucket.firstEventTimeMs[event.source] ?? event.eventTimeMs, event.eventTimeMs);

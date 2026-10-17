@@ -31,6 +31,7 @@ test("observer import graph cannot reach production lifecycle or side-effect ada
     "./runtime.ts",
     "./recent-cache.ts",
     "./http-api.ts",
+    "./comparison-area.ts",
     "node:crypto",
     "node:http",
   ]);
@@ -97,4 +98,21 @@ test("observer log kinds do not collide with production worker kinds", async () 
   assert.deepEqual([...observerKinds].filter(kind => productionKinds.has(kind)), []);
   assert.ok(observerKinds.size >= 7);
   assert.ok([...observerKinds].every(kind => kind.startsWith("dual_source_")));
+});
+
+test("temporary comparison geometry stays isolated from production and workflow side effects", async () => {
+  const area = await source("scripts/research/dual-source-observer/comparison-area.ts");
+  assert.doesNotMatch(area, /supabase|telegram|xweather|publisher|incident-engine/i);
+  const productionWorker = await source("scripts/fly-ankara-worker/worker.ts");
+  assert.doesNotMatch(productionWorker, /comparison-area|insideComparisonArea|center-lat|radius-km/i);
+  const productionArea = await source("scripts/lightning-incident-lifecycle/monitoring-area.ts");
+  assert.doesNotMatch(productionArea, /comparison-area|custom-radius|MAX_COMPARISON_RADIUS_KM/i);
+  const workflow = await source(".github/workflows/dual-source-active-area-test.yml");
+  const runner = await source("scripts/research/dual-source-observer/runner.ts");
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /ref: merge-ready/);
+  assert.match(workflow, /research:dual-source-observer/);
+  assert.doesNotMatch(workflow, /secrets\.|fly deploy|supabase|telegram|xweather|publisher/i);
+  assert.equal([...runner.matchAll(/inComparisonArea\(normalize(?:Live2|BlitzObserverEvent)/g)].length, 2);
+  assert.match(runner, /setTimeout\(\(\) => stop\("duration"\), runOptions\.durationMinutes \* 60_000\)/);
 });
