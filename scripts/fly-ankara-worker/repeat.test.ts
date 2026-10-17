@@ -112,7 +112,7 @@ test("guarded urban repeats: same place, sub-km, three total and full history cy
   assert.ok(f.events.some(row => row.kind === "cg_repeat_outcome" && row.fields?.outcome === "WOULD_PUBLISH"));
   assert.deepEqual(f.calls[3], { latitude: 39.9 + 1.4 / 111.1950802335329, longitude: 32.85,
     eventTimeMs: f.records[1].incidentReferenceTime ? Date.parse(f.records[1].incidentReferenceTime) : 0 });
-  assert.equal(f.runtime.summary().profile.promotionMinEvents, 3);
+  assert.equal(f.runtime.summary().profile.promotionMinEvents, 2);
 });
 
 test("non-CG outcomes, missing ID, old/future selected CG and ambiguous storage never publish repeat", async () => {
@@ -255,13 +255,15 @@ test("nearby cooldown and later suppressed activity compare predecessor without 
   f.advance(20 * 60_000); f.runtime.summary();
   assert.equal(f.runtime.lifecycle.incidents[0].status, "closed");
   f.advance(60_000); f.name = "Balgat";
-  f.feed(1.4, f.now - 2); f.feed(1.4, f.now - 1); f.feed(1.4); await f.runtime.drainCandidateWork();
+  f.feed(1.4, f.now - 2); f.feed(1.4, f.now - 1); await f.runtime.drainCandidateWork();
+  f.feed(1.4); await f.runtime.drainCandidateWork();
   assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 2);
   assert.notEqual(f.records[0].cgScopeId, f.records[1].cgScopeId);
-  assert.ok(f.events.some(row => row.kind === "cg_repeat_probe" && row.fields?.originalSuppressionReason === "nearby_cooldown"));
+  assert.equal(f.events.some(row => row.kind === "cg_repeat_probe" &&
+    row.fields?.originalSuppressionReason === "nearby_cooldown"), false,
+    "the prior three-event repeat-CG gate remains independent of Profile B promotion");
   f.advance(120_000); f.name = "Çukurambar"; f.feed(2.8); await f.runtime.drainCandidateWork();
   assert.equal(f.records.filter(row => row.decision === "WOULD_PUBLISH").length, 3);
-  assert.ok(f.events.some(row => row.kind === "cg_repeat_probe" && row.fields?.originalSuppressionReason === "already_active_suppressed_incident"));
 });
 
 

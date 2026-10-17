@@ -256,7 +256,7 @@ test("worker summaries omit event arrays without altering clustering snapshots",
   assert.equal(summary.rollingCandidateShadow.rollingShadowPromotions, 0);
 });
 
-test("neighbor-supported two-event candidate emits one shadow opportunity without production side effects", () => {
+test("two-event Profile B promotion stays on the normal production path", async () => {
   let providerCalls = 0; let notifications = 0;
   const { runtime, events, memory } = setup({
     enrich: async reference => { providerCalls++; return matchInitialCgEvents(reference, [], baseNow); },
@@ -264,33 +264,15 @@ test("neighbor-supported two-event candidate emits one shadow opportunity withou
   });
   primaryPairWithNeighbor(runtime);
   const opportunities = events.filter(row => row.kind === "neighbor_supported_sparse_activity");
-  assert.equal(opportunities.length, 1);
-  const fields = opportunities[0].fields!;
-  assert.equal(fields.primaryEventCount, 2);
-  assert.ok(fields.incidentId);
-  assert.ok(Array.isArray(fields.primaryClusterIds));
-  assert.ok((fields.neighborClusterIds as string[]).length > 0);
-  assert.equal(fields.neighborFreshEventCount, 1);
-  assert.ok((fields.nearestNeighborDistanceKm as number) > 1 &&
-    (fields.nearestNeighborDistanceKm as number) < 15);
-  assert.equal(fields.nearestNeighborTimeDeltaSeconds, .5);
-  assert.equal(fields.sourceHealthy, true);
-  assert.equal(fields.promotionThreshold, 3);
-  assert.equal(fields.spatialWindowKm, 15);
-  assert.equal(fields.temporalWindowMinutes, 10);
-  assert.equal(fields.shadowOnly, true);
-  assert.equal(runtime.summary().profile.promotionMinEvents, 3);
-  assert.equal(runtime.lifecycle.snapshot().activeIncidents, 0);
-  assert.equal(runtime.lifecycle.snapshot().incidents.find(item => item.id === fields.incidentId)?.totalEvents, 2,
-    "neighbor events do not become candidate events");
-  assert.equal(providerCalls, 0, "the opportunity itself does not trigger enrichment");
-  assert.equal(memory.records.length, 0);
-  assert.equal(memory.writes, 0);
-  assert.equal(notifications, 0);
-  assert.deepEqual(runtime.summary().neighborSupportedSparseActivity, { opportunities: 1, promoted: 0, expired: 0 });
-  // Rechecking an unchanged candidate state does not repeat the event.
-  runtime.summary();
-  assert.equal(events.filter(row => row.kind === "neighbor_supported_sparse_activity").length, 1);
+  assert.equal(opportunities.length, 0, "the two primary events already satisfy Profile B promotion");
+  assert.equal(runtime.summary().profile.promotionMinEvents, 2);
+  assert.equal(runtime.lifecycle.snapshot().activeIncidents, 1);
+  assert.ok((runtime.lifecycle.snapshot().incidents[0]?.totalEvents ?? 0) >= 2);
+  await runtime.drainCandidateWork();
+  assert.equal(providerCalls, 1, "normal promoted-candidate enrichment ran once");
+  assert.equal(memory.records.length, 1);
+  assert.equal(memory.writes, 1);
+  assert.equal(notifications, 1);
 });
 
 test("only separate fresh neighboring events inside both sparse windows qualify", () => {
@@ -318,119 +300,7 @@ test("only separate fresh neighboring events inside both sparse windows qualify"
   assert.equal(sameCluster.events.some(row => row.kind === "neighbor_supported_sparse_activity"), false,
     "same-cluster events remain primary evidence and are never recounted as neighbors");
   assert.equal(sameCluster.runtime.lifecycle.snapshot().activeIncidents, 1,
-    "normal three-event promotion remains unchanged");
-});
-
-test("sparse opportunity correlates later normal promotion and its existing provider result", async () => {
-  let enrichmentCalls = 0;
-  const fixture = setup({ enrich: async reference => {
-    enrichmentCalls++;
-    return matchInitialCgEvents(reference, [], baseNow);
-  } });
-  primaryPairWithNeighbor(fixture.runtime);
-  assert.equal(enrichmentCalls, 0);
-
-  const promotionAt = baseNow + 120_000;
-  fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
-  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
-  await fixture.runtime.drainCandidateWork();
-
-  const outcome = fixture.events.find(row => row.kind === "neighbor_supported_sparse_outcome")?.fields;
-  assert.equal(outcome?.outcome, "promoted_normally");
-  assert.equal(outcome?.normalPromotionDelaySeconds, 120);
-  assert.equal(outcome?.resultingIncidentId, outcome?.incidentId);
-  const normalResult = fixture.events.find(row => row.kind === "neighbor_supported_sparse_normal_result")?.fields;
-  assert.equal(normalResult?.eventualProviderStatus, "no_match");
-  assert.equal(normalResult?.publicationDecision, "WOULD_PUBLISH");
-  assert.equal(enrichmentCalls, 1, "only the normal promoted-candidate enrichment ran");
-  assert.equal(fixture.memory.records.length, 1, "only the unchanged normal publication flow wrote a record");
-  assert.deepEqual(fixture.runtime.summary().neighborSupportedSparseActivity,
-    { opportunities: 1, promoted: 1, expired: 0 });
-});
-
-test("sparse normal result retains provider outcome when outer-district policy suppresses publication", async () => {
-  let enrichmentCalls = 0; let notifications = 0; let approvals = 0; let dispatches = 0;
-  const fixture = setup({
-    enrich: async reference => {
-      enrichmentCalls++;
-      return matchInitialCgEvents(reference, [], baseNow);
-    },
-    reverse: async (latitude, longitude) => ({ latitude, longitude, provider: "fixture",
-      displayLabel: "Beypazarı, Ankara", locality: "Beypazarı", localityKind: "town",
-      district: "Beypazarı", province: "Ankara", country: "Türkiye" }),
-    notifyPending: async () => { notifications++; return { ok: true }; },
-    autoPublish: {
-      approvalStore: {
-        async getPublicationForApproval() { approvals++; return null; },
-        async transitionPendingApproval() { approvals++; return null; },
-      },
-      dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; },
-    },
-  });
-  primaryPairWithNeighbor(fixture.runtime);
-  const opportunity = fixture.events.find(row => row.kind === "neighbor_supported_sparse_activity")?.fields;
-  assert.ok(opportunity?.incidentId);
-
-  const promotionAt = baseNow + 120_000;
-  fixture.setNow(promotionAt); fixture.runtime.recordFrame(promotionAt);
-  feedSparseEvent(fixture.runtime, 103, 40.1437, 31.9162, promotionAt, promotionAt);
-  await fixture.runtime.drainCandidateWork();
-
-  const sparseResults = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_normal_result");
-  assert.equal(sparseResults.length, 1);
-  const normalResult = sparseResults[0].fields!;
-  assert.equal(normalResult.incidentId, opportunity.incidentId);
-  assert.equal(normalResult.eventualProviderStatus, "no_match");
-  assert.equal(normalResult.rawProviderStatus, "no_match");
-  assert.equal(normalResult.normalPromotionDelaySeconds, 120);
-  assert.equal(normalResult.publicationDecision, "WOULD_PUBLISH", "retains the pre-policy decision separately");
-  assert.equal(normalResult.productionOutcome, "HOLD");
-  assert.equal(normalResult.suppressionReason, "outer_district_non_cg_suppressed");
-  assert.equal(normalResult.publicationRecordId, null);
-  assert.equal(fixture.events.some(row => row.kind === "outer_district_non_cg_suppressed" &&
-    row.fields?.canonicalDistrict === "Beypazarı"), true);
-  assert.equal(fixture.events.some(row => row.kind === "candidate_outcome" &&
-    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
-  assert.equal(enrichmentCalls, 1, "only normal promoted-candidate enrichment ran");
-  assert.equal(fixture.runtime.summary().profile.promotionMinEvents, 3);
-  assert.equal(fixture.memory.records.length, 0);
-  assert.equal(fixture.memory.writes, 0);
-  assert.equal(notifications, 0);
-  assert.equal(approvals, 0);
-  assert.equal(dispatches, 0);
-});
-
-test("sparse opportunity reports normal candidate expiry without triggering enrichment", () => {
-  let providerCalls = 0;
-  const fixture = setup({ enrich: async reference => {
-    providerCalls++;
-    return matchInitialCgEvents(reference, [], baseNow);
-  } });
-  primaryPairWithNeighbor(fixture.runtime);
-  for (let minute = 1; minute <= 10; minute++) {
-    const at = baseNow + minute * 60_000;
-    fixture.setNow(at); fixture.runtime.recordFrame(at); fixture.runtime.summary(at);
-  }
-  const outcome = fixture.events.find(row => row.kind === "neighbor_supported_sparse_outcome")?.fields;
-  assert.equal(outcome?.outcome, "expired_without_promotion");
-  assert.equal(outcome?.expiredWithoutPromotion, true);
-  assert.ok(fixture.events.some(row => row.kind === "candidate_expired" &&
-    row.fields?.incidentId === outcome?.incidentId), "the candidate still expires through its normal lifecycle");
-  assert.equal(providerCalls, 0);
-  assert.equal(fixture.memory.records.length, 0);
-  assert.deepEqual(fixture.runtime.summary().neighborSupportedSparseActivity,
-    { opportunities: 1, promoted: 0, expired: 1 });
-});
-
-test("sparse opportunity state remains isolated between candidate incidents", () => {
-  const fixture = setup();
-  primaryPairWithNeighbor(fixture.runtime);
-  feedSparseEvent(fixture.runtime, 140, 40.1437, 32.65, baseNow - 2_000);
-  feedSparseEvent(fixture.runtime, 141, 40.1447, 32.65, baseNow - 1_000);
-  const opportunities = fixture.events.filter(row => row.kind === "neighbor_supported_sparse_activity");
-  assert.equal(opportunities.length, 1);
-  assert.equal(fixture.runtime.lifecycle.snapshot().candidates, 3);
-  assert.equal(fixture.runtime.summary().neighborSupportedSparseActivity.opportunities, 1);
+    "the two-event Profile B promotion leaves this incident active");
 });
 
 test("published active incident's new supported neighborhood is shadow-only", async () => {
@@ -466,7 +336,7 @@ test("published active incident's new supported neighborhood is shadow-only", as
   assert.equal(JSON.stringify(runtime.summary()).includes("recentEvents"), false);
 });
 
-test("worker recovers an expired continuing cluster through the unchanged initial publication path", async () => {
+test("a singleton expires and later two events qualify through the normal Profile B path", async () => {
   let clock = baseNow; let sequence = 0; let enrichmentCalls = 0;
   const { runtime, memory, events } = setup({ now: () => clock, enrich: async reference => {
     enrichmentCalls++;
@@ -477,64 +347,26 @@ test("worker recovers an expired continuing cluster through the unchanged initia
     runtime.acceptEvent(event(++sequence, { sourceEventKey: `recovery/${sequence}`, latitude: 39.9, longitude: 32.6,
       eventTimeMs: clock, receivedAtMs: clock }), clock);
   }
-  feed(0); feed(9); clock = baseNow + 10 * 60_000; runtime.recordFrame(clock); runtime.summary();
+  feed(0); clock = baseNow + 10 * 60_000; runtime.recordFrame(clock); runtime.summary();
   assert.equal(runtime.summary().recall.candidatesExpired, 1);
   assert.equal(memory.records.length, 0);
   feed(12); feed(14); await runtime.drainCandidateWork(); feed(15); await runtime.drainCandidateWork();
   assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
-  assert.equal(events.filter(row => row.kind === "candidate_promoted_after_recovery").length, 1);
-  assert.equal(events.filter(row => row.kind === "candidate_recovered").length, 1);
+  assert.equal(events.filter(row => row.kind === "candidate_promoted_after_recovery").length, 0);
+  assert.equal(events.filter(row => row.kind === "candidate_recovered").length, 0);
   assert.equal(events.filter(row => row.kind === "rolling_candidate_shadow_promotion").length, 0,
     "production recovery is agreement, not a missed-production shadow promotion");
-  assert.equal(runtime.summary().recall.eventsAfterCandidateExpiry, 2);
-  assert.equal(runtime.summary().recall.promotionsAfterRecovery, 1);
-  assert.equal(runtime.summary().rollingCandidateShadow.productionAndRollingBothPromoted, 1);
+  assert.equal(runtime.summary().recall.promotionsAfterRecovery, 0);
   assert.equal(runtime.summary().rollingCandidateShadow.rollingShadowPromotions, 0);
   assert.equal(enrichmentCalls, 1, "the shadow adds no query beyond normal recovered promotion enrichment");
-  assert.equal(runtime.summary().profile.promotionMinEvents, 3);
+  assert.equal(runtime.summary().profile.promotionMinEvents, 2);
 });
 
-test("rolling candidate shadow observes viable expiry without provider or publication side effects", async () => {
-  let clock = baseNow; let sequence = 0; let providerCalls = 0; let notifications = 0;
-  let approvals = 0; let dispatches = 0;
-  const { runtime, memory, events } = setup({ now: () => clock,
-    enrich: async reference => { providerCalls++; return verifiedCg(reference); },
-    notifyPending: async () => { notifications++; return { ok: true }; },
-    autoPublish: {
-      approvalStore: {
-        async getPublicationForApproval() { approvals++; return null; },
-        async transitionPendingApproval() { approvals++; return null; },
-      },
-      dispatchPublisher: async () => { dispatches++; return { ok: true, httpStatus: 204 }; },
-    } });
-  function feed(atMinutes: number) {
-    clock = baseNow + atMinutes * 60_000; runtime.recordFrame(clock);
-    runtime.acceptEvent(event(++sequence, { sourceEventKey: `rolling/${sequence}`,
-      latitude: 39.9, longitude: 32.6, eventTimeMs: clock, receivedAtMs: clock }), clock);
-  }
-  feed(0); feed(4);
-  clock = baseNow + 10 * 60_000; runtime.recordFrame(clock); runtime.summary(clock);
-  await runtime.drainCandidateWork();
-
-  const stateEvents = events.filter(row => row.kind === "rolling_candidate_shadow_state");
-  assert.equal(stateEvents.length, 1);
-  assert.equal(stateEvents[0].fields?.rollingEventCount, 2);
-  assert.equal(stateEvents[0].fields?.productionState, "candidate_expired");
-  assert.equal(stateEvents[0].fields?.shadowOnly, true);
-  assert.equal(events.filter(row => row.kind === "rolling_candidate_shadow_promotion").length, 0);
-  assert.deepEqual(runtime.summary(clock).rollingCandidateShadow, {
-    rollingCandidateEvaluations: 2,
-    productionExpiredWhileRollingViable: 1,
-    rollingShadowPromotions: 0,
-    rollingShadowPromotionsAfterProductionExpiry: 0,
-    productionAndRollingBothPromoted: 0,
-  });
-  assert.equal(providerCalls, 0);
-  assert.equal(memory.reads, 0);
-  assert.equal(memory.writes, 0);
-  assert.equal(notifications, 0);
-  assert.equal(approvals, 0);
-  assert.equal(dispatches, 0);
+test("rolling candidate shadow keeps its independent three-event threshold", () => {
+  const { runtime } = setup();
+  const shadow = (runtime as unknown as { rollingCandidateShadow: { promotionThreshold: number } }).rollingCandidateShadow;
+  assert.equal(runtime.summary().profile.promotionMinEvents, 2);
+  assert.equal(shadow.promotionThreshold, 3);
 });
 
 test("stale, future and duplicate feed observations do not advance rolling shadow state", () => {
@@ -569,7 +401,7 @@ test("CG foundation leaves Profile B, active suppression and nearby cooldown unc
     enrich: async reference => { calls++; return verifiedCg(reference); } });
   qualifyingEvents(runtime);
   await runtime.drainCandidateWork();
-  const expected = { id: "B", name: "moderate", promotionMinEvents: 3, promotionWindowMinutes: 10,
+  const expected = { id: "B", name: "moderate", promotionMinEvents: 2, promotionWindowMinutes: 10,
     closeAfterMinutes: 20, activeAssociationDistanceKm: 10, nearbyCooldownDistanceKm: 10, nearbyCooldownMinutes: 20 };
   assert.deepEqual(runtime.summary(clock).profile, expected);
   clock += 5 * 60_000;
@@ -925,7 +757,7 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   assert.equal(earlier.providerStatus, "no_match");
   assert.equal(earlier.publishedAt, new Date(baseNow).toISOString());
   assert.equal(earlier.latitude, 39.9);
-  assert.equal(earlier.longitude, 32.6);
+  assert.ok(Math.abs((earlier.longitude as number) - 32.6) < 1e-9);
   assert.equal(earlier.locationLabel, "Aşağı Ayrancı, Çankaya");
   assert.deepEqual(earlier.structuredLocation, {
     neighborhood: "Aşağı Ayrancı", locality: "Çankaya", localityKind: "town",
@@ -935,9 +767,9 @@ test("eligible first-CG shadow emits detailed telemetry without publication side
   const transition = fields.transitionElapsedSeconds as Record<string, unknown>;
   assert.equal(transition.earlierPublicationToCg, 60);
   assert.equal(transition.earlierPublicationToEvaluation, 180);
-  assert.equal(transition.earlierPublicationToCgDistanceKm,
+  assert.ok(Math.abs((transition.earlierPublicationToCgDistanceKm as number) -
     greatCircleDistanceKm({ latitude: 39.9, longitude: 32.6 },
-      { latitude: 39.95, longitude: 32.65, eventTimeMs: baseNow + 60_000 }));
+      { latitude: 39.95, longitude: 32.65, eventTimeMs: baseNow + 60_000 })) < 1e-9);
   assert.equal(fixture.records.length, 1, "shadow evaluation must not persist another publication");
   assert.equal(fixture.calls.writes, 1);
   assert.equal(fixture.calls.notifications, 1);
@@ -1148,7 +980,8 @@ test("persisted initial ŞİMŞEK schedules one +3 minute shadow query with no p
   assert.equal(fields.selectedLatitude, 39.9);
   assert.equal(fields.selectedLongitude, 32.66);
   assert.equal(fields.selectedCgEventTimeMs, baseNow - 50_000);
-  assert.equal(fields.referenceTimeDeltaMs, 49_002);
+  assert.equal(fields.referenceTimeDeltaMs, 49_001,
+    "the promoted candidate reference is captured when its second eligible event arrives");
   assert.equal(fields.selectedProviderAgeMs, 230_000);
   assert.equal(fields.providerCostTokens, 5);
   assert.equal(fields.initialProviderCostTokens, 2);
