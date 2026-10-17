@@ -4,6 +4,7 @@ import type { CompassDirection } from "./lightning/bearing.ts";
 
 export type LiveLightningSource = "xweather" | "blitz-experimental";
 export type LivePresentationStatus = "active" | "clear" | "unknown" | "unavailable";
+export const DEVELOPER_LIVE_SOURCE_STORAGE_KEY = "lightning-nearby:developer-live-source";
 
 export interface LiveLightningPresentation {
   source: LiveLightningSource;
@@ -64,8 +65,13 @@ export function liveSourceEndpoint(source: LiveLightningSource): string {
   return source === "xweather" ? "/api/lightning/live" : "/api/lightning/blitz-experimental";
 }
 
-export function developerLiveMode(search: string): boolean {
-  return new URLSearchParams(search).get("lightningDev") === "1";
+export function developerLiveMode(search: string, hostname: string): boolean {
+  return new URLSearchParams(search).get("lightningDev") === "1" ||
+    hostname.toLowerCase() === "merge-ready--lightning-nearby.netlify.app";
+}
+
+export function parseStoredLiveSource(value: string | null): LiveLightningSource | null {
+  return value === "xweather" || value === "blitz-experimental" ? value : null;
 }
 
 export function isCurrentSourceRequest(requestId: number, latestId: number, requestSource: LiveLightningSource,
