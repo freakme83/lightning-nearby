@@ -6,6 +6,7 @@ import { LIVE_CURRENT_EVENT_LIMIT } from "./types.ts";
 export const BLITZ_OBSERVER_REQUEST_TIMEOUT_MS = 5_000;
 const RECENT = { radiusKm: 50, windowMinutes: 15 } as const;
 const CURRENT = { radiusKm: 40, windowMinutes: 5 } as const;
+const RADIUS_EPSILON_KM = 1e-8;
 
 type Coverage = { complete: boolean; usable: boolean; requestedWindowMinutes: number; coverageStartMs: number; toleratedGapMs: number };
 type ActivityStatus = "active" | "clear" | "unknown";
@@ -63,13 +64,19 @@ function parseReply(value: unknown, expected: ObserverQuery): ObserverReply | nu
       !finite(coverage.coverageStartMs) || !finite(coverage.toleratedGapMs) || coverage.toleratedGapMs < 0 ||
       (coverage.complete && !coverage.usable)) return null;
   const events: ObserverEvent[] = [];
+  const earliestEventTimeMs = value.fetchedAt - expected.windowMinutes * 60_000;
   for (const item of value.events) {
     if (!record(item) || !finite(item.eventTimeMs) || !finite(item.receivedAtMs) ||
         !isValidCoordinates(item.latitude, item.longitude) || !finite(item.distanceKm) || item.distanceKm < 0 ||
         !finite(item.latencyMs) || typeof item.transportComparisonEligible !== "boolean") return null;
+    if (item.eventTimeMs < earliestEventTimeMs || item.eventTimeMs > value.fetchedAt) return null;
+    const computedDistanceKm = greatCircleDistanceKm(expected.latitude, expected.longitude,
+      item.latitude as number, item.longitude as number);
+    if (computedDistanceKm > expected.radiusKm + RADIUS_EPSILON_KM) return null;
     events.push({ eventTimeMs: item.eventTimeMs, receivedAtMs: item.receivedAtMs,
       latitude: item.latitude as number, longitude: item.longitude as number,
-      distanceKm: item.distanceKm, latencyMs: item.latencyMs,
+      // Validate the observer field above, but retain only our locally derived distance internally.
+      distanceKm: computedDistanceKm, latencyMs: item.latencyMs,
       transportComparisonEligible: item.transportComparisonEligible });
   }
   return { fetchedAt: value.fetchedAt, coverage: {
