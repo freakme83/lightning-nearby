@@ -32,12 +32,12 @@ test("cache stores only Blitz deliveries, including those outside Ankara, preser
   assert.equal(cache.query(QUERY, NOW)[0].transportComparisonEligible, false);
 });
 
-test("fresh active cache reports an empty 15-minute query as incomplete", () => {
+test("fresh active cache reports an empty 15-minute query as incomplete and unusable", () => {
   const cache = new BlitzRecentEventCache(NOW);
   cache.setObservationActive(true, NOW);
   assert.deepEqual(cache.query(QUERY, NOW), []);
   assert.deepEqual(cache.coverage(15, NOW), {
-    complete: false, requestedWindowMinutes: 15, coverageStartMs: NOW,
+    complete: false, usable: false, requestedWindowMinutes: 15, coverageStartMs: NOW, toleratedGapMs: 0,
   });
 });
 
@@ -47,7 +47,7 @@ test("continuous history spanning the request can prove an empty area clear", ()
   cache.setObservationActive(true, startedAt);
   assert.deepEqual(cache.query(QUERY, NOW), []);
   assert.deepEqual(cache.coverage(15, NOW), {
-    complete: true, requestedWindowMinutes: 15, coverageStartMs: startedAt,
+    complete: true, usable: true, requestedWindowMinutes: 15, coverageStartMs: startedAt, toleratedGapMs: 0,
   });
 });
 
@@ -57,6 +57,7 @@ test("shorter windows become complete before a full 15-minute window", () => {
   cache.setObservationActive(true, startedAt);
   assert.equal(cache.coverage(5, NOW).complete, true);
   assert.equal(cache.coverage(15, NOW).complete, false);
+  assert.equal(cache.coverage(15, NOW).usable, false);
 });
 
 test("cap eviction makes affected history incomplete while retained events remain queryable", () => {
@@ -68,7 +69,9 @@ test("cap eviction makes affected history incomplete while retained events remai
   }
   assert.equal(cache.query(QUERY, NOW).length, BLITZ_RECENT_EVENT_MAX_EVENTS);
   assert.equal(cache.coverage(15, NOW).complete, false);
+  assert.equal(cache.coverage(15, NOW).usable, false);
   assert.equal(cache.coverage(1, NOW).complete, false);
+  assert.equal(cache.coverage(1, NOW).usable, false);
 });
 
 test("disconnected observer cannot claim complete coverage after its prior interval", () => {
@@ -77,6 +80,7 @@ test("disconnected observer cannot claim complete coverage after its prior inter
   cache.setObservationActive(true, startedAt);
   cache.setObservationActive(false, NOW - 1_000);
   assert.equal(cache.coverage(1, NOW).complete, false);
+  assert.equal(cache.coverage(1, NOW).usable, false);
 });
 
 test("short reconnect restores previously complete coverage without changing event results", () => {
@@ -91,20 +95,24 @@ test("short reconnect restores previously complete coverage without changing eve
   assert.equal(cache.coverage(5, NOW + 1).complete, false);
   cache.setObservationActive(true, NOW + 10_000);
   const after = cache.coverage(5, NOW + 10_000);
-  assert.equal(after.complete, true);
+  assert.equal(after.complete, false);
+  assert.equal(after.usable, true);
+  assert.equal(after.toleratedGapMs, 10_000);
   assert.equal(after.coverageStartMs, Math.max(startedAt, NOW + 10_000 - BLITZ_RECENT_EVENT_RETENTION_MS));
   assert.deepEqual(cache.query({ ...QUERY, windowMinutes: 5 }, NOW + 10_000).map(item => item.observerEventId),
     eventsBeforeGap.map(item => item.observerEventId));
 });
 
-test("reconnect gap exactly at the inclusive threshold preserves the prior boundary", () => {
+test("reconnect gap exactly at the inclusive threshold is usable but not complete", () => {
   const startedAt = NOW - 5 * 60_000;
   const cache = new BlitzRecentEventCache(startedAt);
   cache.setObservationActive(true, startedAt);
   cache.setObservationActive(false, NOW);
   cache.setObservationActive(true, NOW + MAX_COVERAGE_RECONNECT_GAP_MS);
   const coverage = cache.coverage(5, NOW + MAX_COVERAGE_RECONNECT_GAP_MS);
-  assert.equal(coverage.complete, true);
+  assert.equal(coverage.complete, false);
+  assert.equal(coverage.usable, true);
+  assert.equal(coverage.toleratedGapMs, MAX_COVERAGE_RECONNECT_GAP_MS);
   assert.equal(coverage.coverageStartMs, startedAt);
 });
 
@@ -117,6 +125,8 @@ test("reconnect gap just over threshold starts a new coverage interval", () => {
   cache.setObservationActive(true, reconnectAt);
   const coverage = cache.coverage(1, reconnectAt);
   assert.equal(coverage.complete, false);
+  assert.equal(coverage.usable, false);
+  assert.equal(coverage.toleratedGapMs, 0);
   assert.equal(coverage.coverageStartMs, reconnectAt);
 });
 
@@ -124,14 +134,28 @@ test("repeated short reconnects keep the original continuous coverage boundary",
   const startedAt = NOW - 5 * 60_000;
   const cache = new BlitzRecentEventCache(startedAt);
   cache.setObservationActive(true, startedAt);
-  for (const disconnectedAt of [NOW, NOW + 10_000, NOW + 20_000]) {
+  for (const disconnectedAt of [NOW, NOW + 20_000, NOW + 40_000]) {
     cache.setObservationActive(false, disconnectedAt);
-    cache.setObservationActive(true, disconnectedAt + MAX_COVERAGE_RECONNECT_GAP_MS);
+    cache.setObservationActive(true, disconnectedAt + 10_000);
   }
-  const now = NOW + 20_000 + MAX_COVERAGE_RECONNECT_GAP_MS;
+  const now = NOW + 50_000;
   const coverage = cache.coverage(5, now);
-  assert.equal(coverage.complete, true);
+  assert.equal(coverage.complete, false);
+  assert.equal(coverage.usable, true);
+  assert.equal(coverage.toleratedGapMs, 10_000);
   assert.equal(coverage.coverageStartMs, startedAt);
+});
+
+test("a short gap entirely before the requested window no longer affects strict completeness", () => {
+  const startedAt = NOW - 20 * 60_000;
+  const cache = new BlitzRecentEventCache(startedAt);
+  cache.setObservationActive(true, startedAt);
+  cache.setObservationActive(false, NOW - 10 * 60_000);
+  cache.setObservationActive(true, NOW - 10 * 60_000 + 10_000);
+  const coverage = cache.coverage(5, NOW);
+  assert.equal(coverage.complete, true);
+  assert.equal(coverage.usable, true);
+  assert.equal(coverage.toleratedGapMs, 0);
 });
 
 test("short reconnect tolerance does not override capacity or retention eviction", () => {
@@ -144,6 +168,7 @@ test("short reconnect tolerance does not override capacity or retention eviction
   capped.setObservationActive(false, NOW);
   capped.setObservationActive(true, NOW + 1_000);
   assert.equal(capped.coverage(1, NOW + 1_000).complete, false);
+  assert.equal(capped.coverage(1, NOW + 1_000).usable, false);
 
   const retained = new BlitzRecentEventCache(NOW - 10 * 60_000);
   retained.setObservationActive(true, NOW - 10 * 60_000);
@@ -154,6 +179,7 @@ test("short reconnect tolerance does not override capacity or retention eviction
   retained.setObservationActive(false, NOW);
   retained.setObservationActive(true, NOW + 1_000);
   assert.equal(retained.coverage(5, NOW + 1_000).complete, false);
+  assert.equal(retained.coverage(5, NOW + 1_000).usable, false);
 });
 
 test("retention expiry, event-time window, and hard event cap are independent", () => {

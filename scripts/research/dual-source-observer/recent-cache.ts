@@ -18,9 +18,14 @@ export type RecentQuery = {
 };
 export type RecentCoverage = {
   complete: boolean;
+  usable: boolean;
   requestedWindowMinutes: number;
   coverageStartMs: number;
+  toleratedGapMs: number;
 };
+
+type CoverageGap = { startMs: number; endMs: number; durationMs: number; tolerated: boolean };
+const MAX_RECORDED_COVERAGE_GAPS = 256;
 
 export class BlitzRecentEventCache {
   private events: RecentBlitzEvent[] = [];
@@ -29,6 +34,8 @@ export class BlitzRecentEventCache {
   private hasObservedConnection = false;
   private disconnectedAtMs: number | null = null;
   private latestEvictedEventTimeMs: number | null = null;
+  private coverageGaps: CoverageGap[] = [];
+  private gapHistoryCoverageStartMs = Number.NEGATIVE_INFINITY;
 
   constructor(startedAtMs: number = Date.now()) {
     this.coverageBoundaryMs = startedAtMs;
@@ -43,8 +50,20 @@ export class BlitzRecentEventCache {
 
     if (this.observationActive) return;
     const reconnectGapMs = this.disconnectedAtMs === null ? null : atMs - this.disconnectedAtMs;
-    const tolerableReconnect = this.hasObservedConnection && reconnectGapMs !== null &&
-      reconnectGapMs >= 0 && reconnectGapMs <= MAX_COVERAGE_RECONNECT_GAP_MS;
+    const hasPriorDisconnect = this.hasObservedConnection && reconnectGapMs !== null;
+    const tolerableReconnect = hasPriorDisconnect && reconnectGapMs >= 0 &&
+      reconnectGapMs <= MAX_COVERAGE_RECONNECT_GAP_MS;
+    if (hasPriorDisconnect && reconnectGapMs !== null) {
+      const uncertainClock = reconnectGapMs < 0;
+      const gapStartMs = uncertainClock ? atMs : this.disconnectedAtMs!;
+      const gapEndMs = uncertainClock ? this.disconnectedAtMs! : atMs;
+      this.recordGap({
+        startMs: gapStartMs,
+        endMs: gapEndMs,
+        durationMs: uncertainClock ? Number.POSITIVE_INFINITY : reconnectGapMs,
+        tolerated: tolerableReconnect,
+      });
+    }
     if (!tolerableReconnect) this.coverageBoundaryMs = atMs;
     this.hasObservedConnection = true;
     this.observationActive = true;
@@ -77,15 +96,30 @@ export class BlitzRecentEventCache {
   coverage(windowMinutes: number, nowMs: number = Date.now()): RecentCoverage {
     this.prune(nowMs);
     const requestedStartMs = nowMs - windowMinutes * 60_000;
+    this.pruneCoverageGaps(nowMs - BLITZ_RECENT_EVENT_RETENTION_MS);
     const retentionStartMs = nowMs - BLITZ_RECENT_EVENT_RETENTION_MS;
     const evictionStartMs = this.latestEvictedEventTimeMs === null
       ? Number.NEGATIVE_INFINITY
       : this.latestEvictedEventTimeMs + 1;
-    const coverageStartMs = Math.max(this.coverageBoundaryMs, retentionStartMs, evictionStartMs);
+    const coverageStartMs = Math.max(
+      this.coverageBoundaryMs,
+      retentionStartMs,
+      evictionStartMs,
+      this.gapHistoryCoverageStartMs,
+    );
+    const relevantGaps = this.coverageGaps.filter(gap => gap.startMs < nowMs && gap.endMs > requestedStartMs);
+    const maxToleratedGapMs = relevantGaps.reduce((max, gap) => gap.tolerated
+      ? Math.max(max, gap.durationMs)
+      : max, 0);
+    const historicalCoverageAvailable = requestedStartMs >= coverageStartMs;
+    const hasUnacceptableGap = relevantGaps.some(gap => !gap.tolerated);
+    const usable = this.observationActive && historicalCoverageAvailable && !hasUnacceptableGap;
     return {
-      complete: this.observationActive && requestedStartMs >= coverageStartMs,
+      complete: usable && relevantGaps.length === 0,
+      usable,
       requestedWindowMinutes: windowMinutes,
       coverageStartMs,
+      toleratedGapMs: maxToleratedGapMs,
     };
   }
 
@@ -118,5 +152,24 @@ export class BlitzRecentEventCache {
     this.latestEvictedEventTimeMs = this.latestEvictedEventTimeMs === null
       ? event.eventTimeMs
       : Math.max(this.latestEvictedEventTimeMs, event.eventTimeMs);
+  }
+
+  private recordGap(gap: CoverageGap): void {
+    this.coverageGaps.push(gap);
+    if (this.coverageGaps.length > MAX_RECORDED_COVERAGE_GAPS) {
+      const evicted = this.coverageGaps.splice(0, this.coverageGaps.length - MAX_RECORDED_COVERAGE_GAPS);
+      for (const removed of evicted) {
+        this.gapHistoryCoverageStartMs = Math.max(this.gapHistoryCoverageStartMs, removed.endMs);
+      }
+    }
+  }
+
+  private pruneCoverageGaps(cutoffMs: number): void {
+    const retained: CoverageGap[] = [];
+    for (const gap of this.coverageGaps) {
+      if (gap.endMs > cutoffMs) retained.push(gap);
+      else this.gapHistoryCoverageStartMs = Math.max(this.gapHistoryCoverageStartMs, gap.endMs);
+    }
+    this.coverageGaps = retained;
   }
 }

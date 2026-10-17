@@ -47,7 +47,8 @@ test("localhost API returns a bounded in-memory Blitz response with no upstream 
     assert.equal(body.source, "blitzortung");
     assert.deepEqual(body.query, { latitude: 39.92, longitude: 32.85, radiusKm: 100, windowMinutes: 1 });
     assert.deepEqual(body.coverage, {
-      complete: true, requestedWindowMinutes: 1, coverageStartMs: now - 5 * 60_000,
+      complete: true, usable: true, requestedWindowMinutes: 1,
+      coverageStartMs: now - 5 * 60_000, toleratedGapMs: 0,
     });
     assert.equal(typeof body.fetchedAt, "number");
     assert.deepEqual(body.events, [{ observerEventId: "blitz-1", sourceServer: "ws7",
