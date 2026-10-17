@@ -40,6 +40,7 @@ function visibleLocationLabel(selection: LocationSelection, locale: Locale): str
 export default function Home() {
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   const [developerMode, setDeveloperMode] = useState(false);
+  const [developerModeReady, setDeveloperModeReady] = useState(false);
   const localeRef = useRef<Locale>(DEFAULT_LOCALE);
   const [location, setLocation] = useState<MonitoredLocation | null>(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -88,7 +89,10 @@ export default function Home() {
     document.documentElement.lang = locale;
   }, [locale]);
   useEffect(() => {
-    queueMicrotask(() => setDeveloperMode(developerLiveMode(window.location.search)));
+    queueMicrotask(() => {
+      setDeveloperMode(developerLiveMode(window.location.search, window.location.hostname));
+      setDeveloperModeReady(true);
+    });
   }, []);
   const changeLocale = (next: Locale) => { setLocale(next); saveLocale(localStorage, next); };
 
@@ -425,7 +429,7 @@ export default function Home() {
       {locationMessage && <p className="inline-error" role="alert">{t(locale, locationMessage)}</p>}
       {loading && <div className="loading-state" role="status">{t(locale, "gettingForecast")}</div>}
       {forecastError && !loading && <div className="error-panel" role="alert"><div><strong>{t(locale, "forecastUnavailable")}</strong><p>{t(locale, "forecastError")}</p></div><button className="secondary-button" type="button" onClick={() => setLocation({ ...location })}>{t(locale, "tryAgain")}</button></div>}
-      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} onManualRefresh={refreshForecast} developerMode={developerMode} />
+      <LiveObservation key={`${location.latitude},${location.longitude}`} latitude={location.latitude} longitude={location.longitude} forecast={forecastContext} locale={locale} autoCheckEligible={isInitialLiveCheckEligible({ storageReady, hasLocation: true, isFirstLocationForSession: initialAutoCheckLocationKey === `${location.latitude},${location.longitude}` })} onManualRefresh={refreshForecast} developerMode={developerMode} developerModeReady={developerModeReady} />
       {forecast && !loading && <>
         <TodayBriefing daily={forecast.daily} timezone={forecast.timezone} currentTemperatureC={forecast.currentTemperatureC} locale={locale} />
         <section className="timeline-section" aria-labelledby="timeline-title">
