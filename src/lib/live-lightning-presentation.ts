@@ -73,6 +73,15 @@ export function isCurrentSourceRequest(requestId: number, latestId: number, requ
   return requestSource === currentSource && !signal.aborted && requestId === latestId && requestLocation === currentLocation;
 }
 
+export function canStartLiveSourceRequest(explicitSource: LiveLightningSource | undefined,
+  selectedSource: LiveLightningSource): boolean {
+  return explicitSource === undefined || explicitSource === selectedSource;
+}
+
+export function ownsLiveRequestController(current: AbortController | null, request: AbortController): boolean {
+  return current === request;
+}
+
 export function livePresentationSeverity(presentation: LiveLightningPresentation | null): "none" | "nearby" | "elevated" | "high" | null {
   if (!presentation) return null;
   if (presentation.status === "clear") return "none";
