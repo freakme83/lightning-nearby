@@ -3,14 +3,13 @@ import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitori
 import { backoffMs } from "../live-lightning-listener/core.ts";
 import { BLITZORTUNG_SERVERS, processBlitzortungFrame,
   type BlitzortungServer } from "../research/blitzortung-probe/protocol.ts";
-import { BLITZ_ADMISSION_MAX_LATENCY_MS, BLITZ_FRAME_TIMEOUT_MS,
-  BlitzPrimaryAdmission, blitzSourceStillHealthy } from "./blitz-primary.ts";
+import { BLITZ_ADMISSION_MAX_LATENCY_MS, BlitzPrimaryAdmission, blitzSourceStillHealthy } from "./blitz-primary.ts";
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { createFlyAutoPublish } from "./auto-publish.ts";
 
 const summaryEveryMs = 5 * 60_000;
-const frameTimeoutMs = BLITZ_FRAME_TIMEOUT_MS;
+const frameTimeoutMs = 90_000;
 const blitzAdmission = new BlitzPrimaryAdmission();
 const counters = { messages: 0, decoded: 0, connections: 0, reconnects: 0, malformed: 0 };
 const startedAt = Date.now();
@@ -50,7 +49,7 @@ try {
 }
 
 function summary(reason = "periodic") {
-  sourceHealthy = blitzSourceStillHealthy(lastFrameAt, Date.now()) && !stopping;
+  sourceHealthy = blitzSourceStillHealthy(lastFrameAt, Date.now(), frameTimeoutMs) && !stopping;
   emit("summary", {
     reason,
     region: process.env.FLY_REGION ?? null,
@@ -120,7 +119,7 @@ async function connectOnce(): Promise<void> {
   const sourceServer = BLITZORTUNG_SERVERS[serverIndex++ % BLITZORTUNG_SERVERS.length];
   const endpoint = `wss://${sourceServer}.blitzortung.org/`;
   const openingAt = Date.now();
-  if (!blitzSourceStillHealthy(lastFrameAt, openingAt)) {
+  if (!blitzSourceStillHealthy(lastFrameAt, openingAt, frameTimeoutMs)) {
     if (sourceHealthy) runtime.recordDisconnected(openingAt);
     sourceHealthy = false;
     runtime.markConnecting(openingAt);
@@ -128,17 +127,19 @@ async function connectOnce(): Promise<void> {
   await new Promise<void>(resolve => {
     let settled = false;
     let watchdog: ReturnType<typeof setInterval> | null = null;
+    let closeGrace: ReturnType<typeof setTimeout> | null = null;
     let watchdogTriggered = false;
     let lastFrameOnConnection = openingAt;
     const finish = () => {
       if (settled) return;
       settled = true;
-      if (!stopping && !blitzSourceStillHealthy(lastFrameAt, Date.now())) {
+      if (!stopping && !blitzSourceStillHealthy(lastFrameAt, Date.now(), frameTimeoutMs)) {
         sourceHealthy = false;
         runtime.recordDisconnected(Date.now());
       }
       clearTimeout(openTimer);
       if (watchdog) clearInterval(watchdog);
+      if (closeGrace) clearTimeout(closeGrace);
       if (socket === ws) socket = null;
       resolve();
     };
@@ -176,6 +177,7 @@ async function connectOnce(): Promise<void> {
           });
           emit("connection_error", { sourceServer, reason: "90s without any frames" });
           ws.close();
+          closeGrace = setTimeout(finish, 5_000);
         }
       }, 15_000);
     });

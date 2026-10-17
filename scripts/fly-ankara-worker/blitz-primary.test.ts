@@ -60,6 +60,16 @@ test("freshness is inclusive at 30 seconds and excludes future and older events"
   assert.equal(guard.counters.blitzRejectedStaleOrFuture, 2);
 });
 
+test("an admitted strike repeated outside freshness stays a duplicate; a future strike can later be admitted", () => {
+  const { guard, admitted, accept } = recorder();
+  guard.admit(strike(), accept);
+  assert.equal(guard.admit(strike({ receivedAtMs: eventTimeMs + 40_000 }), accept), "duplicate");
+  const future = strike({ latitude: 39.901, receivedAtMs: eventTimeMs - 1 });
+  assert.equal(guard.admit(future, accept), "stale_or_future");
+  assert.equal(guard.admit({ ...future, receivedAtMs: eventTimeMs + 1_000 }, accept), "admitted");
+  assert.equal(admitted.length, 2);
+});
+
 test("exact dedup is bounded by both TTL and capacity", () => {
   const { guard, accept } = recorder();
   assert.equal(BLITZ_EXACT_DEDUP_TTL_MS, 120_000);
@@ -69,7 +79,7 @@ test("exact dedup is bounded by both TTL and capacity", () => {
   for (let index = 0; index < BLITZ_EXACT_DEDUP_MAX_ENTRIES + 1; index++) {
     guard.admit(strike({ longitude: 32.6 + index * 0.000001 }), accept);
   }
-  assert.ok(guard.counters.blitzAdmittedEvents > 1);
+  assert.equal(guard.dedupEntryCount, BLITZ_EXACT_DEDUP_MAX_ENTRIES);
 });
 
 test("duplicate does not increase clustering or Profile B event counts", () => {
@@ -95,10 +105,10 @@ test("duplicate does not increase clustering or Profile B event counts", () => {
 });
 
 test("short Blitz reconnect preserves source health; a real quiet gap does not", () => {
-  assert.equal(blitzSourceStillHealthy(null, eventTimeMs), false);
-  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 10_000), true);
-  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 89_999), true);
-  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 90_000), false);
+  assert.equal(blitzSourceStillHealthy(null, eventTimeMs, 90_000), false);
+  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 10_000, 90_000), true);
+  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 89_999, 90_000), true);
+  assert.equal(blitzSourceStillHealthy(eventTimeMs, eventTimeMs + 90_000, 90_000), false);
 });
 
 test("worker admits only Blitz; live2 remains a separate shadow source", async () => {
