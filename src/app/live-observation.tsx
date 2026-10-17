@@ -6,7 +6,7 @@ import type { BlitzExperimentalResult } from "@/lib/lightning/blitz-experimental
 import { claimInitialLiveCheck } from "@/lib/initial-live-check";
 import { liveActivitySegments, liveEventCountCopy, liveSeverityLabel, requestLiveCheck } from "@/lib/live-observation";
 import { activityMapData, liveActivityView, lookupActivityPlace, type ActivityPlaceContext } from "@/lib/live-activity";
-import { canStartLiveSourceRequest, DEVELOPER_LIVE_SOURCE_STORAGE_KEY, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, parseStoredLiveSource, shouldRunInitialLiveSourceCheck, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
+import { canStartLiveSourceRequest, DEVELOPER_LIVE_SOURCE_STORAGE_KEY, initialLiveSourceForCheck, isCurrentSourceRequest, livePresentationSeverity, liveSourceEndpoint, normalizeBlitzPresentation, normalizeXweatherPresentation, ownsLiveRequestController, parseStoredLiveSource, resolveDeveloperLiveSource, unavailableLivePresentation, type LiveLightningPresentation, type LiveLightningSource } from "@/lib/live-lightning-presentation";
 import LiveActivityMap from "./live-activity-map";
 import type { RiskLevel } from "@/lib/weather";
 import { intlLocale, t, type Locale } from "@/lib/i18n";
@@ -59,6 +59,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   const [source, setSource] = useState<LiveLightningSource>("xweather");
   const [sourcePreferenceReady, setSourcePreferenceReady] = useState(false);
   const sourceRef = useRef<LiveLightningSource>("xweather");
+  const resolvedInitialSource = useRef<LiveLightningSource | null>(null);
   const [result, setResult] = useState<LiveLightningPresentation | null>(null);
   const [xweatherSummary, setXweatherSummary] = useState<LiveLightningSummary | null>(null);
   const [topLevelFailure, setTopLevelFailure] = useState(false);
@@ -71,6 +72,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   const controller = useRef<AbortController | null>(null);
   const requestId = useRef(0);
   const automaticEffectGeneration = useRef(0);
+  const initialAutoCheckStarted = useRef(false);
   const locationKey = `${latitude},${longitude}`;
   const locationRef = useRef(locationKey);
 
@@ -82,14 +84,15 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
 
   useEffect(() => {
     if (!developerModeReady) return;
-    let restoredSource: LiveLightningSource = "xweather";
+    let storedSource: string | null = null;
     if (developerMode) {
-      try {
-        restoredSource = parseStoredLiveSource(localStorage.getItem(DEVELOPER_LIVE_SOURCE_STORAGE_KEY)) ?? "xweather";
-      } catch { /* Storage can be unavailable; Xweather remains the safe default. */ }
+      try { storedSource = localStorage.getItem(DEVELOPER_LIVE_SOURCE_STORAGE_KEY); }
+      catch { /* Storage can be unavailable; use the developer default. */ }
     }
+    const restoredSource = resolveDeveloperLiveSource(developerMode, storedSource);
     const sourceChanged = restoredSource !== sourceRef.current;
     sourceRef.current = restoredSource;
+    resolvedInitialSource.current = restoredSource;
     queueMicrotask(() => {
       if (sourceChanged) {
         setSource(restoredSource);
@@ -172,18 +175,23 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
   }, [latitude, longitude, locationKey]);
 
   useEffect(() => {
-    if (!shouldRunInitialLiveSourceCheck(autoCheckEligible, developerModeReady, sourcePreferenceReady, sourceRef.current)) return;
+    const initialSource = initialLiveSourceForCheck(autoCheckEligible, developerModeReady, sourcePreferenceReady,
+      developerMode, source, sourceRef.current, resolvedInitialSource.current);
+    if (!initialSource || initialAutoCheckStarted.current) return;
     const generation = ++automaticEffectGeneration.current;
     queueMicrotask(() => {
-      if (generation !== automaticEffectGeneration.current) return;
+      if (generation !== automaticEffectGeneration.current || initialAutoCheckStarted.current) return;
+      initialAutoCheckStarted.current = true;
+      if (source !== initialSource || sourceRef.current !== initialSource) return;
       if (!claimInitialLiveCheck(() => window.sessionStorage)) return;
-      void requestLiveCheck("automatic", () => checkActivity("xweather"));
+      void requestLiveCheck("automatic", () => checkActivity(initialSource));
     });
     return () => { automaticEffectGeneration.current += 1; };
-  }, [autoCheckEligible, checkActivity, developerModeReady, sourcePreferenceReady]);
+  }, [autoCheckEligible, checkActivity, developerMode, developerModeReady, source, sourcePreferenceReady]);
 
   const changeSource = (next: LiveLightningSource) => {
     if (next === sourceRef.current) return;
+    initialAutoCheckStarted.current = true;
     sourceRef.current = next;
     requestId.current += 1;
     controller.current?.abort();
@@ -212,8 +220,7 @@ export default function LiveObservation({ latitude, longitude, forecast, autoChe
     ? countRadius === 10 ? result.counts.within10Km : countRadius === 25 ? result.counts.within25Km : result.counts.within40Km : null;
   const active = result?.status === "active";
   const clear = result?.status === "clear";
-  const unavailableState = result?.status === "unavailable" || result?.status === "unknown";
-  const heroClass = active && severity ? `live-${severity}` : clear ? "live-clear" : unavailableState ? "live-unavailable" : forecast ? `forecast-fallback risk-${forecast.risk}` : "forecast-fallback";
+  const heroClass = active && severity ? `live-${severity}` : clear ? "live-clear" : result?.status === "unknown" ? "live-observing" : result?.status === "unavailable" ? "live-unavailable" : forecast ? `forecast-fallback risk-${forecast.risk}` : "forecast-fallback";
   const liveBadge = liveSeverityLabel(severity, locale);
   const checkedTime = checkedAt !== null ? new Intl.DateTimeFormat(intlLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(checkedAt) : null;
 
