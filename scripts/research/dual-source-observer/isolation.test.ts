@@ -5,7 +5,7 @@ import test from "node:test";
 
 const HERE = import.meta.dirname;
 const ROOT = path.resolve(HERE, "../../..");
-const OBSERVER_FILES = ["core.ts", "runtime.ts", "runner.ts"];
+const OBSERVER_FILES = ["core.ts", "runtime.ts", "runner.ts", "recent-cache.ts", "http-api.ts"];
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.resolve(ROOT, relativePath), "utf8");
@@ -29,6 +29,10 @@ test("observer import graph cannot reach production lifecycle or side-effect ada
     "../blitzortung-probe/protocol.ts",
     "./core.ts",
     "./runtime.ts",
+    "./recent-cache.ts",
+    "./http-api.ts",
+    "node:crypto",
+    "node:http",
   ]);
   for (const filename of OBSERVER_FILES) {
     const text = await readFile(path.join(HERE, filename), "utf8");
@@ -38,6 +42,15 @@ test("observer import graph cannot reach production lifecycle or side-effect ada
     assert.doesNotMatch(text, /incident-engine|live-lightning-clustering|xweather|supabase|telegram|publisher/i,
       `${filename} crossed the observer boundary`);
   }
+});
+
+test("recent HTTP path reads only observer memory and adds no Blitz connection or provider call", async () => {
+  const api = await source("scripts/research/dual-source-observer/http-api.ts");
+  const cache = await source("scripts/research/dual-source-observer/recent-cache.ts");
+  assert.doesNotMatch(api + cache, /new WebSocket|\bfetch\s*\(|blitzortung-probe\/protocol/);
+  const runner = await source("scripts/research/dual-source-observer/runner.ts");
+  assert.match(runner, /blitzRecentCache\.insert\(event, receivedAtMs\)/);
+  assert.equal([...runner.matchAll(/new WebSocket\(/g)].length, 1);
 });
 
 test("production worker and its Fly command do not import or start the observer", async () => {
