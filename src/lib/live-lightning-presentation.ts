@@ -74,6 +74,11 @@ export function parseStoredLiveSource(value: string | null): LiveLightningSource
   return value === "xweather" || value === "blitz-experimental" ? value : null;
 }
 
+export function shouldRunInitialLiveSourceCheck(autoCheckEligible: boolean, developerModeReady: boolean,
+  sourcePreferenceReady: boolean, source: LiveLightningSource): boolean {
+  return autoCheckEligible && developerModeReady && sourcePreferenceReady && source === "xweather";
+}
+
 export function isCurrentSourceRequest(requestId: number, latestId: number, requestSource: LiveLightningSource,
   currentSource: LiveLightningSource, requestLocation: string, currentLocation: string, signal: AbortSignal): boolean {
   return requestSource === currentSource && !signal.aborted && requestId === latestId && requestLocation === currentLocation;
