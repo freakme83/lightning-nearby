@@ -1,7 +1,7 @@
-// Research-only LightningMaps v24 adapter. No production imports.
+// LightningMaps v24 event shape and adapter; the worker also accepts Blitz events.
 export type Box = { north: number; east: number; south: number; west: number };
 export type LightningEvent = {
-  source: "lightningmaps-live2";
+  source: "lightningmaps-live2" | "blitzortung";
   eventTimeMs: number;
   receivedAtMs: number;
   latitude: number;

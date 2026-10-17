@@ -1,15 +1,17 @@
 // Continuous Ankara observer and pending-publication preparer. It has no X publisher.
 import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitoring-area.ts";
-import { backoffMs, parseFrame, subscription } from "../live-lightning-listener/core.ts";
+import { backoffMs } from "../live-lightning-listener/core.ts";
+import { BLITZORTUNG_SERVERS, processBlitzortungFrame,
+  type BlitzortungServer } from "../research/blitzortung-probe/protocol.ts";
+import { BLITZ_ADMISSION_MAX_LATENCY_MS, BLITZ_FRAME_TIMEOUT_MS,
+  BlitzPrimaryAdmission, blitzSourceStillHealthy } from "./blitz-primary.ts";
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { createFlyAutoPublish } from "./auto-publish.ts";
 
-const endpoint = "wss://live2.lightningmaps.org/";
-const box = ANKARA_MONITORING_AREA.bounds;
 const summaryEveryMs = 5 * 60_000;
-const frameTimeoutMs = 90_000;
-const lastIds: Record<string, number> = {};
+const frameTimeoutMs = BLITZ_FRAME_TIMEOUT_MS;
+const blitzAdmission = new BlitzPrimaryAdmission();
 const counters = { messages: 0, decoded: 0, connections: 0, reconnects: 0, malformed: 0 };
 const startedAt = Date.now();
 let stopping = false;
@@ -17,6 +19,7 @@ let sourceHealthy = false;
 let lastFrameAt: number | null = null;
 let socket: WebSocket | null = null;
 let attempt = 0;
+let serverIndex = 0;
 let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 let resolveSleep: (() => void) | null = null;
 
@@ -47,6 +50,7 @@ try {
 }
 
 function summary(reason = "periodic") {
+  sourceHealthy = blitzSourceStillHealthy(lastFrameAt, Date.now()) && !stopping;
   emit("summary", {
     reason,
     region: process.env.FLY_REGION ?? null,
@@ -54,48 +58,34 @@ function summary(reason = "periodic") {
     sourceHealthy,
     lastFrameAt: lastFrameAt === null ? null : new Date(lastFrameAt).toISOString(),
     ...counters,
+    ...blitzAdmission.counters,
     ...runtime.summary(Date.now()),
   });
 }
 
-function resumeId(sourceEventKey: string | undefined) {
-  if (!sourceEventKey) return;
-  const [source, rawId] = sourceEventKey.split("/");
-  const id = Number(rawId);
-  if (Number.isSafeInteger(id)) lastIds[source] = Math.max(lastIds[source] ?? 0, id);
-}
-
-function acceptFrame(data: unknown) {
+function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   counters.messages++;
   const receivedAt = Date.now();
-  lastFrameAt = receivedAt;
   if (typeof data !== "string") {
     counters.malformed++;
     runtime.recordMalformed();
     emit("malformed_frame", { reason: "non-text frame" });
     return;
   }
-  const frame = parseFrame(data, receivedAt);
-  if (frame.kind === "malformed") {
+  const frame = processBlitzortungFrame(data, receivedAt, sourceServer);
+  if (frame.kind !== "event") {
     counters.malformed++;
     runtime.recordMalformed();
-    emit("malformed_frame", { reason: frame.reason });
+    emit("malformed_frame", { source: "blitzortung", reason: frame.reason, kind: frame.kind });
     return;
   }
-  if (!sourceHealthy) {
-    sourceHealthy = true;
-    runtime.recordFrame(receivedAt);
-  } else {
-    runtime.recordFrame(receivedAt);
-  }
-  if (frame.kind !== "events") return;
-  counters.malformed += frame.rejected;
-  runtime.recordMalformed(frame.rejected);
-  for (const event of frame.events) {
-    counters.decoded++;
-    resumeId(event.sourceEventKey);
-    runtime.acceptEvent(event, receivedAt);
-  }
+  sourceHealthy = true;
+  lastFrameAt = receivedAt;
+  runtime.recordFrame(receivedAt);
+  counters.decoded++;
+  const admission = blitzAdmission.admit(frame.event, (event, atMs) => { runtime.acceptEvent(event, atMs); });
+  if (admission !== "admitted") emit("blitz_admission_rejected", { reason: admission,
+    sourceServer, latencyMs: frame.event.latencyMs });
 }
 
 function stop(reason: string) {
@@ -115,36 +105,45 @@ process.once("SIGTERM", () => stop("SIGTERM"));
 const summaryTimer = setInterval(() => summary(), summaryEveryMs);
 summaryTimer.unref();
 emit("worker_start", {
-  endpoint,
+  endpoints: BLITZORTUNG_SERVERS.map(server => `wss://${server}.blitzortung.org/`),
   area: ANKARA_MONITORING_AREA.id,
-  subscriptionBounds: box,
+  subscription: { a: 111 },
   polygonFilter: true,
   incidentProfile: "B",
   freshnessLimitMs: 240_000,
+  blitzAdmissionMaxLatencyMs: BLITZ_ADMISSION_MAX_LATENCY_MS,
+  live2Role: "separate-shadow-observer-only",
   ...runtime.capabilities,
 });
 
 async function connectOnce(): Promise<void> {
+  const sourceServer = BLITZORTUNG_SERVERS[serverIndex++ % BLITZORTUNG_SERVERS.length];
+  const endpoint = `wss://${sourceServer}.blitzortung.org/`;
   const openingAt = Date.now();
-  sourceHealthy = false;
-  runtime.markConnecting(openingAt);
+  if (!blitzSourceStillHealthy(lastFrameAt, openingAt)) {
+    if (sourceHealthy) runtime.recordDisconnected(openingAt);
+    sourceHealthy = false;
+    runtime.markConnecting(openingAt);
+  }
   await new Promise<void>(resolve => {
     let settled = false;
     let watchdog: ReturnType<typeof setInterval> | null = null;
     let watchdogTriggered = false;
-    let lastFrameOnConnection = Date.now();
+    let lastFrameOnConnection = openingAt;
     const finish = () => {
       if (settled) return;
       settled = true;
-      sourceHealthy = false;
-      runtime.recordDisconnected(Date.now());
+      if (!stopping && !blitzSourceStillHealthy(lastFrameAt, Date.now())) {
+        sourceHealthy = false;
+        runtime.recordDisconnected(Date.now());
+      }
       clearTimeout(openTimer);
       if (watchdog) clearInterval(watchdog);
-      socket = null;
+      if (socket === ws) socket = null;
       resolve();
     };
     const openTimer = setTimeout(() => {
-      emit("connection_error", { reason: "open timeout" });
+      emit("connection_error", { sourceServer, reason: "open timeout" });
       ws.close();
       finish();
     }, 20_000);
@@ -154,39 +153,41 @@ async function connectOnce(): Promise<void> {
       socket = ws;
     } catch (error) {
       clearTimeout(openTimer);
-      emit("connection_error", { reason: error instanceof Error ? error.name : "WebSocket construction failed" });
+      emit("connection_error", { sourceServer, reason: error instanceof Error ? error.name : "WebSocket construction failed" });
       finish();
       return;
     }
     ws.addEventListener("open", () => {
+      if (settled || socket !== ws) return;
       clearTimeout(openTimer);
       attempt = 0;
       counters.connections++;
-      emit("connected", { connectionNumber: counters.connections, handshakeMs: Date.now() - openingAt });
-      ws.send(subscription(box, counters.connections > 1 ? lastIds : {}));
+      emit("connected", { source: "blitzortung", sourceServer,
+        connectionNumber: counters.connections, handshakeMs: Date.now() - openingAt });
+      ws.send(JSON.stringify({ a: 111 }));
       watchdog = setInterval(() => {
         if (!watchdogTriggered && Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
           watchdogTriggered = true;
           const previousLastFrameAt = lastFrameAt;
-          sourceHealthy = false;
           emit("source_health", {
             to: "stale",
             reason: "90s without any frames",
             lastFrameAt: previousLastFrameAt === null ? null : new Date(previousLastFrameAt).toISOString(),
           });
-          emit("connection_error", { reason: "90s without any frames" });
+          emit("connection_error", { sourceServer, reason: "90s without any frames" });
           ws.close();
         }
       }, 15_000);
     });
     ws.addEventListener("message", event => {
+      if (settled || socket !== ws) return;
       lastFrameOnConnection = Date.now();
-      acceptFrame(event.data);
+      acceptFrame(event.data, sourceServer);
     });
-    ws.addEventListener("error", () => emit("connection_error", { reason: "WebSocket error" }));
+    ws.addEventListener("error", () => emit("connection_error", { sourceServer, reason: "WebSocket error" }));
     ws.addEventListener("close", event => {
-      sourceHealthy = false;
-      emit("disconnected", { code: event.code, reason: event.reason, clean: event.wasClean });
+      emit("disconnected", { sourceServer, code: event.code, reason: event.reason,
+        clean: event.wasClean, sourceHealthyDuringReconnect: sourceHealthy });
       finish();
     });
   });
@@ -209,7 +210,7 @@ try {
     if (stopping) break;
     counters.reconnects++;
     const delayMs = backoffMs(attempt++);
-    emit("reconnect_wait", { delayMs });
+    emit("reconnect_wait", { source: "blitzortung", delayMs, sourceHealthy });
     await wait(delayMs);
   }
 } finally {
