@@ -1,5 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 
+export const FRESH_EVENT_MAX_LATENCY_MS = 30_000;
+
 type JsonRecord = Record<string, unknown>;
 
 export type ActiveAreaWorkflowSummary = {
@@ -15,8 +17,17 @@ export type ActiveAreaWorkflowSummary = {
   blitzOnly: number;
   live2Healthy: boolean | null;
   blitzHealthy: boolean | null;
+  live2HealthyBeforeShutdown: boolean | null;
+  blitzHealthyBeforeShutdown: boolean | null;
   live2Reconnects: number | null;
   blitzReconnects: number | null;
+  freshLive2Events: number;
+  freshBlitzEvents: number;
+  delayedLive2Events: number;
+  delayedBlitzEvents: number;
+  freshBothMatched: number;
+  freshLive2Only: number;
+  freshBlitzOnly: number;
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -36,22 +47,49 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
   });
   const start = records.find(record => record.kind === "dual_source_observer_start") ?? {};
   const windows = records.filter(record => record.kind === "dual_source_window_summary");
+  const eventRecords = records.filter(record => record.kind === "dual_source_event");
   const finalizations = records.filter(record => record.kind === "dual_source_match_finalized");
   const pairs = new Set<string>();
+  const freshPairs = new Set<string>();
   const unmatched = new Set<string>();
+  const freshUnmatched = new Set<string>();
+  const eventsById = new Map<string, { source: string; fresh: boolean }>();
+  const freshCounts = { live2: 0, blitzortung: 0 };
+  const delayedCounts = { live2: 0, blitzortung: 0 };
+  for (const record of eventRecords) {
+    const id = typeof record.observerEventId === "string" ? record.observerEventId : null;
+    const source = record.source === "live2" || record.source === "blitzortung" ? record.source : null;
+    if (!id || !source) continue;
+    const latencyMs = record.latencyMs;
+    const fresh = typeof latencyMs === "number" && Number.isFinite(latencyMs) &&
+      latencyMs >= 0 && latencyMs <= FRESH_EVENT_MAX_LATENCY_MS;
+    eventsById.set(id, { source, fresh });
+    if (fresh) freshCounts[source]++;
+    else delayedCounts[source]++;
+  }
   for (const record of finalizations) {
     const id = typeof record.observerEventId === "string" ? record.observerEventId : null;
     const nearest = typeof record.nearestObserverEventId === "string" ? record.nearestObserverEventId : null;
     if ((record.matchClass === "strict" || record.matchClass === "loose") && id && nearest) {
-      pairs.add([id, nearest].sort().join("\0"));
+      const pairKey = [id, nearest].sort().join("\0");
+      pairs.add(pairKey);
+      if (eventsById.get(id)?.fresh === true && eventsById.get(nearest)?.fresh === true) freshPairs.add(pairKey);
     } else if (record.matchClass === "none" && id) {
-      unmatched.add(`${String(record.source)}\0${id}`);
+      const source = record.source === "live2" || record.source === "blitzortung" ? record.source : null;
+      if (source) {
+        const key = `${source}\0${id}`;
+        unmatched.add(key);
+        if (eventsById.get(id)?.fresh === true) freshUnmatched.add(key);
+      }
     }
   }
   const summaries = records.filter(record => record.kind === "dual_source_summary");
   const latest = summaries.at(-1) ?? {};
-  const live2 = isRecord(latest.live2) ? latest.live2 : {};
-  const blitz = isRecord(latest.blitzortung) ? latest.blitzortung : {};
+  const beforeShutdown = summaries.filter(record => record.reason === "periodic").at(-1) ?? {};
+  const latestLive2 = isRecord(latest.live2) ? latest.live2 : {};
+  const latestBlitz = isRecord(latest.blitzortung) ? latest.blitzortung : {};
+  const operationalLive2 = isRecord(beforeShutdown.live2) ? beforeShutdown.live2 : {};
+  const operationalBlitz = isRecord(beforeShutdown.blitzortung) ? beforeShutdown.blitzortung : {};
   const numberOrNull = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
   const inputNumber = (name: string): number | null => {
     const value = process.env[name];
@@ -71,10 +109,19 @@ export function summarizeActiveAreaRun(lines: readonly string[]): ActiveAreaWork
     bothMatched: pairs.size,
     live2Only: [...unmatched].filter(key => key.startsWith("live2\0")).length,
     blitzOnly: [...unmatched].filter(key => key.startsWith("blitzortung\0")).length,
-    live2Healthy: booleanOrNull(live2.healthy),
-    blitzHealthy: booleanOrNull(blitz.healthy),
-    live2Reconnects: numberOrNull(live2.reconnects),
-    blitzReconnects: numberOrNull(blitz.reconnects),
+    live2Healthy: booleanOrNull(operationalLive2.healthy),
+    blitzHealthy: booleanOrNull(operationalBlitz.healthy),
+    live2HealthyBeforeShutdown: booleanOrNull(operationalLive2.healthy),
+    blitzHealthyBeforeShutdown: booleanOrNull(operationalBlitz.healthy),
+    live2Reconnects: numberOrNull(latestLive2.reconnects) ?? numberOrNull(operationalLive2.reconnects),
+    blitzReconnects: numberOrNull(latestBlitz.reconnects) ?? numberOrNull(operationalBlitz.reconnects),
+    freshLive2Events: freshCounts.live2,
+    freshBlitzEvents: freshCounts.blitzortung,
+    delayedLive2Events: delayedCounts.live2,
+    delayedBlitzEvents: delayedCounts.blitzortung,
+    freshBothMatched: freshPairs.size,
+    freshLive2Only: [...freshUnmatched].filter(key => key.startsWith("live2\0")).length,
+    freshBlitzOnly: [...freshUnmatched].filter(key => key.startsWith("blitzortung\0")).length,
   };
 }
 
@@ -89,12 +136,29 @@ export function formatActiveAreaSummary(summary: ActiveAreaWorkflowSummary): str
     `- Center: ${center}`,
     `- Radius: ${summary.comparisonRadiusKm ?? "not reported"} km`,
     `- Duration: ${summary.durationMinutes ?? "not reported"} minutes`,
-    `- live2 events: ${summary.live2EventsObserved}`,
-    `- Blitz events: ${summary.blitzEventsObserved}`,
+    "",
+    "### Raw observed",
+    `- live2: ${summary.live2EventsObserved}`,
+    `- Blitz: ${summary.blitzEventsObserved}`,
     `- Both matched: ${summary.bothMatched}`,
     `- live2-only: ${summary.live2Only}`,
     `- Blitz-only: ${summary.blitzOnly}`,
-    `- Source health at shutdown: live2=${summary.live2Healthy ?? "unknown"}, Blitz=${summary.blitzHealthy ?? "unknown"}`,
+    "",
+    `### Fresh (latency 0–${FRESH_EVENT_MAX_LATENCY_MS} ms)`,
+    `- live2: ${summary.freshLive2Events}`,
+    `- Blitz: ${summary.freshBlitzEvents}`,
+    `- Both matched: ${summary.freshBothMatched}`,
+    `- live2-only: ${summary.freshLive2Only}`,
+    `- Blitz-only: ${summary.freshBlitzOnly}`,
+    "",
+    "### Delayed/backfill (not fresh)",
+    `- live2: ${summary.delayedLive2Events}`,
+    `- Blitz: ${summary.delayedBlitzEvents}`,
+    "",
+    "### Operational health before shutdown",
+    `- live2: ${summary.live2HealthyBeforeShutdown ?? "unknown"}`,
+    `- Blitz: ${summary.blitzHealthyBeforeShutdown ?? "unknown"}`,
+    "",
     `- Reconnects: live2=${summary.live2Reconnects ?? "unknown"}, Blitz=${summary.blitzReconnects ?? "unknown"}`,
   ].join("\n");
 }
