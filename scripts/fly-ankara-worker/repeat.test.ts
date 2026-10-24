@@ -18,10 +18,17 @@ function setup(recovered = true) {
   let outerDistrict: string | undefined;
   let pending: Promise<void> | undefined;
   let failAdmission = false; let unusable = false; let autoApprove = false;
+  let forceOuterCooldown = false;
   let dispatchGate: Promise<void> | undefined;
   let notifications = 0; let approvalAttempts = 0; let dispatches = 0; let admissionDelayMs = 0;
   const store: LedgerStore = {
     async loadRelevantPublicationHistory() { return [...records]; },
+    async admitOuterGenericPublication(record) {
+      if (forceOuterCooldown) return { outcome: "suppressed", reason: "outer_district_generic_cooldown",
+        cooldownExpiresAt: new Date(clock + 10 * 60_000).toISOString() };
+      if (records.some(row => row.publicationId === record.publicationId)) return { outcome: "already_present" };
+      records.push(record); return { outcome: "inserted", admittedAt: record.recordedAt };
+    },
     async insertPublicationRecord(record) {
       if (records.some(row => row.publicationId === record.publicationId)) return "already_present";
       record.recordedAt = new Date(clock).toISOString(); records.push(record); return "inserted";
@@ -96,6 +103,7 @@ function setup(recovered = true) {
     set selectedDeltaMs(value: number) { selectedDeltaMs = value; }, set selectedId(value: string) { selectedId = value; },
     set pending(value: Promise<void> | undefined) { pending = value; }, set failAdmission(value: boolean) { failAdmission = value; },
     set unusable(value: boolean) { unusable = value; }, get now() { return clock; },
+    set forceOuterCooldown(value: boolean) { forceOuterCooldown = value; },
     set admissionDelay(value: number) { admissionDelayMs = value; }, set autoApprove(value: boolean) { autoApprove = value; },
     set dispatchGate(value: Promise<void> | undefined) { dispatchGate = value; },
     get notifications() { return notifications; }, get approvalAttempts() { return approvalAttempts; }, get dispatches() { return dispatches; } };
@@ -150,10 +158,10 @@ test("first CG after initial non-CG produces shadow only, retaining HOLD with no
   assert.equal(f.runtime.summary().cgRepeat.admissionsAccepted, 0);
 });
 
-test("suppressed Camili-style initial route is classified separately and remains production HOLD", async () => {
-  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk";
+test("cooldown-suppressed Camili-style initial route is classified separately and remains production HOLD", async () => {
+  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk"; f.forceOuterCooldown = true;
   await f.initial();
-  const initialSuppression = f.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields;
+  const initialSuppression = f.events.find(row => row.kind === "outer_district_generic_cooldown_suppressed")?.fields;
   assert.equal(initialSuppression?.canonicalDistrict, "Çubuk");
   assert.equal(f.records.length, 0, "suppressed initial route has no publication record");
 
@@ -163,7 +171,7 @@ test("suppressed Camili-style initial route is classified separately and remains
   assert.equal(shadow.eligible, true);
   assert.equal(shadow.transitionKind, "suppressed_initial_to_first_cg");
   assert.deepEqual(shadow.initialRouteContext, {
-    reason: "outer_district_non_cg_suppressed", canonicalDistrict: "Çubuk", candidateKind: "non_cg",
+    reason: "outer_district_generic_cooldown", canonicalDistrict: "Çubuk", candidateKind: "non_cg",
     publicPublicationRecordExists: false, initialRouteConsumed: true,
   });
   assert.equal(shadow.actualDecision, "HOLD");
@@ -175,8 +183,9 @@ test("suppressed Camili-style initial route is classified separately and remains
 });
 
 test("suppressed initial-route state is isolated by incident", async () => {
-  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk";
+  const f = setup(); f.status = "no_match"; f.outerDistrict = "Çubuk"; f.forceOuterCooldown = true;
   await f.initial();
+  f.forceOuterCooldown = false;
   f.outerDistrict = undefined; f.status = "no_match"; f.name = "Ayrancı";
   f.feed(30); f.feed(30); f.feed(30); await f.runtime.drainCandidateWork();
   f.status = "cg_verified"; f.advance(120_000); f.feed(30); await f.runtime.drainCandidateWork();

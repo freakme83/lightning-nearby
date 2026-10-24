@@ -53,7 +53,7 @@ type EarlierNonCgPublication = {
 };
 
 type SuppressedInitialRoute = {
-  reason: "outer_district_non_cg_suppressed";
+  reason: "outer_district_generic_cooldown";
   canonicalDistrict: string;
   candidateKind: "non_cg";
   publicPublicationRecordExists: false;
@@ -162,7 +162,7 @@ export class AnkaraFlyPipeline {
   private readonly earlierNonCgPublications = new Map<string, EarlierNonCgPublication>();
   private readonly stormEvolution = new StormEvolutionShadow();
   private readonly stormEvolutionWork = new Map<string, Promise<void>>();
-  private readonly outerDistrictNonCgPublication = { evaluated: 0, suppressed: 0,
+  private readonly outerDistrictNonCgPublication = { evaluated: 0, admitted: 0, suppressed: 0,
     notApplicable: 0, locationUnavailable: 0 };
 
   constructor(dependencies: RuntimeDependencies) {
@@ -599,6 +599,7 @@ export class AnkaraFlyPipeline {
           repeatReadyAt: new Date(this.repeatReadyAtMs).toISOString(),
           ...(repeat.predecessorId ? { predecessorScopeId: this.repeatScopeId(repeat.predecessorId) } : {}) } : {}) };
       result = withPublishDecision(result, context);
+      let outerGenericDistrict: string | undefined;
       if (!repeat && result.status === "message_preview_ready" && result.message?.ok &&
           result.message.composer.hashtag === "#ŞİMŞEK" && result.publishDecision?.decision === "WOULD_PUBLISH") {
         this.outerDistrictNonCgPublication.evaluated++;
@@ -609,42 +610,38 @@ export class AnkaraFlyPipeline {
         } else if (resolution.outcome === "location_unavailable") {
           this.outerDistrictNonCgPublication.locationUnavailable++;
         } else {
-          this.outerDistrictNonCgPublication.suppressed++;
-          this.suppressedInitialRoutes.set(incidentId, {
-            reason: "outer_district_non_cg_suppressed",
-            canonicalDistrict: resolution.canonicalDistrict,
-            candidateKind: "non_cg",
-            publicPublicationRecordExists: false,
-            initialRouteConsumed: true,
-          });
-          this.emit("outer_district_non_cg_suppressed", {
-            incidentId,
-            district: normalized?.district ?? null,
-            locality: normalized?.locality ?? null,
-            canonicalDistrict: resolution.canonicalDistrict,
-            candidateKind: "non_cg",
-            outcome: "suppressed",
-            reason: "outer_district_non_cg_suppressed",
-          });
-          this.emit("candidate_outcome", { incidentId, status: result.status,
-            decision: "HOLD", reason: "outer_district_non_cg_suppressed" });
-          this.emitSparseNormalResult(incidentId, {
-            eventualProviderStatus: publicationArtifact.enrichment.status,
-            rawProviderStatus: artifact.enrichment.status,
-            publicationDecision: result.publishDecision?.decision ?? null,
-            productionOutcome: "HOLD",
-            suppressionReason: "outer_district_non_cg_suppressed",
-            ledgerReason: "outer_district_non_cg_suppressed",
-            publicationRecordId: null,
-          });
-          return;
+          outerGenericDistrict = resolution.canonicalDistrict;
         }
       }
       // Reuse the ledger's normal record timestamp for later in-process shadow correlation.
       const ledgerRecordedAt = new Date(this.now()).toISOString();
       result = await applyPersistentLedger(result, context, this.store,
-        { runId: this.runId, configured: true, cgAdmission: admission, nowMs: this.now,
+        { runId: this.runId, configured: true, cgAdmission: admission, outerGenericDistrict,
+          nowMs: this.now,
           ...(!repeat ? { recordedAt: ledgerRecordedAt } : {}) });
+      const outerAdmission = result.ledger?.outerGenericAdmission;
+      if (outerGenericDistrict && outerAdmission?.outcome === "suppressed") {
+        this.outerDistrictNonCgPublication.suppressed++;
+        this.suppressedInitialRoutes.set(incidentId, {
+          reason: "outer_district_generic_cooldown", canonicalDistrict: outerGenericDistrict,
+          candidateKind: "non_cg", publicPublicationRecordExists: false, initialRouteConsumed: true,
+        });
+        const normalized = result.location && "normalized" in result.location ? result.location.normalized : null;
+        const incident = artifact.incident;
+        this.emit("outer_district_generic_cooldown_suppressed", {
+          incidentId, canonicalDistrict: outerGenericDistrict,
+          locationLabel: result.message?.ok ? result.message.locationDisplayLabel : normalized?.displayLabel ?? null,
+          latitude: incident.latitude, longitude: incident.longitude,
+          eventCount: incident.eventCount, referenceTimeMs: incident.lastActivityTimeMs,
+          suppressedAt: new Date(this.now()).toISOString(), cooldownDurationMs: 30 * 60_000,
+          cooldownExpiresAt: outerAdmission.cooldownExpiresAt,
+          reason: outerAdmission.reason,
+        });
+      } else if (outerGenericDistrict && outerAdmission?.outcome === "inserted") {
+        this.outerDistrictNonCgPublication.admitted++;
+        this.emit("outer_district_generic_admitted", { incidentId, canonicalDistrict: outerGenericDistrict,
+          publicationId: result.ledger?.persistedPublicationId ?? null, admittedAt: outerAdmission.admittedAt });
+      }
       if (!repeat) {
         this.emitSparseNormalResult(incidentId, {
           eventualProviderStatus: publicationArtifact.enrichment.status,
@@ -683,7 +680,7 @@ export class AnkaraFlyPipeline {
           eventKind: result.message.composer.hashtag, providerStatus: result.message.enrichmentStatus,
           // This is the persisted ledger admission time; the asynchronous publisher does not return
           // a confirmed external post timestamp to this worker.
-          publishedAt: ledgerRecordedAt,
+          publishedAt: outerAdmission?.outcome === "inserted" ? outerAdmission.admittedAt : ledgerRecordedAt,
           latitude: pairedIncident.latitude, longitude: pairedIncident.longitude,
           locationLabel: result.message.locationDisplayLabel,
           structuredLocation: normalized ? {

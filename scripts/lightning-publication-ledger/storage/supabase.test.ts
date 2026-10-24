@@ -76,3 +76,21 @@ test("a bounded query never silently discards overflow rows", async () => {
   const store = createSupabaseLedger(config, (async () => Response.json(Array.from({ length: 101 }, () => row))) as typeof fetch);
   await assert.rejects(store.loadRelevantPublicationHistory(candidate), /exceeded its bounded result size/);
 });
+
+test("outer generic RPC sends exact composer record and district, validates admission, fails closed", async () => {
+  const calls: Array<{ url: URL; body: Record<string, unknown> }> = [];
+  const store = createSupabaseLedger(config, (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: new URL(String(input)), body: JSON.parse(String(init?.body)) });
+    return Response.json({ outcome: "suppressed", reason: "outer_district_generic_cooldown",
+      cooldownExpiresAt: "2026-10-08T10:30:00Z" });
+  }) as typeof fetch);
+  const result = await store.admitOuterGenericPublication!(candidate, exactMessageText, "Kızılcahamam");
+  assert.deepEqual(result, { outcome: "suppressed", reason: "outer_district_generic_cooldown",
+    cooldownExpiresAt: "2026-10-08T10:30:00Z" });
+  assert.equal(calls[0].url.pathname, "/rest/v1/rpc/admit_outer_generic_publication");
+  assert.equal((calls[0].body.p_record as Record<string, unknown>).canonical_district, "Kızılcahamam");
+  assert.equal((calls[0].body.p_record as Record<string, unknown>).message_text, exactMessageText);
+  const bad = createSupabaseLedger(config, (async () => Response.json({ outcome: "inserted", reason: "unexpected" })) as typeof fetch);
+  // Success responses must not carry an unrelated suppression reason.
+  await assert.rejects(bad.admitOuterGenericPublication!(candidate, exactMessageText, "Haymana"), /Invalid/);
+});

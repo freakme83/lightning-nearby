@@ -19,10 +19,23 @@ const baseNow = Date.parse("2026-10-09T12:00:00.000Z");
 
 function memoryStore(seed: PublicationRecord[] = []) {
   const records = [...seed];
+  const outerAdmissions: Array<{ publicationId: string; atMs: number }> = [];
   let reads = 0;
   let writes = 0;
   const store: LedgerStore = {
     async loadRelevantPublicationHistory() { reads++; return [...records]; },
+    async admitOuterGenericPublication(record, exactMessageText, district) {
+      assert.ok(exactMessageText.length > 0 && district.length > 0);
+      if (records.some(prior => prior.publicationId === record.publicationId)) return { outcome: "already_present" };
+      const atMs = Date.parse(record.recordedAt);
+      const latest = outerAdmissions.findLast(entry => entry.atMs <= atMs && entry.atMs > atMs - 30 * 60_000);
+      if (latest) return { outcome: "suppressed", reason: "outer_district_generic_cooldown",
+        cooldownExpiresAt: new Date(latest.atMs + 30 * 60_000).toISOString() };
+      writes++;
+      outerAdmissions.push({ publicationId: record.publicationId, atMs });
+      records.push(record);
+      return { outcome: "inserted", admittedAt: record.recordedAt };
+    },
     async insertPublicationRecord(record, exactMessageText) {
       writes++;
       assert.ok(exactMessageText.length > 0);
@@ -31,7 +44,7 @@ function memoryStore(seed: PublicationRecord[] = []) {
       return "inserted";
     },
   };
-  return { store, records, get reads() { return reads; }, get writes() { return writes; } };
+  return { store, records, outerAdmissions, get reads() { return reads; }, get writes() { return writes; } };
 }
 
 function verifiedCg(reference: EnrichmentReference): EnrichmentResult {
@@ -483,96 +496,102 @@ test("qualified initial incident publishes a current 9 km CG with provider ident
   assert.equal(telemetry?.selectedEventAgeMs, 90_000);
 });
 
-test("selected outer-district non-CG candidate is internally processed then suppressed before external side effects", async () => {
+test("first outer generic admission reserves one shared 30-minute window; suppressions do not extend it", async () => {
   const memory = memoryStore();
+  const first = await processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam");
+  assert.equal(first.events.some(row => row.kind === "enrichment_complete"), true);
+  assert.equal(first.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(first.events.some(row => row.kind === "outer_district_generic_admitted"), true);
+  assert.equal(memory.records.length, 1);
+  assert.equal(first.runtime.summary().outerDistrictNonCgPublication.admitted, 1);
+
   let notifications = 0;
   let approvalReads = 0;
   let dispatches = 0;
-  const autoPublish: FlyAutoPublish = {
-    approvalStore: {
-      async getPublicationForApproval() { approvalReads++; throw new Error("suppressed candidate must not reach approval"); },
-      async transitionPendingApproval() { throw new Error("suppressed candidate must not transition approval"); },
-    },
-    async dispatchPublisher() { dispatches++; return { ok: true, httpStatus: 204 }; },
-  };
-  const fixture = await processOuterDistrictCandidate(memory, baseNow, "Haymana", {
-    notifyPending: async () => { notifications++; return { ok: true }; }, autoPublish,
+  const second = await processOuterDistrictCandidate(memory, baseNow + 4 * 60_000, "Çubuk", {
+    notifyPending: async () => { notifications++; return { ok: true }; },
+    autoPublish: { approvalStore: {
+      async getPublicationForApproval() { approvalReads++; return null; },
+      async transitionPendingApproval() { throw new Error("suppressed candidate reached approval"); },
+    }, async dispatchPublisher() { dispatches++; return { ok: true, httpStatus: 204 }; } },
   });
-  const suppression = fixture.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields;
-  assert.ok(suppression?.incidentId);
-  assert.deepEqual({ ...suppression, incidentId: undefined }, {
-    incidentId: undefined, district: "Haymana", locality: "Yamak", canonicalDistrict: "Haymana",
-    candidateKind: "non_cg", outcome: "suppressed", reason: "outer_district_non_cg_suppressed",
-  });
-  assert.equal(fixture.events.some(row => row.kind === "enrichment_complete"), true);
-  assert.equal(fixture.events.some(row => row.kind === "location_resolved"), true);
-  assert.equal(fixture.events.some(row => row.kind === "candidate_outcome" &&
-    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
-  assert.equal(memory.records.length, 0);
-  assert.equal(memory.writes, 0);
-  assert.equal(memory.reads, 0);
+  const suppressed = second.events.find(row => row.kind === "outer_district_generic_cooldown_suppressed")?.fields;
+  assert.ok(suppressed?.incidentId);
+  assert.equal(suppressed?.canonicalDistrict, "Çubuk");
+  assert.equal(suppressed?.locationLabel, "Yamak, Çubuk");
+  assert.equal(typeof suppressed?.latitude, "number");
+  assert.equal(typeof suppressed?.longitude, "number");
+  assert.equal(suppressed?.eventCount, 2);
+  assert.equal(typeof suppressed?.referenceTimeMs, "number");
+  assert.equal(suppressed?.suppressedAt, new Date(baseNow + 4 * 60_000).toISOString());
+  assert.equal(suppressed?.cooldownDurationMs, 30 * 60_000);
+  assert.equal(suppressed?.cooldownExpiresAt, new Date(baseNow + 30 * 60_000).toISOString());
+  assert.equal(suppressed?.reason, "outer_district_generic_cooldown");
+  assert.equal(second.events.some(row => row.kind === "location_resolved"), true);
+  assert.equal(second.events.some(row => row.kind === "enrichment_complete"), true);
+  assert.equal(second.events.some(row => row.kind === "publication_pending"), false);
+  assert.equal(second.events.some(row => row.kind === "candidate_outcome" &&
+    row.fields?.reason === "outer_district_generic_cooldown"), true);
   assert.equal(notifications, 0);
   assert.equal(approvalReads, 0);
   assert.equal(dispatches, 0);
-  assert.equal(fixture.runtime.summary().outerDistrictNonCgPublication.suppressed, 1);
+
+  const third = await processOuterDistrictCandidate(memory, baseNow + 18 * 60_000, "Haymana");
+  assert.equal(third.events.some(row => row.kind === "outer_district_generic_cooldown_suppressed"), true);
+  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
+  // A fresh runtime and another district at the exact expiration can admit.
+  const fourth = await processOuterDistrictCandidate(memory, baseNow + 30 * 60_000, "Polatlı");
+  assert.equal(fourth.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 2);
+  assert.equal(memory.outerAdmissions.length, 2);
 });
 
-test("town-level Haymana and Nallıhan non-CG candidates stay suppressed without cooldown expiry", async () => {
+test("town-level outer district identity participates in the same durable window", async () => {
   const memory = memoryStore();
-  const first = await processOuterDistrictCandidate(memory, baseNow, "Haymana", {
+  await processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam");
+  const town = await processOuterDistrictCandidate(memory, baseNow + 5 * 60_000, "Haymana", {
     missingDistrict: true, localityKind: "town", neighborhood: "Güzelcekale",
   });
-  const firstSuppression = first.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields;
-  assert.equal(firstSuppression?.canonicalDistrict, "Haymana");
-  assert.equal(firstSuppression?.district, null);
-  assert.equal(firstSuppression?.locality, "Haymana");
-  assert.equal(memory.records.length, 0);
-
-  const laterHaymana = await processOuterDistrictCandidate(memory, baseNow + 5 * 60 * 60_000, "Haymana", {
-    missingDistrict: true, localityKind: "town", neighborhood: "Yamak",
-  });
-  assert.equal(laterHaymana.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields?.reason,
-    "outer_district_non_cg_suppressed");
-
-  const nallihan = await processOuterDistrictCandidate(memory, baseNow + 6 * 60 * 60_000, "Nallıhan");
-  assert.equal(nallihan.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields?.canonicalDistrict,
-    "Nallıhan");
-  assert.equal(memory.records.length, 0, "selected-district non-CG events never create publication records");
+  assert.equal(town.events.find(row => row.kind === "outer_district_generic_cooldown_suppressed")?.fields?.canonicalDistrict,
+    "Haymana");
+  assert.equal(memory.outerAdmissions.length, 1);
 });
 
-test("outer-district CG remains eligible after non-CG suppression; central non-CG is unchanged", async () => {
+test("verified outer CG and central generic admission remain independent of outer generic cooldown", async () => {
   const memory = memoryStore();
-  const nonCg = await processOuterDistrictCandidate(memory, baseNow, "Haymana");
-  assert.equal(nonCg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), true);
-  assert.equal(memory.records.length, 0);
-
-  const cg = await processOuterDistrictCandidate(memory, baseNow + 2 * 60_000, "Haymana", { cg: true });
-  assert.equal(memory.records.length, 1);
-  assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
-  assert.equal(cg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
-  assert.equal(cg.events.some(row => row.kind === "publication_pending"), true);
-
-  const central = await processOuterDistrictCandidate(memory, baseNow + 3 * 60_000, "Çankaya", { locality: "Ayrancı" });
-  assert.equal(central.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
-  assert.equal(central.events.some(row => row.kind === "publication_pending"), true);
-  assert.equal(memory.records.length, 2);
-});
-
-test("Evren non-CG is suppressed while verified CG remains eligible", async () => {
-  const memory = memoryStore();
-  const nonCg = await processOuterDistrictCandidate(memory, baseNow, "Evren");
-  assert.equal(nonCg.events.find(row => row.kind === "outer_district_non_cg_suppressed")?.fields?.canonicalDistrict,
-    "Evren");
-  assert.equal(nonCg.events.some(row => row.kind === "candidate_outcome" &&
-    row.fields?.decision === "HOLD" && row.fields?.reason === "outer_district_non_cg_suppressed"), true);
-  assert.equal(memory.records.length, 0);
-
+  await processOuterDistrictCandidate(memory, baseNow, "Haymana");
   const cg = await processOuterDistrictCandidate(memory, baseNow + 2 * 60_000, "Evren", { cg: true });
-  assert.equal(cg.events.some(row => row.kind === "outer_district_non_cg_suppressed"), false);
-  assert.equal(memory.records.length, 1);
-  assert.equal(memory.records[0].enrichmentStatus, "cg_verified");
-  const cgMessage = cg.events.find(row => row.kind === "publication_pending")?.fields?.messageText as string;
-  assert.match(cgMessage, /^#YILDIRIM ⚡\n/);
+  assert.equal(cg.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(cg.events.some(row => row.kind === "outer_district_generic_cooldown_suppressed"), false);
+  assert.equal(memory.records[1].enrichmentStatus, "cg_verified");
+  const central = await processOuterDistrictCandidate(memory, baseNow + 3 * 60_000, "Çankaya", { locality: "Ayrancı" });
+  assert.equal(central.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(central.events.some(row => row.kind === "outer_district_generic_cooldown_suppressed"), false);
+  assert.equal(memory.records.length, 3);
+  assert.equal(memory.outerAdmissions.length, 1);
+});
+
+test("concurrent outer generic candidates cannot both acquire the shared slot", async () => {
+  const memory = memoryStore();
+  const [one, two] = await Promise.all([
+    processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam"),
+    processOuterDistrictCandidate(memory, baseNow, "Çubuk"),
+  ]);
+  assert.equal(memory.outerAdmissions.length, 1);
+  assert.equal([one, two].filter(value => value.events.some(row => row.kind === "publication_pending")).length, 1);
+});
+
+test("unavailable atomic outer admission holds safely and never notifies", async () => {
+  const memory = memoryStore();
+  let notifications = 0;
+  const fixture = await processOuterDistrictCandidate({ ...memory, store: {
+    ...memory.store,
+    async admitOuterGenericPublication() { throw new Error("RPC unavailable"); },
+  } }, baseNow, "Haymana", { notifyPending: async () => { notifications++; return { ok: true }; } });
+  assert.equal(fixture.events.some(row => row.kind === "publication_pending"), false);
+  assert.equal(fixture.events.some(row => row.kind === "candidate_outcome" && row.fields?.ledgerStatus === "write_failed"), true);
+  assert.equal(memory.records.some(row => row.decision === "WOULD_PUBLISH"), false);
+  assert.equal(notifications, 0);
 });
 
 test("raw CG matches failing each initial condition fall back to non-CG without a CG map", async () => {
