@@ -1,8 +1,7 @@
 // Continuous Ankara observer and pending-publication preparer. It has no X publisher.
 import { ANKARA_MONITORING_AREA } from "../lightning-incident-lifecycle/monitoring-area.ts";
 import { backoffMs } from "../live-lightning-listener/core.ts";
-import { BLITZORTUNG_SERVERS, processBlitzortungFrame,
-  type BlitzortungServer } from "../research/blitzortung-probe/protocol.ts";
+import { processBlitzortungFrame } from "../research/blitzortung-probe/protocol.ts";
 import { BLITZ_ADMISSION_MAX_LATENCY_MS, BlitzPrimaryAdmission, blitzSourceStillHealthy,
   shouldLogBlitzAdmissionRejection } from "./blitz-primary.ts";
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
@@ -11,6 +10,7 @@ import { createFlyAutoPublish } from "./auto-publish.ts";
 
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
+const WORKER_BLITZORTUNG_SERVERS = ["ws1", "ws8"] as const;
 const blitzAdmission = new BlitzPrimaryAdmission();
 const counters = { messages: 0, decoded: 0, connections: 0, reconnects: 0, malformed: 0 };
 const startedAt = Date.now();
@@ -105,7 +105,7 @@ process.once("SIGTERM", () => stop("SIGTERM"));
 const summaryTimer = setInterval(() => summary(), summaryEveryMs);
 summaryTimer.unref();
 emit("worker_start", {
-  endpoints: BLITZORTUNG_SERVERS.map(server => `wss://${server}.blitzortung.org/`),
+  endpoints: WORKER_BLITZORTUNG_SERVERS.map(server => `wss://${server}.blitzortung.org/`),
   area: ANKARA_MONITORING_AREA.id,
   subscription: { a: 111 },
   polygonFilter: true,
@@ -117,7 +117,7 @@ emit("worker_start", {
 });
 
 async function connectOnce(): Promise<void> {
-  const sourceServer = BLITZORTUNG_SERVERS[serverIndex++ % BLITZORTUNG_SERVERS.length];
+  const sourceServer = WORKER_BLITZORTUNG_SERVERS[serverIndex++ % WORKER_BLITZORTUNG_SERVERS.length];
   const endpoint = `wss://${sourceServer}.blitzortung.org/`;
   const openingAt = Date.now();
   if (!blitzSourceStillHealthy(lastFrameAt, openingAt, frameTimeoutMs)) {
