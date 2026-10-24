@@ -2,7 +2,7 @@ import { decidePublish, type DecisionContext } from "../lightning-publish-decisi
 import { duplicateDecisionContext, matchPublicationDuplicate } from "../lightning-publication-ledger/duplicate.ts";
 import { buildPublicationRecord } from "../lightning-publication-ledger/record.ts";
 import type { DuplicateMatchResult } from "../lightning-publication-ledger/types.ts";
-import type { LedgerStore } from "../lightning-publication-ledger/storage/supabase.ts";
+import type { LedgerStore, OuterGenericAdmissionResult } from "../lightning-publication-ledger/storage/supabase.ts";
 import type { DryRunResult } from "./orchestrate.ts";
 import { evaluateFirstCgTransitionShadow, type CgAdmissionRequest, type CgAdmissionResult } from "../lightning-cg-repeat-policy/admission.ts";
 import type { EnrichmentResult } from "../lightning-cg-enrichment/types.ts";
@@ -20,13 +20,14 @@ export type LedgerDiagnostics = {
   storageStatus: "ok" | "not_configured" | "read_failed" | "write_failed" | "invalid_candidate";
   reason: string | null;
   cgAdmission?: CgAdmissionResult;
+  outerGenericAdmission?: OuterGenericAdmissionResult;
   firstCgTransitionShadow?: ReturnType<typeof evaluateFirstCgTransitionShadow>;
 };
 
 // Storage is injected; neither the v1A policy nor the v1B.1 matcher performs I/O.
 export async function applyPersistentLedger(result: DryRunResult, context: DecisionContext,
   store: LedgerStore | null, options: { runId?: string | null; configured?: boolean; cgAdmission?: CgAdmissionRequest;
-    nowMs?: () => number; recordedAt?: string } = {}): Promise<DryRunResult> {
+    outerGenericDistrict?: string; nowMs?: () => number; recordedAt?: string } = {}): Promise<DryRunResult> {
   if (result.status !== "message_preview_ready") return result;
   const diagnostics: LedgerDiagnostics = { persistenceEnabled: options.configured ?? Boolean(store),
     historyChecked: false, recordsExamined: 0, duplicateMatch: null,
@@ -92,6 +93,15 @@ export async function applyPersistentLedger(result: DryRunResult, context: Decis
         }
         disposition = diagnostics.cgAdmission.outcome;
       }
+    } else if (options.outerGenericDistrict && finalBuilt.record.decision === "WOULD_PUBLISH") {
+      // No read-then-write cooldown: the ledger serializes the shared outer-district window.
+      if (!store.admitOuterGenericPublication) throw new Error("Atomic outer generic admission unavailable");
+      diagnostics.outerGenericAdmission = await store.admitOuterGenericPublication(finalBuilt.record,
+        exactMessageText, options.outerGenericDistrict);
+      if (diagnostics.outerGenericAdmission.outcome === "suppressed") {
+        return finish({ publicationRecordAvailable: false }, "ok", diagnostics.outerGenericAdmission.reason);
+      }
+      disposition = diagnostics.outerGenericAdmission.outcome;
     } else {
       // A repeat artifact must never reach insertion without an admission request.
       if (result.paired?.triggerMode === "cg_repeat_probe" && finalBuilt.record.decision === "WOULD_PUBLISH") {

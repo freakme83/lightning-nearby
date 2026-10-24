@@ -8,7 +8,14 @@ export type LedgerStore = {
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
   insertPublicationRecord(record: PublicationRecord, exactMessageText: string): Promise<"inserted" | "already_present">;
   admitCgPublication?(record: PublicationRecord, exactMessageText: string, request: CgAdmissionRequest): Promise<CgAdmissionResult>;
+  admitOuterGenericPublication?(record: PublicationRecord, exactMessageText: string,
+    canonicalDistrict: string): Promise<OuterGenericAdmissionResult>;
 };
+
+export type OuterGenericAdmissionResult =
+  | { outcome: "inserted"; admittedAt: string }
+  | { outcome: "already_present" }
+  | { outcome: "suppressed"; reason: "outer_district_generic_cooldown"; cooldownExpiresAt: string };
 
 const columns = ["publication_id", "run_id", "incident_id", "incident_reference_time", "incident_latitude",
   "incident_longitude", "provider", "enrichment_status", "provider_event_id", "provider_event_type",
@@ -95,6 +102,26 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
     return rows.map(row => fromRow(row as Row));
   }
   return {
+    async admitOuterGenericPublication(record, exactMessageText, canonicalDistrict) {
+      const url = new URL("/rest/v1/rpc/admit_outer_generic_publication", endpoint);
+      const response = await fetcher(url, { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ p_record: { ...toRow(record, exactMessageText), canonical_district: canonicalDistrict } }),
+        signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error(`Outer generic admission failed (HTTP ${response.status}).`);
+      const value: unknown = await response.json();
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid outer generic admission response.");
+      const row = value as Record<string, unknown>;
+      if (row.outcome === "inserted" && typeof row.admittedAt === "string" &&
+          Number.isFinite(Date.parse(row.admittedAt)) && row.reason === undefined) {
+        return { outcome: "inserted", admittedAt: row.admittedAt };
+      }
+      if (row.outcome === "already_present" && row.reason === undefined) return { outcome: "already_present" };
+      if (row.outcome === "suppressed" && row.reason === "outer_district_generic_cooldown" &&
+          typeof row.cooldownExpiresAt === "string" && Number.isFinite(Date.parse(row.cooldownExpiresAt))) {
+        return { outcome: "suppressed", reason: row.reason, cooldownExpiresAt: row.cooldownExpiresAt };
+      }
+      throw new Error("Invalid outer generic admission response.");
+    },
     async admitCgPublication(record, exactMessageText, request) {
       if (request.kind === "repeat" && !parseCgPublicationMetadata(record.cgMetadata)?.semanticIdentity.available) {
         throw new Error("Selected CG semantic metadata is unavailable.");
