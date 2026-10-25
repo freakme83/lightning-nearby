@@ -5,6 +5,7 @@ import { parseCgPublicationMetadata } from "../cg-metadata.ts";
 import type { CgAdmissionRequest, CgAdmissionResult } from "../../lightning-cg-repeat-policy/admission.ts";
 
 export type LedgerStore = {
+  checkAvailability?(signal?: AbortSignal): Promise<void>;
   loadRelevantPublicationHistory(candidate: PublicationRecord): Promise<PublicationRecord[]>;
   insertPublicationRecord(record: PublicationRecord, exactMessageText: string): Promise<"inserted" | "already_present">;
   admitCgPublication?(record: PublicationRecord, exactMessageText: string, request: CgAdmissionRequest): Promise<CgAdmissionResult>;
@@ -102,6 +103,16 @@ export function createSupabaseLedger(config: { url?: string; serviceRoleKey?: st
     return rows.map(row => fromRow(row as Row));
   }
   return {
+    async checkAvailability(signal) {
+      const url = new URL(endpoint);
+      url.searchParams.set("select", "publication_id");
+      url.searchParams.set("limit", "1");
+      const timeoutSignal = AbortSignal.timeout(10_000);
+      const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const response = await fetcher(url, { headers: { ...headers, Accept: "application/json" }, signal: requestSignal });
+      if (!response.ok) throw new Error(`Supabase health query failed (HTTP ${response.status}).`);
+      // The row body is deliberately not parsed or logged; HTTP success confirms table access.
+    },
     async admitOuterGenericPublication(record, exactMessageText, canonicalDistrict) {
       const url = new URL("/rest/v1/rpc/admit_outer_generic_publication", endpoint);
       const response = await fetcher(url, { method: "POST", headers: { ...headers, "Content-Type": "application/json" },

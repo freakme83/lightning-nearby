@@ -7,6 +7,7 @@ import { BLITZ_ADMISSION_MAX_LATENCY_MS, BlitzPrimaryAdmission, blitzSourceStill
 import { createFlyPipelineStore, AnkaraFlyPipeline, FlyPipelineConfigurationError } from "./runtime.ts";
 import { createPendingPublicationNotifier } from "../lightning-telegram-notifier/pending.ts";
 import { createFlyAutoPublish } from "./auto-publish.ts";
+import { createLedgerHealthMonitor } from "./ledger-health.ts";
 
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
@@ -22,6 +23,7 @@ let attempt = 0;
 let serverIndex = 0;
 let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 let resolveSleep: (() => void) | null = null;
+let ledgerHealth: ReturnType<typeof createLedgerHealthMonitor> | null = null;
 
 function emit(kind: string, fields: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ kind, at: new Date().toISOString(), ...fields }));
@@ -30,6 +32,10 @@ function emit(kind: string, fields: Record<string, unknown> = {}) {
 let runtime: AnkaraFlyPipeline;
 try {
   const store = createFlyPipelineStore(process.env);
+  if (store.checkAvailability) {
+    ledgerHealth = createLedgerHealthMonitor({ check: signal => store.checkAvailability!(signal), emit });
+    ledgerHealth.start();
+  }
   const telegram = createPendingPublicationNotifier(process.env);
   if (telegram.invalidSettings.length) {
     emit("configuration_warning", { capability: "telegram", disabled: true,
@@ -95,6 +101,7 @@ function stop(reason: string) {
   runtime.recordDisconnected(Date.now(), true);
   clearInterval(summaryTimer);
   if (sleepTimer) clearTimeout(sleepTimer);
+  ledgerHealth?.stop();
   resolveSleep?.();
   emit("stopping", { reason });
   socket?.close(1000, "worker stopping");
