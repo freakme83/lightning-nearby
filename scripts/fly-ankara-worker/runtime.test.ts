@@ -19,7 +19,7 @@ const baseNow = Date.parse("2026-10-09T12:00:00.000Z");
 
 function memoryStore(seed: PublicationRecord[] = []) {
   const records = [...seed];
-  const outerAdmissions: Array<{ publicationId: string; atMs: number }> = [];
+  const outerAdmissions: Array<{ publicationId: string; district: string; atMs: number }> = [];
   let reads = 0;
   let writes = 0;
   const store: LedgerStore = {
@@ -28,11 +28,12 @@ function memoryStore(seed: PublicationRecord[] = []) {
       assert.ok(exactMessageText.length > 0 && district.length > 0);
       if (records.some(prior => prior.publicationId === record.publicationId)) return { outcome: "already_present" };
       const atMs = Date.parse(record.recordedAt);
-      const latest = outerAdmissions.findLast(entry => entry.atMs <= atMs && entry.atMs > atMs - 30 * 60_000);
+      const latest = outerAdmissions.findLast(entry => entry.district === district &&
+        entry.atMs <= atMs && entry.atMs > atMs - 30 * 60_000);
       if (latest) return { outcome: "suppressed", reason: "outer_district_generic_cooldown",
         cooldownExpiresAt: new Date(latest.atMs + 30 * 60_000).toISOString() };
       writes++;
-      outerAdmissions.push({ publicationId: record.publicationId, atMs });
+      outerAdmissions.push({ publicationId: record.publicationId, district, atMs });
       records.push(record);
       return { outcome: "inserted", admittedAt: record.recordedAt };
     },
@@ -496,7 +497,7 @@ test("qualified initial incident publishes a current 9 km CG with provider ident
   assert.equal(telemetry?.selectedEventAgeMs, 90_000);
 });
 
-test("first outer generic admission reserves one shared 30-minute window; suppressions do not extend it", async () => {
+test("outer generic admissions have independent district windows; suppressions do not extend them", async () => {
   const memory = memoryStore();
   const first = await processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam");
   assert.equal(first.events.some(row => row.kind === "enrichment_complete"), true);
@@ -508,7 +509,7 @@ test("first outer generic admission reserves one shared 30-minute window; suppre
   let notifications = 0;
   let approvalReads = 0;
   let dispatches = 0;
-  const second = await processOuterDistrictCandidate(memory, baseNow + 4 * 60_000, "Çubuk", {
+  const second = await processOuterDistrictCandidate(memory, baseNow + 4 * 60_000, "Kızılcahamam", {
     notifyPending: async () => { notifications++; return { ok: true }; },
     autoPublish: { approvalStore: {
       async getPublicationForApproval() { approvalReads++; return null; },
@@ -517,8 +518,8 @@ test("first outer generic admission reserves one shared 30-minute window; suppre
   });
   const suppressed = second.events.find(row => row.kind === "outer_district_generic_cooldown_suppressed")?.fields;
   assert.ok(suppressed?.incidentId);
-  assert.equal(suppressed?.canonicalDistrict, "Çubuk");
-  assert.equal(suppressed?.locationLabel, "Yamak, Çubuk");
+  assert.equal(suppressed?.canonicalDistrict, "Kızılcahamam");
+  assert.equal(suppressed?.locationLabel, "Yamak, Kızılcahamam");
   assert.equal(typeof suppressed?.latitude, "number");
   assert.equal(typeof suppressed?.longitude, "number");
   assert.equal(suppressed?.eventCount, 2);
@@ -537,18 +538,20 @@ test("first outer generic admission reserves one shared 30-minute window; suppre
   assert.equal(dispatches, 0);
 
   const third = await processOuterDistrictCandidate(memory, baseNow + 18 * 60_000, "Haymana");
-  assert.equal(third.events.some(row => row.kind === "outer_district_generic_cooldown_suppressed"), true);
-  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 1);
-  // A fresh runtime and another district at the exact expiration can admit.
-  const fourth = await processOuterDistrictCandidate(memory, baseNow + 30 * 60_000, "Polatlı");
-  assert.equal(fourth.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(third.events.some(row => row.kind === "publication_pending"), true);
+  const sameHaymana = await processOuterDistrictCandidate(memory, baseNow + 19 * 60_000, "Haymana");
+  assert.equal(sameHaymana.events.some(row => row.kind === "outer_district_generic_cooldown_suppressed"), true);
   assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 2);
-  assert.equal(memory.outerAdmissions.length, 2);
+  // A fresh runtime can admit the first district at its exact expiration.
+  const fourth = await processOuterDistrictCandidate(memory, baseNow + 30 * 60_000, "Kızılcahamam");
+  assert.equal(fourth.events.some(row => row.kind === "publication_pending"), true);
+  assert.equal(memory.records.filter(row => row.decision === "WOULD_PUBLISH").length, 3);
+  assert.equal(memory.outerAdmissions.length, 3);
 });
 
-test("town-level outer district identity participates in the same durable window", async () => {
+test("town-level outer district identity participates in its district window", async () => {
   const memory = memoryStore();
-  await processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam");
+  await processOuterDistrictCandidate(memory, baseNow, "Haymana");
   const town = await processOuterDistrictCandidate(memory, baseNow + 5 * 60_000, "Haymana", {
     missingDistrict: true, localityKind: "town", neighborhood: "Güzelcekale",
   });
@@ -571,11 +574,11 @@ test("verified outer CG and central generic admission remain independent of oute
   assert.equal(memory.outerAdmissions.length, 1);
 });
 
-test("concurrent outer generic candidates cannot both acquire the shared slot", async () => {
+test("concurrent outer generic candidates in the same district cannot both acquire the slot", async () => {
   const memory = memoryStore();
   const [one, two] = await Promise.all([
     processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam"),
-    processOuterDistrictCandidate(memory, baseNow, "Çubuk"),
+    processOuterDistrictCandidate(memory, baseNow, "Kızılcahamam"),
   ]);
   assert.equal(memory.outerAdmissions.length, 1);
   assert.equal([one, two].filter(value => value.events.some(row => row.kind === "publication_pending")).length, 1);
