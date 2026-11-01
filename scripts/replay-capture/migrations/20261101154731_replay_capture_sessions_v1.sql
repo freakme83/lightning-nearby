@@ -53,11 +53,18 @@ begin
      p_center_lat < -75 or p_center_lat > 75 or
      p_center_lon is null or p_center_lon <> p_center_lon or
      p_center_lon < -180 or p_center_lon > 180 or
-     p_side_km not in (25,50,100,200) or p_duration_minutes not in (5,10,15,30,60,120,180) then
+     p_side_km is null or p_side_km not in (25,50,100,200) or
+     p_duration_minutes is null or p_duration_minutes not in (5,10,15,30,60,120,180) then
     raise exception 'Invalid replay capture settings';
   end if;
   select * into existing from public.replay_capture_sessions where session_id = p_session_id;
-  if found then return jsonb_build_object('outcome','already_present','sessionId',p_session_id); end if;
+  if found then
+    if existing.center_lat is distinct from p_center_lat or existing.center_lon is distinct from p_center_lon or
+       existing.side_km is distinct from p_side_km or existing.duration_minutes is distinct from p_duration_minutes then
+      raise exception 'Replay session id reused with different settings';
+    end if;
+    return jsonb_build_object('outcome','already_present','sessionId',p_session_id);
+  end if;
   begin
     insert into public.replay_capture_sessions(session_id,status,center_lat,center_lon,side_km,duration_minutes)
     values (p_session_id,'requested',p_center_lat,p_center_lon,p_side_km,p_duration_minutes);
@@ -87,22 +94,29 @@ begin
       where session_id=s.session_id returning * into s;
     return jsonb_build_object('outcome','active','session',to_jsonb(s));
   end if;
+  if s.lease_owner is distinct from p_worker_id and s.lease_until > at_time then
+    return jsonb_build_object('outcome','not_owner');
+  end if;
   if s.expires_at <= at_time then
     update public.replay_capture_sessions set status='completed', completed_at=at_time,
       capture_health=case when capture_health='observing' and lease_until >= at_time
-        then 'complete' else 'incomplete' end, lease_owner=null, lease_until=null
+        and p_source_healthy is true and p_had_gap is not true
+        then 'complete' else 'incomplete' end, lease_owner=null, lease_until=null,
+      error_details=case when capture_health='observing' and lease_until >= at_time
+        and p_source_healthy is true and p_had_gap is not true then error_details
+        else coalesce(error_details,'observation_interrupted') end
       where session_id=s.session_id returning * into s;
     return jsonb_build_object('outcome','completed','session',to_jsonb(s));
-  end if;
-  if s.lease_owner is distinct from p_worker_id and s.lease_until > at_time then
-    return jsonb_build_object('outcome','not_owner');
   end if;
   update public.replay_capture_sessions set lease_owner=p_worker_id,
     lease_until=at_time + interval '30 seconds',
     source_health=case when p_source_healthy then 'healthy' else 'unhealthy' end,
     capture_health=case when capture_health='incomplete' or p_source_healthy is not true
-      or p_had_gap or s.lease_until <= at_time then 'incomplete' else capture_health end,
-    gap_count=gap_count + case when p_had_gap or s.lease_until <= at_time then 1 else 0 end
+      or p_had_gap or coalesce(s.lease_until <= at_time,true) then 'incomplete' else capture_health end,
+    error_details=coalesce(error_details,case when coalesce(s.lease_until <= at_time,true) then 'lease_takeover'
+      when p_had_gap then 'capture_gap'
+      when p_source_healthy is not true then 'source_unhealthy' end),
+    gap_count=gap_count + case when p_had_gap or coalesce(s.lease_until <= at_time,true) then 1 else 0 end
     where session_id=s.session_id returning * into s;
   return jsonb_build_object('outcome','active','session',to_jsonb(s));
 end;
@@ -116,7 +130,8 @@ begin
     order by requested_at limit 1 for update;
   if not found then return jsonb_build_object('outcome','idle'); end if;
   update public.replay_capture_sessions set status='stopped', completed_at=clock_timestamp(),
-    capture_health='incomplete', lease_owner=null, lease_until=null
+    capture_health='incomplete', error_details=coalesce(error_details,'operator_stop'),
+    lease_owner=null, lease_until=null
     where session_id=s.session_id returning * into s;
   return jsonb_build_object('outcome','stopped','sessionId',s.session_id);
 end;

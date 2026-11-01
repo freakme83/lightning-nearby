@@ -4,6 +4,7 @@ WORKDIR /app
 # Copy complete directories for the worker's transitive imports, while excluding
 # unrelated publisher code and application assets from the image.
 COPY scripts/fly-ankara-worker/ ./scripts/fly-ankara-worker/
+COPY scripts/replay-capture/ ./scripts/replay-capture/
 COPY scripts/live-lightning-listener/ ./scripts/live-lightning-listener/
 COPY scripts/research/blitzortung-probe/protocol.ts ./scripts/research/blitzortung-probe/protocol.ts
 COPY scripts/live-lightning-clustering/ ./scripts/live-lightning-clustering/
