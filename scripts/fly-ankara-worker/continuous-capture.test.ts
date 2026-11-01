@@ -102,3 +102,67 @@ test("a restart repeats the same event key independently of receipt and server",
   assert.equal(rows.length, 2);
   assert.equal(rows[0].event_key, rows[1].event_key);
 });
+
+test("throwing telemetry does not count a lost strike or prevent production admission", () => {
+  const c = new ContinuousCapture(config, () => { throw new Error("logger"); });
+  c.sourceState("unhealthy", "test");
+  c.observe(event());
+  let processed = false;
+  const fresh = { ...event(), receivedAtMs: event().eventTimeMs };
+  c.observe(fresh);
+  new BlitzPrimaryAdmission().admit(fresh, () => { processed = true; });
+  assert.equal(processed, true);
+  assert.equal(snapshot(c).dropped, 0);
+});
+
+test("failed strike batches report loss after recovery; transient failures do not", async () => {
+  let now = 1_700_000_000_000, calls = 0, offline = true;
+  const health: Record<string, unknown>[] = [];
+  const fetcher = (async (url: URL | RequestInfo, init?: RequestInit) => {
+    calls++;
+    if (offline) throw new Error("offline");
+    if (String(url).includes("continuous_capture_health")) health.push(...JSON.parse(String(init?.body)));
+    return new Response(null, { status: 201 });
+  }) as typeof fetch;
+  const c = new ContinuousCapture(config, emit, fetcher, () => now);
+  c.observe(event());
+  tick(c); await drain(); now += 30000;
+  assert.equal(snapshot(c).dropped, 0);
+  tick(c); await drain(); now += 30000;
+  tick(c); await drain(); now += 30000;
+  assert.equal(snapshot(c).dropped, 1);
+  offline = false;
+  for (let i = 0; i < 10; i++) { tick(c); await drain(); now += 30000; }
+  assert.ok(calls > 3);
+  assert.ok(health.some(row => Number(row.dropped) === 1 && Number(row.failures) >= 3));
+});
+
+test("health backlog remains bounded and a lost health batch leaves a gap marker", async () => {
+  let now = 1_700_000_000_000, offline = true;
+  const health: Record<string, unknown>[] = [];
+  const fetcher = (async (_url: URL | RequestInfo, init?: RequestInit) => {
+    if (offline) throw new Error("offline");
+    health.push(...JSON.parse(String(init?.body)));
+    return new Response(null, { status: 201 });
+  }) as typeof fetch;
+  const c = new ContinuousCapture(config, emit, fetcher, () => now);
+  for (let i = 0; i < 300; i++) { c.sourceState(i % 2 ? "healthy" : "unhealthy", "transition"); }
+  assert.ok(snapshot(c).queue.length <= 128);
+  for (let i = 0; i < 3; i++) { tick(c); await drain(); now += 30000; }
+  offline = false;
+  for (let i = 0; i < 8; i++) { tick(c); await drain(); now += 30000; }
+  assert.ok(health.some(row => row.reason === "health_gap"));
+});
+
+test("a transient write failure followed by success is not strike loss", async () => {
+  let now = 1_700_000_000_000, calls = 0;
+  const c = new ContinuousCapture(config, emit, (async () => {
+    if (++calls === 1) throw new Error("temporary");
+    return new Response(null, { status: 201 });
+  }) as typeof fetch, () => now);
+  c.observe(event()); tick(c); await drain(); now += 30000;
+  tick(c); await drain();
+  assert.equal(calls, 2);
+  assert.equal(snapshot(c).dropped, 0);
+  assert.equal(snapshot(c).failures, 1);
+});

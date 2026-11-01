@@ -27,6 +27,8 @@ export class ContinuousCapture {
   private sequence = 0;
   private dropped = 0;
   private failures = 0;
+  private healthLost = 0;
+  private healthPending = false;
   private accepted = 0;
   private written = 0;
   private readonly endpoint: URL;
@@ -51,16 +53,19 @@ export class ContinuousCapture {
       this.checkpoint("start");
       this.timer = setInterval(() => this.tick(), FLUSH_MS);
       this.timer.unref();
-      this.emit("continuous_capture_init", { polygon: POLYGON_ID, queueLimit: QUEUE_LIMIT, batchSize: BATCH_SIZE });
+      this.log("continuous_capture_init", { polygon: POLYGON_ID, queueLimit: QUEUE_LIMIT, batchSize: BATCH_SIZE });
     });
   }
 
   observe(event: BlitzortungProbeEvent) {
-    this.safe(() => {
+    let pending = false;
+    try {
       if (!event.insideMonitoringArea) return;
+      pending = true;
       if (this.strikeCount >= QUEUE_LIMIT) {
         this.dropped++;
-        if (this.dropped === 1 || this.dropped % 100 === 0) this.emit("continuous_capture_overflow", { dropped: this.dropped });
+        pending = false;
+        if (this.dropped === 1 || this.dropped % 100 === 0) this.log("continuous_capture_overflow", { dropped: this.dropped });
         return;
       }
       const eventKey = createHash("sha256").update(blitzFingerprint(event)).digest("hex");
@@ -73,11 +78,16 @@ export class ContinuousCapture {
       };
       if (!this.enqueue("continuous_capture_strikes", row)) {
         this.dropped++;
-        if (this.dropped === 1 || this.dropped % 100 === 0) this.emit("continuous_capture_overflow", { dropped: this.dropped });
+        pending = false;
+        if (this.dropped === 1 || this.dropped % 100 === 0) this.log("continuous_capture_overflow", { dropped: this.dropped });
         return;
       }
       this.accepted++;
-    });
+      pending = false;
+    } catch {
+      if (pending) this.dropped++;
+      this.log("continuous_capture_error", { stage: "observe" });
+    }
   }
 
   sourceState(state: "healthy" | "unhealthy", reason: string) {
@@ -85,16 +95,19 @@ export class ContinuousCapture {
       if (this.source === state) return;
       this.source = state;
       this.checkpoint(reason);
-      if (state === "unhealthy") this.emit("continuous_capture_source_interruption", { reason });
+      if (state === "unhealthy") this.log("continuous_capture_source_interruption", { reason });
     });
   }
 
-  private safe(fn: () => void) { try { fn(); } catch { this.failures++; this.dropped++; try { this.emit("continuous_capture_error", { stage: "observer" }); } catch { /* isolated */ } } }
+  private log(kind: string, fields: Record<string, unknown>) { try { this.emit(kind, fields); } catch { /* isolated */ } }
+  private safe(fn: () => void) { try { fn(); } catch { this.log("continuous_capture_error", { stage: "observer" }); } }
 
   private checkpoint(reason: string) {
+    if (this.healthPending) reason = "health_gap";
     this.lastHeartbeat = this.now();
     if (this.healthCount >= HEALTH_LIMIT) {
-      this.dropped++;
+      this.healthLost++;
+      this.healthPending = true;
       return;
     }
     const row: Row = {
@@ -102,7 +115,8 @@ export class ContinuousCapture {
       source_health: this.source, reason, accepted: this.accepted, written: this.written,
       dropped: this.dropped, failures: this.failures, queued: this.strikeCount, polygon_id: POLYGON_ID,
     };
-    if (!this.enqueue("continuous_capture_health", row)) this.dropped++;
+    if (!this.enqueue("continuous_capture_health", row)) { this.healthLost++; this.healthPending = true; }
+    else this.healthPending = false;
   }
 
   private enqueue(table: Item["table"], row: Row): boolean {
@@ -125,9 +139,10 @@ export class ContinuousCapture {
     this.safe(() => {
       if (this.now() - this.lastHeartbeat >= HEARTBEAT_MS) {
         this.checkpoint("heartbeat");
-        this.emit("continuous_capture_stats", { queued: this.queue.length, accepted: this.accepted,
-          written: this.written, dropped: this.dropped, failures: this.failures, source: this.source });
+        this.log("continuous_capture_stats", { queued: this.queue.length, accepted: this.accepted,
+          written: this.written, dropped: this.dropped, healthLost: this.healthLost, failures: this.failures, source: this.source });
       }
+      if (this.healthPending && this.healthCount < HEALTH_LIMIT && this.queueBytes < MAX_QUEUE_BYTES - 1024) this.checkpoint("health_gap");
       if (!this.inFlight && this.queue.length && this.now() >= this.nextAttempt) {
         this.inFlight = true;
         void this.flush().catch(() => { this.failures++; }).finally(() => { this.inFlight = false; });
@@ -150,16 +165,18 @@ export class ContinuousCapture {
       this.remove(batch.length);
       if (table === "continuous_capture_strikes") this.written += batch.length;
       this.nextAttempt = 0;
-      this.safe(() => this.emit("continuous_capture_batch", { table, count: batch.length }));
+      if (this.healthPending) this.checkpoint("health_gap");
+      this.safe(() => this.log("continuous_capture_batch", { table, count: batch.length }));
     } catch {
       this.failures++;
       const attempts = ++batch[0].attempts;
       if (attempts >= MAX_ATTEMPTS) {
         this.remove(batch.length);
-        this.dropped += batch.length;
+        if (table === "continuous_capture_strikes") this.dropped += batch.length;
+        else { this.healthLost += batch.length; this.healthPending = true; }
       }
       this.nextAttempt = this.now() + Math.min(30_000, 2000 * 2 ** (attempts - 1));
-      this.safe(() => this.emit("continuous_capture_write_failure", { attempts, dropped: this.dropped, retryInMs: this.nextAttempt - this.now() }));
+      this.safe(() => this.log("continuous_capture_write_failure", { attempts, dropped: this.dropped, retryInMs: this.nextAttempt - this.now() }));
     }
   }
 
@@ -170,7 +187,7 @@ export class ContinuousCapture {
       this.source = "unhealthy";
       this.checkpoint("shutdown");
       this.tick(); // best effort only; production shutdown never waits for this
-      this.emit("continuous_capture_shutdown", { queued: this.queue.length, dropped: this.dropped });
+      this.log("continuous_capture_shutdown", { queued: this.queue.length, dropped: this.dropped });
     });
   }
 }
