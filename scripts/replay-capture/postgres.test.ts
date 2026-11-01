@@ -73,9 +73,10 @@ test("capture RPCs serialize starts, enforce lease, dedupe, and deny public role
       await db.query("update public.replay_capture_sessions set expires_at=clock_timestamp()-interval '61 seconds', lease_until=clock_timestamp()+interval '30 seconds' where session_id=$1", [id]);
       await db.exec("set role service_role");
       assert.equal((await rpc("sync_replay_capture", [replacement, true, false, 0, [], false, false])).outcome, "active");
-      const completed = await rpc("sync_replay_capture", [replacement, true, false, 1, [], true, false]);
+      const completed = await rpc("sync_replay_capture", [replacement, false, false, 1, [], true, false]);
       assert.equal(completed.outcome, "completed");
       assert.equal((completed.session as Record<string, unknown>).capture_health, "incomplete");
+      assert.equal((completed.session as Record<string, unknown>).source_health, "unhealthy");
       assert.equal((await rpc("stop_replay_capture")).outcome, "idle");
       assert.equal((await rpc("request_replay_capture", [other, 40, 32, 25, 5])).outcome, "requested");
       assert.equal((await rpc("stop_replay_capture")).outcome, "stopped");

@@ -109,7 +109,7 @@ begin
   truncated := s.coverage_gaps_truncated or p_gaps_truncated;
   for gap in select value from jsonb_array_elements(p_gap_updates) loop
     if jsonb_typeof(gap) <> 'object' or gap->>'id' is null or
-       gap->>'reason' not in ('source_disconnect','source_unhealthy','queue_overflow','write_failure') or
+       gap->>'reason' not in ('source_disconnect','source_unhealthy','queue_overflow','write_failure','activation_transition') or
        (gap->>'startedAt' is null and gap->>'reason' in ('source_disconnect','source_unhealthy')) or
        ((gap->>'startedAt')::timestamptz is not null and (gap->>'endedAt')::timestamptz is not null and
         (gap->>'endedAt')::timestamptz < (gap->>'startedAt')::timestamptz) then
@@ -139,7 +139,9 @@ begin
       capture_health=case when capture_health='observing' and lease_until >= at_time
         and p_source_healthy is true and p_had_gap is not true and p_pending_count=0
         and jsonb_array_length(gaps)=0 and not truncated
-        then 'complete' else 'incomplete' end, lease_owner=null, lease_until=null,
+        then 'complete' else 'incomplete' end,
+      source_health=case when p_source_healthy then 'healthy' else 'unhealthy' end,
+      lease_owner=null, lease_until=null,
       error_details=case when capture_health='observing' and lease_until >= at_time
         and p_source_healthy is true and p_had_gap is not true and p_pending_count=0
         and jsonb_array_length(gaps)=0 and not truncated then error_details

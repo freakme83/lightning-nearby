@@ -16,6 +16,7 @@ function fixture(durationMinutes = 5) {
   let now = startAt;
   let status: CaptureSession["status"] = "requested";
   let healthy = true;
+  let connectionGeneration = 1;
   let failure = false;
   const saved = new Map<string, CapturedStrike>();
   const logs: Array<{ kind: string; fields: Record<string, unknown> }> = [];
@@ -62,9 +63,10 @@ function fixture(durationMinutes = 5) {
     },
   };
   const manager = new ReplayCaptureManager(store, () => healthy,
-    (kind, fields) => { logs.push({ kind, fields }); }, () => now);
+    (kind, fields) => { logs.push({ kind, fields }); }, () => now, () => connectionGeneration);
   return { manager, session, saved, logs, setNow(value: number) { now = value; },
-    setHealthy(value: boolean) { healthy = value; }, setFailure(value: boolean) { failure = value; } };
+    setHealthy(value: boolean) { healthy = value; }, setFailure(value: boolean) { failure = value; },
+    changeConnection() { connectionGeneration++; } };
 }
 async function activate(f: ReturnType<typeof fixture>) {
   f.manager.start();
@@ -202,4 +204,35 @@ test("idle poll is twelve seconds and active poll is two seconds", () => {
   assert.equal(capturePollDelay("waiting_for_source"), CAPTURE_WAITING_POLL_MS);
   assert.equal(capturePollDelay("active"), CAPTURE_POLL_MS);
   assert.equal(CAPTURE_IDLE_POLL_MS / CAPTURE_POLL_MS, 6);
+});
+
+test("a connection transition during activation RPC is persisted as uncertain coverage", async () => {
+  const f = fixture();
+  let resolveSync!: (value: Awaited<ReturnType<CaptureStore["sync"]>>) => void;
+  let pendingArgs!: Parameters<CaptureStore["sync"]>;
+  // Hold the initial activation RPC while the transport disconnects and recovers.
+  const captureStore = (f.manager as unknown as { store: CaptureStore }).store;
+  const realSync = captureStore.sync.bind(captureStore);
+  captureStore.sync = (...args) => new Promise(resolve => { resolveSync = resolve; pendingArgs = args; });
+  try {
+    f.manager.start();
+    await new Promise(resolve => setImmediate(resolve));
+    f.changeConnection();
+    resolveSync(await realSync(...pendingArgs));
+    await new Promise(resolve => setImmediate(resolve));
+    captureStore.sync = realSync;
+    await f.manager.tick();
+    assert.equal(f.session.coverageGaps.some(gap => gap.reason === "activation_transition" &&
+      gap.startedAt === null && gap.endedAt === null), true);
+    assert.equal(f.session.captureHealth, "incomplete");
+  } finally { captureStore.sync = realSync; f.manager.stop(); }
+});
+
+test("activation without a connection transition does not create a gap", async () => {
+  const f = fixture();
+  try {
+    await activate(f);
+    assert.equal(f.session.coverageGaps.length, 0);
+    assert.equal(f.session.captureHealth, "observing");
+  } finally { f.manager.stop(); }
 });

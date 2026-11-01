@@ -14,7 +14,7 @@ const CAPTURE_SEEN_MAX = 20_000;
 const CAPTURE_GAPS_MAX = 128;
 
 export type CaptureGap = { id: string; startedAt: string | null; endedAt: string | null;
-  reason: "source_disconnect" | "source_unhealthy" | "queue_overflow" | "write_failure" };
+  reason: "source_disconnect" | "source_unhealthy" | "queue_overflow" | "write_failure" | "activation_transition" };
 export function capturePollDelay(outcome: "active" | "waiting_for_source" | "idle" | "completed" | "not_owner"): number {
   return outcome === "active" ? CAPTURE_POLL_MS :
     outcome === "waiting_for_source" ? CAPTURE_WAITING_POLL_MS : CAPTURE_IDLE_POLL_MS;
@@ -26,6 +26,7 @@ export class ReplayCaptureManager {
   private readonly sourceHealthy: () => boolean;
   private readonly emit: Emit;
   private readonly now: () => number;
+  private readonly connectionGeneration: () => number;
   private readonly workerId = randomUUID();
   private active: CaptureSession | null = null;
   private queue: CapturedStrike[] = [];
@@ -47,11 +48,12 @@ export class ReplayCaptureManager {
     queueDrops: 0, writeFailures: 0, sourceGaps: 0 };
 
   constructor(store: CaptureStore, sourceHealthy: () => boolean,
-    emit: Emit, now: () => number = Date.now) {
+    emit: Emit, now: () => number = Date.now, connectionGeneration: () => number = () => 0) {
     this.store = store;
     this.sourceHealthy = sourceHealthy;
     this.emit = emit;
     this.now = now;
+    this.connectionGeneration = connectionGeneration;
   }
 
   start(): void {
@@ -101,6 +103,11 @@ export class ReplayCaptureManager {
     this.lossReasons.add(reason);
     // Exact failure interval is unknown; never fabricate start/end times.
     this.addGapUpdate({ id: randomUUID(), startedAt: null, endedAt: null, reason });
+  }
+
+  private markActivationTransition(): void {
+    this.hadGap = true;
+    this.addGapUpdate({ id: randomUUID(), startedAt: null, endedAt: null, reason: "activation_transition" });
   }
 
   observe(event: BlitzortungProbeEvent): void {
@@ -174,11 +181,14 @@ export class ReplayCaptureManager {
       } else await this.flush();
       if (!this.running) return;
       const updates = [...this.gapUpdates.values()];
+      const activationWasLocallyUnknown = this.active === null;
+      const connectionGeneration = this.connectionGeneration();
       const result = await this.store.sync(this.workerId, this.sourceHealthy(), this.hadGap,
         this.queue.length, updates, !this.active?.expiresAt ||
           this.now() >= Date.parse(this.active.expiresAt) + CAPTURE_LATE_ARRIVAL_GRACE_MS,
         this.gapsTruncated);
       if (!this.running) return;
+      const connectionChangedDuringSync = connectionGeneration !== this.connectionGeneration();
       this.syncFailures = 0;
       this.syncRetryAt = 0;
       if (result.outcome !== "not_owner") {
@@ -202,6 +212,7 @@ export class ReplayCaptureManager {
             centerLon: result.session.centerLon, sideKm: result.session.sideKm });
         }
         this.active = result.session;
+        if (activationWasLocallyUnknown && connectionChangedDuringSync) this.markActivationTransition();
       } else {
         if (this.active) this.emit("replay_capture_ended", { source: "blitzortung",
           sessionId: this.active.sessionId, outcome: result.outcome,

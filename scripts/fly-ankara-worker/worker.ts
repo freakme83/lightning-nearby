@@ -136,7 +136,8 @@ try {
   const captureStore = createCaptureStore({ url: process.env.SUPABASE_URL,
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY });
   replayCapture = new ReplayCaptureManager(captureStore,
-    () => captureReadiness.isReady(socket?.readyState === WebSocket.OPEN, Date.now(), frameTimeoutMs), emit);
+    () => captureReadiness.isReady(socket?.readyState === WebSocket.OPEN, Date.now(), frameTimeoutMs),
+    emit, Date.now, () => captureReadiness.generation());
   replayCapture.start();
 } catch {
   emit("replay_capture_error", { source: "blitzortung", stage: "configuration", reason: "unavailable" });
