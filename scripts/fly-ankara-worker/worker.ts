@@ -11,6 +11,7 @@ import { createLedgerHealthMonitor } from "./ledger-health.ts";
 import { createCaptureStore } from "../replay-capture/store.ts";
 import { ReplayCaptureManager } from "../replay-capture/manager.ts";
 import { CaptureSourceReadiness } from "../replay-capture/source-readiness.ts";
+import { createContinuousCapture } from "./continuous-capture.ts";
 
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
@@ -74,6 +75,8 @@ function summary(reason = "periodic") {
   });
 }
 
+const continuousCapture = createContinuousCapture(process.env, emit);
+
 function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   counters.messages++;
   const receivedAt = Date.now();
@@ -94,10 +97,12 @@ function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   lastFrameAt = receivedAt;
   captureReadiness.validEvent(receivedAt);
   replayCapture?.markSourceRecovery(receivedAt);
+  continuousCapture?.sourceState("healthy", "valid_event");
   runtime.recordFrame(receivedAt);
   counters.decoded++;
   try { replayCapture?.observe(frame.event); }
   catch { emit("replay_capture_error", { source: "blitzortung", stage: "observe", reason: "unexpected_error" }); }
+  continuousCapture?.observe(frame.event);
   const admission = blitzAdmission.admit(frame.event, (event, atMs) => { runtime.acceptEvent(event, atMs); });
   if (shouldLogBlitzAdmissionRejection(admission)) emit("blitz_admission_rejected", { reason: admission,
     sourceServer, latencyMs: frame.event.latencyMs });
@@ -112,6 +117,7 @@ function stop(reason: string) {
   if (sleepTimer) clearTimeout(sleepTimer);
   ledgerHealth?.stop();
   replayCapture?.stop();
+  continuousCapture?.stop();
   resolveSleep?.();
   emit("stopping", { reason });
   socket?.close(1000, "worker stopping");
@@ -149,6 +155,7 @@ async function connectOnce(): Promise<void> {
   const openingAt = Date.now();
   captureReadiness.beginConnection();
   replayCapture?.markSourceGap("source_disconnect", openingAt);
+  continuousCapture?.sourceState("unhealthy", "connecting");
   if (!blitzSourceStillHealthy(lastFrameAt, openingAt, frameTimeoutMs)) {
     if (sourceHealthy) runtime.recordDisconnected(openingAt);
     sourceHealthy = false;
@@ -197,9 +204,13 @@ async function connectOnce(): Promise<void> {
         connectionNumber: counters.connections, handshakeMs: Date.now() - openingAt });
       ws.send(JSON.stringify({ a: 111 }));
       watchdog = setInterval(() => {
+        if (!blitzSourceStillHealthy(lastFrameAt, Date.now(), frameTimeoutMs)) {
+          continuousCapture?.sourceState("unhealthy", "valid_event_timeout");
+        }
         if (!watchdogTriggered && Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
           watchdogTriggered = true;
           replayCapture?.markSourceGap("source_unhealthy");
+          continuousCapture?.sourceState("unhealthy", "source_unhealthy");
           const previousLastFrameAt = lastFrameAt;
           emit("source_health", {
             to: "stale",
@@ -219,7 +230,10 @@ async function connectOnce(): Promise<void> {
     });
     ws.addEventListener("error", () => emit("connection_error", { sourceServer, reason: "WebSocket error" }));
     ws.addEventListener("close", event => {
-      if (socket === ws) replayCapture?.markSourceGap("source_disconnect");
+      if (socket === ws) {
+        replayCapture?.markSourceGap("source_disconnect");
+        continuousCapture?.sourceState("unhealthy", "source_disconnect");
+      }
       emit("disconnected", { sourceServer, code: event.code, reason: event.reason,
         clean: event.wasClean, sourceHealthyDuringReconnect: sourceHealthy });
       finish();
