@@ -10,6 +10,7 @@ import { createFlyAutoPublish } from "./auto-publish.ts";
 import { createLedgerHealthMonitor } from "./ledger-health.ts";
 import { createCaptureStore } from "../replay-capture/store.ts";
 import { ReplayCaptureManager } from "../replay-capture/manager.ts";
+import { CaptureSourceReadiness } from "../replay-capture/source-readiness.ts";
 
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
@@ -27,6 +28,7 @@ let sleepTimer: ReturnType<typeof setTimeout> | null = null;
 let resolveSleep: (() => void) | null = null;
 let ledgerHealth: ReturnType<typeof createLedgerHealthMonitor> | null = null;
 let replayCapture: ReplayCaptureManager | null = null;
+const captureReadiness = new CaptureSourceReadiness();
 
 function emit(kind: string, fields: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ kind, at: new Date().toISOString(), ...fields }));
@@ -90,6 +92,8 @@ function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   }
   sourceHealthy = true;
   lastFrameAt = receivedAt;
+  captureReadiness.validEvent(receivedAt);
+  replayCapture?.markSourceRecovery(receivedAt);
   runtime.recordFrame(receivedAt);
   counters.decoded++;
   try { replayCapture?.observe(frame.event); }
@@ -132,8 +136,7 @@ try {
   const captureStore = createCaptureStore({ url: process.env.SUPABASE_URL,
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY });
   replayCapture = new ReplayCaptureManager(captureStore,
-    () => socket?.readyState === WebSocket.OPEN &&
-      blitzSourceStillHealthy(lastFrameAt, Date.now(), frameTimeoutMs), emit);
+    () => captureReadiness.isReady(socket?.readyState === WebSocket.OPEN, Date.now(), frameTimeoutMs), emit);
   replayCapture.start();
 } catch {
   emit("replay_capture_error", { source: "blitzortung", stage: "configuration", reason: "unavailable" });
@@ -143,6 +146,8 @@ async function connectOnce(): Promise<void> {
   const sourceServer = WORKER_BLITZORTUNG_SERVERS[serverIndex++ % WORKER_BLITZORTUNG_SERVERS.length];
   const endpoint = `wss://${sourceServer}.blitzortung.org/`;
   const openingAt = Date.now();
+  captureReadiness.beginConnection();
+  replayCapture?.markSourceGap("source_disconnect", openingAt);
   if (!blitzSourceStillHealthy(lastFrameAt, openingAt, frameTimeoutMs)) {
     if (sourceHealthy) runtime.recordDisconnected(openingAt);
     sourceHealthy = false;
@@ -193,6 +198,7 @@ async function connectOnce(): Promise<void> {
       watchdog = setInterval(() => {
         if (!watchdogTriggered && Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
           watchdogTriggered = true;
+          replayCapture?.markSourceGap("source_unhealthy");
           const previousLastFrameAt = lastFrameAt;
           emit("source_health", {
             to: "stale",
@@ -212,7 +218,7 @@ async function connectOnce(): Promise<void> {
     });
     ws.addEventListener("error", () => emit("connection_error", { sourceServer, reason: "WebSocket error" }));
     ws.addEventListener("close", event => {
-      if (socket === ws) replayCapture?.markSourceGap();
+      if (socket === ws) replayCapture?.markSourceGap("source_disconnect");
       emit("disconnected", { sourceServer, code: event.code, reason: event.reason,
         clean: event.wasClean, sourceHealthyDuringReconnect: sourceHealthy });
       finish();

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ReplayCaptureManager, CAPTURE_QUEUE_MAX } from "./manager.ts";
+import { ReplayCaptureManager, CAPTURE_QUEUE_MAX, CAPTURE_LATE_ARRIVAL_GRACE_MS,
+  CAPTURE_IDLE_POLL_MS, CAPTURE_POLL_MS, CAPTURE_WAITING_POLL_MS, capturePollDelay } from "./manager.ts";
 import type { CaptureSession, CaptureStore, CapturedStrike } from "./store.ts";
 import type { BlitzortungProbeEvent } from "../research/blitzortung-probe/protocol.ts";
 
@@ -22,24 +23,32 @@ function fixture(durationMinutes = 5) {
     sideKm: 25, durationMinutes, geometryVersion: "azimuthal-equidistant-v1",
     requestedAt: new Date(startAt - 60_000).toISOString(), activatedAt: null, expiresAt: null,
     completedAt: null, eventCount: 0, captureHealth: "unknown", sourceHealth: "unknown",
-    gapCount: 0, errorDetails: null };
+    gapCount: 0, coverageGaps: [], coverageGapsTruncated: false, errorDetails: null };
   const store: CaptureStore = {
     async request() { return { outcome: status === "requested" || status === "active" ? "conflict" : "requested" }; },
     async status() { return { ...session }; },
     async stop() { status = "stopped"; session.status = status; return { outcome: "stopped" }; },
-    async sync(_workerId, sourceHealthy, hadGap) {
+    async sync(_workerId, sourceHealthy, hadGap, pendingCount, gapUpdates) {
       if (status === "stopped" || status === "completed") return { outcome: "idle" };
       if (status === "requested") {
         if (!sourceHealthy) return { outcome: "waiting_for_source" };
         status = "active"; session.status = status; session.activatedAt = new Date(now).toISOString();
         session.expiresAt = new Date(now + durationMinutes * 60_000).toISOString();
         session.captureHealth = "observing";
-      } else if (now >= Date.parse(session.expiresAt!)) {
+      }
+      for (const gap of gapUpdates) {
+        const index = session.coverageGaps.findIndex(item => item.id === gap.id);
+        if (index < 0) session.coverageGaps.push(gap);
+        else session.coverageGaps[index] = gap;
+      }
+      session.gapCount = session.coverageGaps.length;
+      if (now >= Date.parse(session.expiresAt!) + CAPTURE_LATE_ARRIVAL_GRACE_MS) {
         status = "completed"; session.status = status; session.completedAt = new Date(now).toISOString();
-        session.captureHealth = hadGap || session.captureHealth === "incomplete" ? "incomplete" : "complete";
+        session.captureHealth = pendingCount || hadGap || session.captureHealth === "incomplete" || session.gapCount ?
+          "incomplete" : "complete";
         return { outcome: "completed", session: { ...session } };
       }
-      if (hadGap || !sourceHealthy) { session.captureHealth = "incomplete"; session.gapCount++; }
+      if (hadGap || !sourceHealthy || session.gapCount) session.captureHealth = "incomplete";
       session.sourceHealth = sourceHealthy ? "healthy" : "unhealthy";
       return { outcome: "active", session: { ...session } };
     },
@@ -76,7 +85,7 @@ test("five-minute capture activates on worker time, filters square, persists exa
     assert.equal(f.saved.size, 1);
     assert.equal(f.session.eventCount, 1);
     assert.equal([...f.saved.values()][0].event_time, new Date(startAt + 1000).toISOString());
-    f.setNow(startAt + 5 * 60_000);
+    f.setNow(startAt + 5 * 60_000 + CAPTURE_LATE_ARRIVAL_GRACE_MS);
     await f.manager.tick();
     assert.equal(f.session.status, "completed");
     assert.equal(f.session.captureHealth, "complete");
@@ -93,7 +102,7 @@ test("ten-minute expiration and failed storage remain isolated and mark incomple
     await f.manager.tick();
     assert.equal(f.saved.size, 0);
     assert.equal(f.logs.some(row => row.kind === "replay_capture_error"), true);
-    f.setNow(startAt + 10 * 60_000);
+    f.setNow(startAt + 10 * 60_000 + CAPTURE_LATE_ARRIVAL_GRACE_MS);
     await f.manager.tick();
     assert.equal(f.session.status, "completed");
     assert.equal(f.session.captureHealth, "incomplete");
@@ -117,18 +126,80 @@ test("source gap and bounded queue never block observation", async () => {
   } finally { f.manager.stop(); }
 });
 
-test("a near-expiry backlog cannot be reported as complete coverage", async () => {
+test("a near-expiry backlog drains during grace before completing", async () => {
   const f = fixture();
   try {
     await activate(f);
     for (let i = 0; i < 100; i++) f.manager.observe(event(startAt + 1000 + i * 2));
     f.setNow(startAt + 5 * 60_000 - 1000);
     await f.manager.tick(); // one 50-event batch remains pending as database time approaches expiry
-    assert.equal(f.session.captureHealth, "incomplete");
-    f.setNow(startAt + 5 * 60_000);
+    assert.equal(f.session.captureHealth, "observing");
+    f.setNow(startAt + 5 * 60_000 + CAPTURE_LATE_ARRIVAL_GRACE_MS);
     await f.manager.tick();
     assert.equal(f.saved.size, 100);
     assert.equal(f.session.status, "completed");
+    assert.equal(f.session.captureHealth, "complete");
+  } finally { f.manager.stop(); }
+});
+
+test("late in-window events survive grace, but post-window and post-grace events do not", async () => {
+  const f = fixture();
+  try {
+    await activate(f);
+    const expiry = startAt + 5 * 60_000;
+    f.setNow(expiry + 20_000);
+    f.manager.observe({ ...event(expiry - 10_000), receivedAtMs: expiry + 8_000 });
+    f.manager.observe({ ...event(expiry - 11_000), receivedAtMs: expiry + 20_000 });
+    f.manager.observe({ ...event(expiry), receivedAtMs: expiry + 20_000 });
+    f.manager.observe({ ...event(expiry - 12_000), receivedAtMs: expiry + CAPTURE_LATE_ARRIVAL_GRACE_MS });
+    await f.manager.tick();
+    assert.equal(f.saved.size, 2);
+    assert.equal(f.session.status, "active");
+    f.setNow(expiry + CAPTURE_LATE_ARRIVAL_GRACE_MS);
+    await f.manager.tick();
+    assert.equal(f.session.status, "completed");
+  } finally { f.manager.stop(); }
+});
+
+test("failed near-finalization batch cannot report complete coverage", async () => {
+  const f = fixture();
+  try {
+    await activate(f);
+    f.manager.observe(event(startAt + 10_000));
+    f.setFailure(true);
+    f.setNow(startAt + 5 * 60_000 + CAPTURE_LATE_ARRIVAL_GRACE_MS);
+    await f.manager.tick();
+    assert.equal(f.session.status, "completed");
+    assert.equal(f.session.captureHealth, "incomplete");
+    assert.equal(f.saved.size, 0);
+    assert.equal(f.session.coverageGaps[0].reason, "write_failure");
+    assert.equal(f.session.coverageGaps[0].startedAt, null);
+  } finally { f.manager.stop(); }
+});
+
+test("disconnect and recovery persist one interval without erasing incomplete coverage", async () => {
+  const f = fixture();
+  try {
+    await activate(f);
+    f.manager.markSourceGap("source_disconnect", startAt + 10_000);
+    f.manager.markSourceGap("source_disconnect", startAt + 11_000);
+    f.setHealthy(false);
+    f.setNow(startAt + 12_000);
+    await f.manager.tick();
+    f.manager.markSourceRecovery(startAt + 25_000);
+    f.setHealthy(true);
+    f.setNow(startAt + 25_000);
+    await f.manager.tick();
+    assert.equal(f.session.gapCount, 1);
+    assert.equal(f.session.coverageGaps[0].startedAt, new Date(startAt + 10_000).toISOString());
+    assert.equal(f.session.coverageGaps[0].endedAt, new Date(startAt + 25_000).toISOString());
     assert.equal(f.session.captureHealth, "incomplete");
   } finally { f.manager.stop(); }
+});
+
+test("idle poll is twelve seconds and active poll is two seconds", () => {
+  assert.equal(capturePollDelay("idle"), CAPTURE_IDLE_POLL_MS);
+  assert.equal(capturePollDelay("waiting_for_source"), CAPTURE_WAITING_POLL_MS);
+  assert.equal(capturePollDelay("active"), CAPTURE_POLL_MS);
+  assert.equal(CAPTURE_IDLE_POLL_MS / CAPTURE_POLL_MS, 6);
 });

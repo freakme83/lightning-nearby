@@ -1,5 +1,6 @@
 import { supabaseConnection } from "../lightning-publication-ledger/storage/supabase.ts";
 import { validateCaptureSettings, type CaptureArea } from "./geometry.ts";
+import type { CaptureGap } from "./manager.ts";
 
 export type CaptureSession = CaptureArea & {
   sessionId: string; status: "requested" | "active" | "completed" | "stopped";
@@ -7,6 +8,7 @@ export type CaptureSession = CaptureArea & {
   expiresAt: string | null; completedAt: string | null; eventCount: number;
   captureHealth: "unknown" | "observing" | "complete" | "incomplete";
   sourceHealth: "unknown" | "healthy" | "unhealthy"; gapCount: number;
+  coverageGaps: CaptureGap[]; coverageGapsTruncated: boolean;
   geometryVersion: string; errorDetails: string | null;
 };
 export type CapturedStrike = {
@@ -21,7 +23,9 @@ export type CaptureStore = {
     outcome: "requested" | "conflict" | "already_present"; sessionId?: string }>;
   status(): Promise<CaptureSession | null>;
   stop(): Promise<{ outcome: "idle" | "stopped"; sessionId?: string }>;
-  sync(workerId: string, sourceHealthy: boolean, hadGap: boolean): Promise<SyncResult>;
+  sync(workerId: string, sourceHealthy: boolean, hadGap: boolean,
+    pendingCount: number, gapUpdates: CaptureGap[], canFinalize: boolean,
+    gapsTruncated: boolean): Promise<SyncResult>;
   storeBatch(sessionId: string, workerId: string, events: CapturedStrike[]): Promise<{
     outcome: "stored" | "not_active"; inserted?: number }>;
 };
@@ -35,6 +39,7 @@ function sessionFromRow(value: unknown): CaptureSession {
       typeof row.requested_at !== "string" || !Number.isFinite(Date.parse(row.requested_at)) ||
       !Number.isSafeInteger(row.event_count) || (row.event_count as number) < 0 ||
       !Number.isSafeInteger(row.gap_count) || (row.gap_count as number) < 0 ||
+      !Array.isArray(row.coverage_gaps) || typeof row.coverage_gaps_truncated !== "boolean" ||
       !["unknown","observing","complete","incomplete"].includes(String(row.capture_health)) ||
       !["unknown","healthy","unhealthy"].includes(String(row.source_health)) ||
       row.geometry_version !== "azimuthal-equidistant-v1") throw new Error("Invalid capture session response");
@@ -47,6 +52,7 @@ function sessionFromRow(value: unknown): CaptureSession {
     requestedAt: row.requested_at, activatedAt: row.activated_at as string | null,
     expiresAt: row.expires_at as string | null, completedAt: row.completed_at as string | null,
     eventCount: row.event_count as number, gapCount: row.gap_count as number,
+    coverageGaps: row.coverage_gaps as CaptureGap[], coverageGapsTruncated: row.coverage_gaps_truncated as boolean,
     captureHealth: row.capture_health as CaptureSession["captureHealth"],
     sourceHealth: row.source_health as CaptureSession["sourceHealth"],
     geometryVersion: row.geometry_version, errorDetails: typeof row.error_details === "string" ? row.error_details : null };
@@ -75,7 +81,7 @@ export function createCaptureStore(config: { url?: string; serviceRoleKey?: stri
     },
     async status() {
       const url = new URL("/rest/v1/replay_capture_sessions", endpoint);
-      url.searchParams.set("select", "session_id,status,center_lat,center_lon,side_km,duration_minutes,geometry_version,requested_at,activated_at,expires_at,completed_at,event_count,capture_health,source_health,gap_count,error_details");
+      url.searchParams.set("select", "session_id,status,center_lat,center_lon,side_km,duration_minutes,geometry_version,requested_at,activated_at,expires_at,completed_at,event_count,capture_health,source_health,gap_count,coverage_gaps,coverage_gaps_truncated,error_details");
       url.searchParams.set("order", "requested_at.desc");
       url.searchParams.set("limit", "1");
       const response = await fetcher(url, { headers, cache: "no-store", signal: AbortSignal.timeout(8_000) });
@@ -89,9 +95,11 @@ export function createCaptureStore(config: { url?: string; serviceRoleKey?: stri
       if (row.outcome !== "idle" && row.outcome !== "stopped") throw new Error("Invalid stop response");
       return { outcome: row.outcome, ...(typeof row.sessionId === "string" ? { sessionId: row.sessionId } : {}) };
     },
-    async sync(workerId, sourceHealthy, hadGap) {
+    async sync(workerId, sourceHealthy, hadGap, pendingCount, gapUpdates, canFinalize, gapsTruncated) {
       const row = await rpc("sync_replay_capture", { p_worker_id: workerId,
-        p_source_healthy: sourceHealthy, p_had_gap: hadGap });
+        p_source_healthy: sourceHealthy, p_had_gap: hadGap,
+        p_pending_count: pendingCount, p_gap_updates: gapUpdates,
+        p_can_finalize: canFinalize, p_gaps_truncated: gapsTruncated });
       if (row.outcome === "active" || row.outcome === "completed") {
         return { outcome: row.outcome, session: sessionFromRow(row.session) };
       }

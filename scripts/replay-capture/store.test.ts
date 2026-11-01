@@ -7,7 +7,8 @@ const session = { session_id: "test-id", status: "active", center_lat: 40, cente
   duration_minutes: 5, geometry_version: "azimuthal-equidistant-v1",
   requested_at: "2026-11-01T12:00:00Z", activated_at: "2026-11-01T12:00:02Z",
   expires_at: "2026-11-01T12:05:02Z", completed_at: null, event_count: 3,
-  capture_health: "incomplete", source_health: "unhealthy", gap_count: 1, error_details: "source_unhealthy" };
+  capture_health: "incomplete", source_health: "unhealthy", gap_count: 1,
+  coverage_gaps: [], coverage_gaps_truncated: false, error_details: "source_unhealthy" };
 
 test("status exposes safe session facts and commands use only own authenticated Supabase RPCs", async () => {
   const calls: Array<{ url: URL; init: RequestInit }> = [];
