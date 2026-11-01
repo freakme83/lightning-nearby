@@ -1,0 +1,60 @@
+name: Replay Capture Control
+run-name: Replay capture (${{ inputs.operation }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Capture operation
+        required: true
+        type: choice
+        options: [start, status, stop]
+      center_lat:
+        description: "Start: center latitude (decimal, -75 to 75)"
+        required: false
+        type: string
+      center_lon:
+        description: "Start: center longitude (decimal, -180 to 180)"
+        required: false
+        type: string
+      side_km:
+        description: "Start: square side length (km)"
+        required: true
+        default: "100"
+        type: choice
+        options: ["25", "50", "100", "200"]
+      duration_minutes:
+        description: "Start: capture duration, measured after worker activation"
+        required: true
+        default: "10"
+        type: choice
+        options: ["5", "10", "15", "30", "60", "120", "180"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay-capture-control
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: merge-ready
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Submit command or read session status
+        env:
+          CAPTURE_OPERATION: ${{ inputs.operation }}
+          CAPTURE_CENTER_LAT: ${{ inputs.center_lat }}
+          CAPTURE_CENTER_LON: ${{ inputs.center_lon }}
+          CAPTURE_SIDE_KM: ${{ inputs.side_km }}
+          CAPTURE_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node --experimental-strip-types scripts/replay-capture/control.ts
