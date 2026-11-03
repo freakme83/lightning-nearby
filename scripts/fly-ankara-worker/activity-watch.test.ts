@@ -101,5 +101,10 @@ test("routine 361-second rotations preserve exact 1s/4s gap evidence; a watchdog
   now += 1000;
   sourceHealthy = true; watch.sourceState(true); await drain();
   assert.deepEqual(records.at(-1), { sequence: 4, maxMs: 1000, unbounded: true });
+  now += 361_000;
+  sourceHealthy = false; watch.sourceState(false); await drain();
+  now += 25 * 24 * 60 * 60_000;
+  sourceHealthy = true; watch.sourceState(true); await drain();
+  assert.deepEqual(records.at(-1), { sequence: 5, maxMs: 2_147_483_647, unbounded: true });
   watch.stop();
 });

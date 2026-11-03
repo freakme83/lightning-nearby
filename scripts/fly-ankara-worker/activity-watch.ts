@@ -4,6 +4,7 @@ import type { BlitzortungProbeEvent } from "../research/blitzortung-probe/protoc
 import { blitzFingerprint, BLITZ_ADMISSION_MAX_LATENCY_MS } from "./blitz-primary.ts";
 
 const TICK_MS = 10_000, BATCH_SIZE = 50, QUEUE_LIMIT = 2_000, TIMEOUT_MS = 5_000;
+const MAX_SQL_GAP_MS = 2_147_483_647;
 export type ActivityEvent = { event_key: string; event_time: string; received_at: string };
 export type ActivitySync = { state: "idle" | "active"; periodId: string | null; processed: number };
 export type ActivityGap = { sequence: number; maxMs: number; unbounded: boolean };
@@ -116,8 +117,8 @@ export class ActivityWatch {
     } else {
       const duration = this.openGapAt === null ? -1 : at - this.openGapAt;
       this.gapSequence++;
-      this.pendingGapMaxMs = Math.max(this.pendingGapMaxMs, duration);
-      this.pendingGapUnbounded ||= !this.openGapBounded || duration < 0;
+      this.pendingGapMaxMs = Math.max(this.pendingGapMaxMs, Math.min(MAX_SQL_GAP_MS, Math.max(0, duration)));
+      this.pendingGapUnbounded ||= !this.openGapBounded || duration < 0 || duration > MAX_SQL_GAP_MS;
       this.openGapAt = null;
       this.generation++;
     }
