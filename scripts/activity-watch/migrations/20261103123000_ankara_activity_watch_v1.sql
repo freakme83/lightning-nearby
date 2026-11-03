@@ -10,6 +10,7 @@ create table public.ankara_activity_periods (
   healthy_since timestamptz,
   coverage_uncertain boolean not null default false,
   interruption_count integer not null default 0,
+  last_gap_sequence bigint not null default 0,
   worker_run_id uuid not null,
   check ((state = 'active' and closed_at is null) or (state = 'closed' and closed_at is not null))
 );
@@ -33,7 +34,8 @@ grant select, insert, update on public.ankara_activity_periods to service_role;
 grant select, insert on public.ankara_activity_period_events to service_role;
 
 create function public.sync_ankara_activity_watch(
-  p_worker_run_id uuid, p_source_healthy boolean, p_interrupted boolean, p_lost boolean,
+  p_worker_run_id uuid, p_source_healthy boolean, p_gap_sequence bigint,
+  p_gap_max_ms integer, p_gap_unbounded boolean, p_lost boolean,
   p_events jsonb, p_now timestamptz default clock_timestamp()
 ) returns jsonb language plpgsql security invoker set search_path = '' as $$
 declare
@@ -44,8 +46,13 @@ declare
   received timestamptz;
   inserted text;
   processed integer := 0;
+  new_gaps bigint := 0;
+  run_changed boolean := false;
+  reset_silence boolean := false;
+  max_bounded_reconnect_gap_ms constant integer := 10000;
 begin
-  if p_worker_run_id is null or p_source_healthy is null or p_interrupted is null or p_lost is null or
+  if p_worker_run_id is null or p_source_healthy is null or p_gap_sequence is null or p_gap_sequence < 0 or
+     p_gap_max_ms is null or p_gap_max_ms < 0 or p_gap_unbounded is null or p_lost is null or
      p_now is null or jsonb_typeof(p_events) <> 'array' or jsonb_array_length(p_events) > 50 then
     raise exception 'Invalid Activity Watch sync input';
   end if;
@@ -53,26 +60,22 @@ begin
   select * into period from public.ankara_activity_periods where state = 'active' for update;
 
   if period.period_id is not null then
-    if period.worker_run_id <> p_worker_run_id or p_interrupted or p_lost or not p_source_healthy then
-      update public.ankara_activity_periods set
-        coverage_uncertain = true,
-        interruption_count = interruption_count +
-          case when period.worker_run_id <> p_worker_run_id or p_interrupted or p_lost or period.source_health = 'healthy' then 1 else 0 end,
-        source_health = 'unhealthy', healthy_since = null, worker_run_id = p_worker_run_id
-      where period_id = period.period_id returning * into period;
-    end if;
-    if p_source_healthy and period.source_health = 'unhealthy' then
-      update public.ankara_activity_periods set source_health = 'healthy', healthy_since = p_now
-        where period_id = period.period_id returning * into period;
-    end if;
-    -- Healthy silence must cover the whole 30-minute interval. Restart/recovery
-    -- resets healthy_since, so elapsed wall time alone can never close the period.
-    if p_source_healthy and period.healthy_since is not null and
-       p_now >= greatest(period.last_detection_at, period.healthy_since) + interval '30 minutes' then
-      update public.ankara_activity_periods set state = 'closed', closed_at = p_now
-        where period_id = period.period_id;
-      period.period_id := null;
-    end if;
+    run_changed := period.worker_run_id <> p_worker_run_id;
+    new_gaps := case when run_changed then 0 else greatest(0, p_gap_sequence - period.last_gap_sequence) end;
+    -- A completed, precisely bounded reconnect of at most 10 seconds is
+    -- uncertain coverage but does not restart the event-time silence clock.
+    reset_silence := run_changed or p_lost or
+      (new_gaps > 0 and (p_gap_unbounded or p_gap_max_ms > max_bounded_reconnect_gap_ms)) or
+      (p_source_healthy and period.source_health = 'unhealthy' and new_gaps = 0);
+    update public.ankara_activity_periods set
+      coverage_uncertain = coverage_uncertain or run_changed or p_lost or
+        not p_source_healthy or new_gaps > 0,
+      interruption_count = interruption_count + case when run_changed then 1 else new_gaps end,
+      source_health = case when p_source_healthy then 'healthy' else 'unhealthy' end,
+      healthy_since = case when p_source_healthy and (reset_silence or healthy_since is null) then p_now
+        when reset_silence then null else healthy_since end,
+      worker_run_id = p_worker_run_id, last_gap_sequence = p_gap_sequence
+    where period_id = period.period_id returning * into period;
   end if;
 
   for item in select value from jsonb_array_elements(p_events) as t(value) loop
@@ -95,12 +98,21 @@ begin
       continue;
     end if;
     if exists (select 1 from public.ankara_activity_period_events where event_key = key) then continue; end if;
+    -- Process queued eligible events before the final quiet-time evaluation.
+    -- A genuinely new event beyond a fully observed 30-minute boundary starts
+    -- the next period even when the periodic evaluation was delayed.
+    if period.period_id is not null and period.healthy_since is not null and
+       occurred >= greatest(period.last_detection_at, period.healthy_since) + interval '30 minutes' then
+      update public.ankara_activity_periods set state = 'closed', closed_at = p_now
+        where period_id = period.period_id;
+      period.period_id := null;
+    end if;
     if period.period_id is null then
       insert into public.ankara_activity_periods
         (period_id, state, started_at, last_detection_at, detection_count, source_health, healthy_since,
-         coverage_uncertain, interruption_count, worker_run_id)
+         coverage_uncertain, interruption_count, last_gap_sequence, worker_run_id)
       values (pg_catalog.gen_random_uuid(), 'active', occurred, occurred, 1, 'healthy', p_now,
-        p_lost, case when p_lost then 1 else 0 end, p_worker_run_id)
+        p_lost, case when p_lost then 1 else 0 end, p_gap_sequence, p_worker_run_id)
       returning * into period;
     else
       update public.ankara_activity_periods set last_detection_at = greatest(last_detection_at, occurred),
@@ -112,9 +124,17 @@ begin
     inserted := null;
     processed := processed + 1;
   end loop;
+  -- An eligible event in this batch may have extended the period. Never close
+  -- based on the pre-batch last_detection_at value.
+  if period.period_id is not null and p_source_healthy and period.healthy_since is not null and
+     p_now >= greatest(period.last_detection_at, period.healthy_since) + interval '30 minutes' then
+    update public.ankara_activity_periods set state = 'closed', closed_at = p_now
+      where period_id = period.period_id;
+    period.period_id := null;
+  end if;
   return jsonb_build_object('state', case when period.period_id is null then 'idle' else 'active' end,
     'periodId', period.period_id, 'processed', processed);
 end;
 $$;
-revoke all on function public.sync_ankara_activity_watch(uuid, boolean, boolean, boolean, jsonb, timestamptz) from public, anon, authenticated;
-grant execute on function public.sync_ankara_activity_watch(uuid, boolean, boolean, boolean, jsonb, timestamptz) to service_role;
+revoke all on function public.sync_ankara_activity_watch(uuid, boolean, bigint, integer, boolean, boolean, jsonb, timestamptz) from public, anon, authenticated;
+grant execute on function public.sync_ankara_activity_watch(uuid, boolean, bigint, integer, boolean, boolean, jsonb, timestamptz) to service_role;

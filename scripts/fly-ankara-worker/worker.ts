@@ -214,13 +214,13 @@ async function connectOnce(): Promise<void> {
       watchdog = setInterval(() => {
         if (!blitzSourceStillHealthy(lastFrameAt, Date.now(), frameTimeoutMs)) {
           continuousCapture?.sourceState("unhealthy", "valid_event_timeout");
-          activityWatch?.sourceState(false);
+          activityWatch?.sourceState(false, false);
         }
         if (!watchdogTriggered && Date.now() - lastFrameOnConnection >= frameTimeoutMs) {
           watchdogTriggered = true;
           replayCapture?.markSourceGap("source_unhealthy");
           continuousCapture?.sourceState("unhealthy", "source_unhealthy");
-          activityWatch?.sourceState(false);
+          activityWatch?.sourceState(false, false);
           const previousLastFrameAt = lastFrameAt;
           emit("source_health", {
             to: "stale",
