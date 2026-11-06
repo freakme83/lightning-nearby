@@ -34,19 +34,40 @@ test("sendMessage and sendDocument go to the configured group without leaking th
 });
 
 test("Telegram answers are classified by what is known about delivery", async () => {
+  assert.deepEqual(await classifyTelegramResponse(json({ ok: true, result: { message_id: 7 } })),
+    { status: "sent", messageId: 7 });
+  // A consistent 429 is a confirmed refusal: retryable, honouring retry_after.
   assert.deepEqual(await classifyTelegramResponse(json({ ok: false, error_code: 429, parameters: { retry_after: 37 } }, 429)),
     { status: "retry", detail: "telegram_429", retryAfterSeconds: 37 });
-  assert.deepEqual(await classifyTelegramResponse(json({ ok: false, error_code: 500 }, 500)),
-    { status: "retry", detail: "telegram_500" });
+  assert.deepEqual(await classifyTelegramResponse(json({ ok: false, error_code: 429 }, 429)),
+    { status: "retry", detail: "telegram_429" });
+  assert.deepEqual(await classifyTelegramResponse(json({ ok: false, error_code: 429 }, 200)),
+    { status: "ambiguous", detail: "inconsistent_http_200" });
   assert.deepEqual(await classifyTelegramResponse(json({ ok: false, error_code: 400, description: "chat not found" }, 400)),
     { status: "failed", detail: "telegram_400" });
-  // No readable Bot API answer after the request reached a server: possibly delivered.
-  assert.deepEqual(await classifyTelegramResponse(new Response("<html>Bad Gateway</html>", { status: 502 })),
-    { status: "ambiguous", detail: "unreadable_http_502" });
-  assert.deepEqual(await classifyTelegramResponse(new Response("not json", { status: 200 })),
-    { status: "ambiguous", detail: "unreadable_http_200" });
   assert.deepEqual(await classifyTelegramResponse(new Response("too large", { status: 413 })),
     { status: "failed", detail: "http_413" });
+  assert.deepEqual(await classifyTelegramResponse(new Response("not json", { status: 200 })),
+    { status: "ambiguous", detail: "unreadable_http_200" });
+});
+
+test("every 5xx is ambiguous, never retryable: the message may already have been accepted", async () => {
+  const cases: [Response, string][] = [
+    [json({ ok: false, error_code: 500, description: "Internal Server Error" }, 500), "telegram_500"],
+    [json({ ok: false, error_code: 502, description: "Bad Gateway" }, 502), "telegram_502"],
+    [json({ ok: false, error_code: 504, description: "Gateway Timeout" }, 504), "telegram_504"],
+    [new Response("<html>502 Bad Gateway</html>", { status: 502 }), "http_502"],
+    [new Response("", { status: 504 }), "http_504"],
+    [new Response("<html>500</html>", { status: 500 }), "http_500"],
+    // Even a readable client error is not trusted when the HTTP layer reports a server error.
+    [json({ ok: false, error_code: 400 }, 503), "http_503"],
+    [json({ ok: false, error_code: 500 }, 200), "telegram_500"],
+  ];
+  for (const [response, detail] of cases) {
+    assert.deepEqual(await classifyTelegramResponse(response), { status: "ambiguous", detail });
+  }
+  const { client } = createActivityTelegramClient(env, async () => new Response("", { status: 504 }));
+  assert.deepEqual(await client!.sendDocument("c", "f.json", "{}"), { status: "ambiguous", detail: "http_504" });
 });
 
 test("timeouts and dropped connections are ambiguous; failures before connecting are retryable", async () => {

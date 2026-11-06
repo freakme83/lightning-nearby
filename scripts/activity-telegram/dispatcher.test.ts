@@ -62,11 +62,11 @@ test("the 50,000-record ceiling yields a text-only completion without reading th
 });
 
 test("periods above the in-worker attachment cap get a text-only completion without reading the archive", async () => {
-  const { store, completions } = fakeStore("end", period({ detection_count: 10_001 }));
+  const { store, completions } = fakeStore("end", period({ detection_count: 5_001 }));
   const { instance, telegram } = dispatcher(store);
   await instance.tick();
   assert.equal(telegram.sent[0].method, "sendMessage");
-  assert.match(telegram.sent[0].text, /Telegram eki sınırını \(10\.000\) aşıyor; Replay kaydı operatör aracıyla alınabilir/);
+  assert.match(telegram.sent[0].text, /Telegram eki sınırını \(5\.000\) aşıyor; Replay kaydı operatör aracıyla alınabilir/);
   assert.deepEqual(completions, [{ outcome: "sent", messageId: 101, attachment: "unavailable:worker_attachment_limit" }]);
 });
 

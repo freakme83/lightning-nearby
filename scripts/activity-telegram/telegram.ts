@@ -7,9 +7,11 @@
  * Telegram offers no application idempotency key, so every outcome is classified by what
  * is actually known about delivery:
  * - sent: Telegram confirmed the message.
- * - retry / failed: Telegram (or the network before connecting) definitively did not deliver.
- * - ambiguous: the request may have been accepted (timeout, dropped connection, unreadable
- *   success response, non-JSON gateway error). Never retried automatically.
+ * - retry: confirmed non-delivery that may be repeated: a consistent Telegram 429, or a network
+ *   failure before any connection existed.
+ * - failed: confirmed, permanent rejection (Telegram 4xx other than 429).
+ * - ambiguous: the request may have been accepted (any HTTP 5xx or Bot API error_code >= 500,
+ *   timeout, dropped connection, unreadable success response). Never retried automatically.
  */
 export type TelegramDelivery =
   | { status: "sent"; messageId: number | null }
@@ -57,20 +59,26 @@ export async function classifyTelegramResponse(response: Response): Promise<Tele
     const result = body.result as { message_id?: unknown } | undefined;
     return { status: "sent", messageId: Number.isSafeInteger(result?.message_id) ? result!.message_id as number : null };
   }
-  if (body?.ok === false && Number.isSafeInteger(body.error_code)) {
-    const code = body.error_code as number;
-    if (code === 429) {
-      const retryAfter = (body.parameters as { retry_after?: unknown } | undefined)?.retry_after;
+  // Any server-side error (HTTP 5xx or a Bot API error_code >= 500) can follow a message that
+  // was already accepted, so it is never proof of non-delivery and is never retried.
+  const code = body?.ok === false && Number.isSafeInteger(body.error_code) ? body.error_code as number : null;
+  if (response.status >= 500 || (code !== null && code >= 500)) {
+    return { status: "ambiguous", detail: code !== null && code >= 500 ? `telegram_${code}` : `http_${response.status}` };
+  }
+  if (code !== null) {
+    // A consistent 429 is Telegram refusing the request before processing it: safe to retry.
+    if (code === 429 && response.status === 429) {
+      const retryAfter = (body!.parameters as { retry_after?: unknown } | undefined)?.retry_after;
       return { status: "retry", detail: "telegram_429",
         ...(Number.isSafeInteger(retryAfter) && (retryAfter as number) >= 0
           ? { retryAfterSeconds: Math.min(86_400, retryAfter as number) } : {}) };
     }
-    if (code >= 500) return { status: "retry", detail: `telegram_${code}` };
+    if (code === 429) return { status: "ambiguous", detail: `inconsistent_http_${response.status}` };
     return { status: "failed", detail: `telegram_${code}` };
   }
-  // No readable Bot API answer. A success status or a gateway error may hide an accepted
-  // message; a non-JSON client error was rejected before the Bot API processed it.
-  if (response.ok || response.status >= 500) return { status: "ambiguous", detail: `unreadable_http_${response.status}` };
+  // No readable Bot API answer. A success status may hide an accepted message; a non-JSON
+  // client error was rejected before the Bot API processed it.
+  if (response.ok) return { status: "ambiguous", detail: `unreadable_http_${response.status}` };
   return { status: "failed", detail: `http_${response.status}` };
 }
 

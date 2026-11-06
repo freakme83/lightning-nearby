@@ -63,11 +63,13 @@ export type EndSummary = {
 export type AttachmentUnavailableReason = "export_too_large" | "worker_attachment_limit" | "no_archived_events" |
   "archive_inconsistent" | "attachment_too_large" | "export_unavailable";
 /**
- * In-worker Replay attachments are capped well below PR-3's 50,000-record ceiling: building a
- * maximum-size export measured about +335 MB peak memory, more than the 256 MB worker VM, while
- * 10,000 records measured about +71 MB. Larger periods are exported with PR-3's operator CLI.
+ * In-worker Replay attachments are capped well below PR-3's 50,000-record ceiling to protect the
+ * shared 256 MB worker (publication, Continuous Capture, Activity Watch). Whole-worker peak RSS
+ * measured locally under storm traffic (scripts/research/activity-telegram-memory): ~100-112 MB
+ * baseline, 125 MB for a tiny export, 152-163 MB at 5,000 records, 178-186 MB at 10,000; a lone
+ * 50,000-record build alone exceeded +300 MB. Larger periods are exported with PR-3's operator CLI.
  */
-export const WORKER_ATTACHMENT_MAX_DETECTIONS = 10_000;
+export const WORKER_ATTACHMENT_MAX_DETECTIONS = 5_000;
 const UNAVAILABLE_TEXT: Record<AttachmentUnavailableReason, string> = {
   export_too_large: `kayıt sayısı Replay sınırını (${count(MAX_EXPORT_DETECTIONS)}) aşıyor`,
   worker_attachment_limit: `kayıt sayısı Telegram eki sınırını (${count(WORKER_ATTACHMENT_MAX_DETECTIONS)}) aşıyor; ` +

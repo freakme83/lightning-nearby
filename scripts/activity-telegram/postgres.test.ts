@@ -6,7 +6,7 @@ import { eligibleActivityEvent } from "../fly-ankara-worker/activity-watch.ts";
 import { ActivityNotificationDispatcher } from "./dispatcher.ts";
 import { archive, blitzEvent, createDatabase, iso, mockTelegram, notificationRows, sqlActivityStore,
   sqlExportStore, sqlNotificationStore } from "./test-support.ts";
-import type { TelegramDelivery } from "./telegram.ts";
+import { createActivityTelegramClient, type TelegramDelivery } from "./telegram.ts";
 
 // Same opt-in PGlite module as the Activity Watch and export SQL tests.
 const modulePath = process.env.ACTIVITY_WATCH_POSTGRES_TEST_MODULE;
@@ -211,9 +211,10 @@ test("an ambiguous Telegram outcome or a crash after reserving the send is never
   } finally { await db.close(); }
 });
 
-test("definite failures follow bounded backoff and respect Telegram retry_after", { skip }, async () => {
+test("confirmed non-delivery follows bounded backoff and respects Telegram retry_after", { skip }, async () => {
+  // Only confirmed refusals are retryable: a consistent 429, or a failure before connecting.
   const responses: TelegramDelivery[] = [{ status: "retry", detail: "telegram_429", retryAfterSeconds: 120 },
-    ...Array.from({ length: 4 }, () => ({ status: "retry" as const, detail: "telegram_500" }))];
+    ...Array.from({ length: 4 }, () => ({ status: "retry" as const, detail: "connect_error" }))];
   const { db, clock, telegram, dispatcher, sync, detect } = await setup(responses);
   try {
     const worker = dispatcher();
@@ -231,9 +232,62 @@ test("definite failures follow bounded backoff and respect Telegram retry_after"
     }
     assert.equal(telegram.sent.length, 5); // max attempts, then failed: no flood
     const [row] = await notificationRows(db);
-    assert.deepEqual([row.state, row.attempts, row.last_outcome], ["failed", 5, "telegram_500"]);
+    assert.deepEqual([row.state, row.attempts, row.last_outcome], ["failed", 5, "connect_error"]);
   } finally { await db.close(); }
 });
+
+test("Telegram 500/502/504 through the real client are terminal ambiguous outcomes, never reclaimed after restarts",
+  { skip }, async () => {
+    const { db, clock, sync, detect } = await setup();
+    const token = "123456:THIS_IS_A_FIXTURE_TOKEN_NOT_A_SECRET";
+    const answers = [
+      () => Response.json({ ok: false, error_code: 500, description: "Internal Server Error" }, { status: 500 }),
+      () => new Response("<html>502 Bad Gateway</html>", { status: 502 }),
+      () => Response.json({ ok: false, error_code: 504, description: "Gateway Timeout" }, { status: 504 }),
+    ];
+    const requests: string[] = [];
+    const { client } = createActivityTelegramClient({ TELEGRAM_BOT_TOKEN: token, TELEGRAM_CHAT_ID: "-100123" },
+      async input => {
+        requests.push(String(input).replace(token, "<token>"));
+        const answer = answers.shift();
+        return answer ? answer() : Response.json({ ok: true, result: { message_id: 1 } });
+      });
+    const dispatcher = () => new ActivityNotificationDispatcher({ store: sqlNotificationStore(db, () => clock.now),
+      exportStore: sqlExportStore(db), telegram: client!, emit: () => {}, now: () => clock.now });
+    try {
+      await dispatcher().tick();
+      clock.now += 1_000;
+      const first = await detect(...GOLBASI);
+      await sync([first]);
+      clock.now += 11_000;
+      assert.equal(await dispatcher().tick(), "processed"); // start -> 500
+      clock.now = first.eventTimeMs + 31 * MIN;
+      await sync();
+      assert.equal(await dispatcher().tick(), "processed"); // completion -> 502
+      clock.now += MIN;
+      const second = await detect(...HAYMANA);
+      await sync([second]);
+      clock.now += 11_000;
+      assert.equal(await dispatcher().tick(), "processed"); // start -> 504
+      // Many restarts over hours, past every lease: nothing is reclaimed or resent.
+      for (let restart = 0; restart < 12; restart++) {
+        clock.now += 10 * MIN;
+        assert.equal(await dispatcher().tick(), "idle");
+      }
+      assert.deepEqual(requests, ["https://api.telegram.org/bot<token>/sendMessage",
+        "https://api.telegram.org/bot<token>/sendDocument", "https://api.telegram.org/bot<token>/sendMessage"]);
+      const rows = await notificationRows(db);
+      assert.deepEqual(rows.map(row => [row.kind, row.state, row.attempts, row.last_outcome]), [
+        ["start", "ambiguous", 1, "telegram_500"], ["end", "ambiguous", 1, "http_502"],
+        ["start", "ambiguous", 1, "telegram_504"]]);
+      // The second period's normal completion is unaffected by the earlier ambiguity.
+      clock.now = second.eventTimeMs + 31 * MIN;
+      await sync();
+      assert.equal(await dispatcher().tick(), "processed");
+      assert.equal(requests.length, 4);
+      assert.deepEqual((await notificationRows(db)).at(-1)!.state, "sent");
+    } finally { await db.close(); }
+  });
 
 test("a permanent rejection is not retried", { skip }, async () => {
   const { db, clock, telegram, dispatcher, sync, detect } = await setup([{ status: "failed", detail: "telegram_400" }]);

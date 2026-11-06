@@ -25,10 +25,10 @@ Telegram's `sendMessage`/`sendDocument` have no application idempotency key, so 
 | Telegram result | Recorded as | Retried? |
 |---|---|---|
 | `ok: true` | `sent` (message ID kept) | — |
-| Bot API JSON error 429 | `pending` after `retry_after`; all activity notifications pause until then | yes, bounded |
-| Bot API JSON error ≥ 500; failure before a connection existed (DNS, refused, connect timeout) | `pending` with 30 s · 2ⁿ backoff | yes, at most 5 send attempts, then `failed` |
-| Bot API JSON 4xx other than 429; non-JSON 4xx | `failed` | no |
-| Timeout, dropped connection, unreadable 2xx, non-JSON 5xx | `ambiguous` | **never automatically** |
+| HTTP 429 with Bot API `error_code` 429 (a confirmed refusal) | `pending` after `retry_after`; all activity notifications pause until then | yes, bounded |
+| Failure before any connection existed (DNS, refused, connect timeout) | `pending` with 30 s · 2ⁿ backoff | yes, at most 5 send attempts, then `failed` |
+| Bot API 4xx other than 429; non-JSON 4xx | `failed` | no |
+| **Any HTTP 5xx or Bot API `error_code` ≥ 500** (500, 502, 504, …, JSON or not); timeout; dropped connection; unreadable 2xx; inconsistent 429 | `ambiguous`: a server error can follow an accepted message | **never automatically** |
 | Worker crash after claim, before reserving | the lease expires and the row returns to `pending` | yes (nothing was sent) |
 | Worker crash after reserving | the lease expires and the row becomes `ambiguous` | **never automatically** |
 
@@ -74,12 +74,22 @@ The attachment is PR-3's unchanged Replay JSON, so same-millisecond records stay
 
 If no trustworthy attachment can be produced, a **text-only** completion explains why. No empty or seemingly complete JSON is sent. The cases are:
 - **More than 50,000 records:** PR-3's ceiling, checked before any archive read.
-- **More than 10,000 records:** the in-worker limit (see below). The Replay can still be produced with PR-3's operator CLI.
+- **More than 5,000 records:** the in-worker limit (see below). The Replay can still be produced with PR-3's operator CLI.
 - **No archived rows, or inconsistent archive data.**
 - **JSON larger than 45 MB.**
 - **Archive reads failed three times.** Transient read failures are retried with backoff first.
 
-**Why 10,000:** Building a 50,000-record export locally measured about +335 MB of peak memory, more than the 256 MB worker VM. 10,000 records measured about +71 MB (a 5.2 MB file). The district dataset is loaded only when a notification is prepared, never per detection.
+**Why 5,000:** The worker shares one 256 MB VM with publication, Continuous Capture and Activity Watch, and part of that memory belongs to the VM's own processes. `scripts/research/activity-telegram-memory/preload.ts` runs the unmodified worker locally with every network call intercepted in-process. It feeds 60 synthetic frames per second (5 % inside Ankara) with Continuous Capture, Activity Watch and Activity Telegram enabled, then serves one completed period of N records. Measured whole-process peak RSS (kernel `maxRSS`):
+
+| Attachment | Peak RSS | File |
+|---|---|---|
+| none (storm baseline) | 100–112 MB | — |
+| 100 records | 125 MB | 0.1 MB |
+| 2,500 | 145 MB | 1.4 MB |
+| 5,000 | 152–163 MB | 2.7 MB |
+| 10,000 | 178–186 MB | 5.4 MB |
+
+A 50,000-record build alone exceeded +300 MB. At 5,000 records the export adds about 27–38 MB over the fixed cost of preparing a notification, leaving roughly 90–100 MB below the VM limit. At 10,000 the margin would be too thin, given the VM's own usage and possible spikes. These figures come from a 16 GB development host. V8's heap limit is not derived from the 256 MB VM size, so garbage collection should behave similarly, but production RSS should still be confirmed from Fly metrics after enablement. The district dataset is loaded only when a notification is prepared, never per detection.
 
 ## Rollout (operators, after approval; not done in this PR)
 
@@ -93,7 +103,7 @@ If no trustworthy attachment can be produced, a **text-only** completion explain
 `npm run test:activity-telegram` runs the unit tests:
 - Telegram outcome classification and request shape.
 - Message text, the caption limit and the filename.
-- Dispatcher behaviour: the 10,000 and 50,000 ceilings, export failures, ambiguity, retries, a lost confirmation, database outages, the flag and credentials.
+- Dispatcher behaviour: the 5,000 and 50,000 ceilings, export failures, ambiguity, retries, a lost confirmation, database outages, the flag and credentials.
 - Isolation checks: publication notifications stay byte-identical, the import closure has no path to publication code, the Docker image covers every module the worker imports, and the worker wiring is as described.
 
 With `ACTIVITY_WATCH_POSTGRES_TEST_MODULE` (PGlite) set, the tests also run against the real migrations and Activity Watch RPC:
