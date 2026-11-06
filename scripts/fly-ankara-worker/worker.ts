@@ -13,6 +13,7 @@ import { ReplayCaptureManager } from "../replay-capture/manager.ts";
 import { CaptureSourceReadiness } from "../replay-capture/source-readiness.ts";
 import { createContinuousCapture } from "./continuous-capture.ts";
 import { createActivityWatch } from "./activity-watch.ts";
+import { createActivityTelegram } from "../activity-telegram/dispatcher.ts";
 
 const summaryEveryMs = 5 * 60_000;
 const frameTimeoutMs = 90_000;
@@ -79,6 +80,9 @@ function summary(reason = "periodic") {
 const continuousCapture = createContinuousCapture(process.env, emit);
 const activityWatch = createActivityWatch(process.env,
   () => captureReadiness.isReady(socket?.readyState === WebSocket.OPEN, Date.now(), frameTimeoutMs), emit);
+// Independent informational notifications from committed Activity Watch rows; own timer,
+// disabled unless ACTIVITY_TELEGRAM_ENABLED=true, never on the frame or publication path.
+const activityTelegram = createActivityTelegram(process.env, emit);
 
 function acceptFrame(data: unknown, sourceServer: BlitzortungServer) {
   counters.messages++;
@@ -125,6 +129,7 @@ function stop(reason: string) {
   replayCapture?.stop();
   continuousCapture?.stop();
   activityWatch?.stop();
+  activityTelegram?.stop();
   resolveSleep?.();
   emit("stopping", { reason });
   socket?.close(1000, "worker stopping");

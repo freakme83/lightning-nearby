@@ -21,6 +21,9 @@ COPY scripts/lightning-end-to-end-dry-run/ ./scripts/lightning-end-to-end-dry-ru
 COPY scripts/lightning-publication-ledger/ ./scripts/lightning-publication-ledger/
 COPY scripts/lightning-telegram-notifier/ ./scripts/lightning-telegram-notifier/
 COPY scripts/lightning-github-dispatch/ ./scripts/lightning-github-dispatch/
+# Activity Watch Telegram notifications and the PR-3 export code + district data they reuse.
+COPY scripts/activity-export/ ./scripts/activity-export/
+COPY scripts/activity-telegram/ ./scripts/activity-telegram/
 
 ENV NODE_ENV=production
 CMD ["node", "--experimental-strip-types", "scripts/fly-ankara-worker/worker.ts"]
