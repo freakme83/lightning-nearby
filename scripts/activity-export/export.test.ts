@@ -49,7 +49,7 @@ test("completed period with multiple districts: summary, ordering and shared mil
   assert.equal(meta.activityPeriod.periodId, PID);
   assert.equal(meta.activityPeriod.firstDetectionAt, iso(t0));
   assert.equal(meta.activityPeriod.lastDetectionAt, iso(t0 + 120_000));
-  assert.equal(meta.activityPeriod.closedAt, iso(t0 + 120_000 + 31 * 60_000));
+  assert.equal(meta.activityPeriod.closedAt, "2026-11-03T12:33:00.000000Z");
   assert.equal(meta.source, "Blitzortung");
   assert.equal(meta.countUnit, "blitzortung_detection_record");
   assert.match(meta.description, /not an independently verified physical lightning discharge/);
@@ -94,6 +94,23 @@ test("coverage uncertainty and short interruptions are carried through", () => {
   const meta = build({ period: period({ coverage_uncertain: true, interruption_count: 2 }) }).meta;
   assert.equal(meta.activityPeriod.coverageUncertain, true);
   assert.equal(meta.activityPeriod.interruptionCount, 2);
+});
+
+test("a database-clock closed_at with microseconds is valid and preserved; event times stay millisecond-strict", () => {
+  // Activity Watch closes with p_now = clock_timestamp(), e.g. as PostgREST returns it:
+  const closedAt = "2026-11-03T12:33:00.123456+00:00";
+  const meta = build({ period: period({ closed_at: closedAt }) }).meta;
+  assert.equal(meta.activityPeriod.closedAt, "2026-11-03T12:33:00.123456Z");
+  assert.equal(build({ period: period({ closed_at: "2026-11-03T15:33:00.000001+03:00" }) }).meta.activityPeriod.closedAt,
+    "2026-11-03T12:33:00.000001Z");
+  // A millisecond closure is reported at the same six-digit precision.
+  assert.equal(build().meta.activityPeriod.closedAt, `${iso(t0 + 120_000 + 31 * 60_000).slice(0, -1)}000Z`);
+  rejects(() => build({ period: period({ closed_at: "2026-11-03T12:33:00.1234567+00:00" }) }), "invalid_period");
+  // Detection timestamps come from millisecond event times and must not lose digits.
+  rejects(() => build({ period: period({ last_detection_at: "2026-11-03T12:02:00.000123+00:00" }) }), "invalid_period");
+  rejects(() => build({ period: period({ started_at: "2026-11-03T12:00:00.000500+00:00" }) }), "invalid_period");
+  rejects(() => build({ members: [...members.slice(0, 3), { ...members[3], event_time: "2026-11-03T12:01:00.000001+00:00" }] }),
+    "period_membership_inconsistent");
 });
 
 test("active, nonexistent, invalid and incomplete periods are rejected", () => {

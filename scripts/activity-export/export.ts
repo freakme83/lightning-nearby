@@ -43,7 +43,10 @@ export function assertPeriodId(value: unknown): string {
   return value;
 }
 
-/** Parse a stored timestamptz without silently dropping sub-millisecond digits. */
+/**
+ * Event timestamps (detection and receive times) are written from millisecond ISO strings by
+ * the worker, so any non-zero sub-millisecond digit is corruption, never silently dropped.
+ */
 function timeMs(value: unknown, code: ExportErrorCode, label: string): number {
   const fraction = typeof value === "string" ? /\.(\d+)/.exec(value)?.[1] ?? "" : "";
   const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
@@ -51,9 +54,22 @@ function timeMs(value: unknown, code: ExportErrorCode, label: string): number {
   return ms;
 }
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/**
+ * Administrative timestamps are database clock values: Activity Watch's RPC defaults p_now to
+ * clock_timestamp() (the worker never passes it), so closed_at legitimately carries PostgreSQL's
+ * microsecond precision. Returned as UTC with all six fractional digits preserved.
+ */
+function adminTime(value: unknown, code: ExportErrorCode, label: string): { ms: number; iso: string } {
+  const fraction = typeof value === "string" ? /\.(\d+)/.exec(value)?.[1] ?? "" : "";
+  const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (!Number.isFinite(ms) || /[1-9]/.test(fraction.slice(6))) throw new ActivityExportError(code, `Invalid ${label}`);
+  // Date keeps whole milliseconds; UTC offsets are whole minutes, so microsecond digits are unchanged.
+  return { ms, iso: `${iso(ms).slice(0, -1)}${fraction.slice(3, 6).padEnd(3, "0")}Z` };
+}
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 
-type ValidPeriod = { periodId: string; startedAt: number; lastDetectionAt: number; closedAt: number;
+type ValidPeriod = { periodId: string; startedAt: number; lastDetectionAt: number; closedAt: { ms: number; iso: string };
   detectionCount: number; coverageUncertain: boolean; interruptionCount: number; sourceHealthAtClose: string };
 
 export function validateCompletedPeriod(row: PeriodRow | null, periodId: string): ValidPeriod {
@@ -67,10 +83,10 @@ export function validateCompletedPeriod(row: PeriodRow | null, periodId: string)
   }
   const period = { periodId, startedAt: timeMs(row.started_at, "invalid_period", "period start"),
     lastDetectionAt: timeMs(row.last_detection_at, "invalid_period", "period last detection"),
-    closedAt: timeMs(row.closed_at, "invalid_period", "period closure"), detectionCount: row.detection_count,
+    closedAt: adminTime(row.closed_at, "invalid_period", "period closure"), detectionCount: row.detection_count,
     coverageUncertain: row.coverage_uncertain, interruptionCount: row.interruption_count,
     sourceHealthAtClose: row.source_health };
-  if (period.startedAt > period.lastDetectionAt || period.closedAt < period.lastDetectionAt) {
+  if (period.startedAt > period.lastDetectionAt || period.closedAt.ms < period.lastDetectionAt) {
     throw new ActivityExportError("invalid_period", "Activity period timestamps are out of order");
   }
   return period;
@@ -190,8 +206,9 @@ export function buildActivityExport(input: { periodId: string; period: PeriodRow
       description: "Blitzortung detection records archived by Lightning Nearby for one completed Ankara Activity Watch period. " +
         "Each event is one archived detection record, not an independently verified physical lightning discharge.",
       source: "Blitzortung", provider: "Blitzortung", synthetic: false, utcOffset: "+03:00",
-      // Replay Studio plays [windowStart, windowEnd]: first detection to 10 s after the last
-      // recorded detection. The later administrative closure is kept below, not played.
+      // Replay Studio plays [windowStart, windowEnd]: the first to 10 s after the last detection
+      // recorded by Activity Watch membership, even when that detection's archive row is missing
+      // (then the final exported event ends earlier). The administrative closure is not played.
       windowStart: iso(firstDetectionAt), windowEnd: iso(period.lastDetectionAt + PLAYBACK_TAIL_MS),
       playbackTailSeconds: PLAYBACK_TAIL_MS / 1000,
       countUnit: "blitzortung_detection_record",
@@ -202,7 +219,7 @@ export function buildActivityExport(input: { periodId: string; period: PeriodRow
       bounds: { south: bounds.south, north: bounds.north, west: bounds.west, east: bounds.east },
       activityPeriod: {
         periodId, periodStartedAt: iso(period.startedAt), firstDetectionAt: iso(firstDetectionAt),
-        lastDetectionAt: iso(period.lastDetectionAt), closedAt: iso(period.closedAt),
+        lastDetectionAt: iso(period.lastDetectionAt), closedAt: period.closedAt.iso,
         closureNote: "closedAt is the administrative closure after 30 minutes of observed quiet; it is not a detection time.",
         recordedDetectionCount: members.size, coverageUncertain: period.coverageUncertain,
         interruptionCount: period.interruptionCount, sourceHealthAtClose: period.sourceHealthAtClose,
